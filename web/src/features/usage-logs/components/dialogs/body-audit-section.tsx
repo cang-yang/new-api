@@ -39,7 +39,9 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { cn } from '@/lib/utils'
 
 import { getBodyAudit } from '../../api'
+import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import type { BodyAudit } from '../../types'
+import { BodyAuditResultContent } from '../body-audit-result'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -55,111 +57,6 @@ function formatBody(body: string, encoding: 'utf-8' | 'base64'): string {
     return JSON.stringify(JSON.parse(body), null, 2)
   } catch {
     return body
-  }
-}
-
-function stringContent(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (!Array.isArray(value)) return ''
-  return value
-    .map((item) => {
-      if (typeof item === 'string') return item
-      if (!item || typeof item !== 'object') return ''
-      const part = item as Record<string, unknown>
-      if (typeof part.text === 'string') return part.text
-      if (typeof part.content === 'string') return part.content
-      return ''
-    })
-    .join('')
-}
-
-function extractResponseText(value: unknown): string {
-  if (!value || typeof value !== 'object') return ''
-  const data = value as Record<string, unknown>
-
-  if (typeof data.delta === 'string') return data.delta
-  if (typeof data.text === 'string') return data.text
-  if (typeof data.completion === 'string') return data.completion
-  if (typeof data.output_text === 'string') return data.output_text
-
-  if (data.delta && typeof data.delta === 'object') {
-    const delta = data.delta as Record<string, unknown>
-    const deltaText =
-      stringContent(delta.content) ||
-      stringContent(delta.text) ||
-      stringContent(delta.output_text)
-    if (deltaText) return deltaText
-  }
-
-  if (Array.isArray(data.choices)) {
-    return data.choices
-      .map((choice) => {
-        if (!choice || typeof choice !== 'object') return ''
-        const item = choice as Record<string, unknown>
-        if (item.delta && typeof item.delta === 'object') {
-          const delta = item.delta as Record<string, unknown>
-          return stringContent(delta.content) || stringContent(delta.text)
-        }
-        if (item.message && typeof item.message === 'object') {
-          return stringContent(
-            (item.message as Record<string, unknown>).content
-          )
-        }
-        return stringContent(item.text)
-      })
-      .join('')
-  }
-
-  if (Array.isArray(data.candidates)) {
-    return data.candidates
-      .map((candidate) => {
-        if (!candidate || typeof candidate !== 'object') return ''
-        const content = (candidate as Record<string, unknown>).content
-        if (!content || typeof content !== 'object') return ''
-        return stringContent((content as Record<string, unknown>).parts)
-      })
-      .join('')
-  }
-
-  if (Array.isArray(data.content)) return stringContent(data.content)
-  if (data.message && typeof data.message === 'object') {
-    return stringContent((data.message as Record<string, unknown>).content)
-  }
-  if (data.response && typeof data.response === 'object') {
-    return extractResponseText(data.response)
-  }
-  return ''
-}
-
-function getReadableResponse(body: string): {
-  text: string
-  isStream: boolean
-} {
-  const trimmed = body.trim()
-  if (!trimmed) return { text: '', isStream: false }
-
-  const dataLines = body
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).trim())
-    .filter((line) => line && line !== '[DONE]')
-
-  if (dataLines.length > 0) {
-    let text = ''
-    for (const line of dataLines) {
-      try {
-        text += extractResponseText(JSON.parse(line))
-      } catch {
-        // Keep malformed/non-JSON events available in the raw response tab.
-      }
-    }
-    return { text, isStream: true }
-  }
-
-  try {
-    return { text: extractResponseText(JSON.parse(trimmed)), isStream: false }
-  } catch {
-    return { text: body, isStream: false }
   }
 }
 
@@ -234,29 +131,58 @@ function PayloadPanel(props: {
   )
 }
 
-function ResponsePanel(props: { audit: BodyAudit }) {
+function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
   const { t } = useTranslation()
-  const readable = useMemo(
-    () => getReadableResponse(props.audit.response_body),
-    [props.audit.response_body]
+  const hasClientResponse =
+    props.audit.client_response_status > 0 ||
+    props.audit.client_response_body_size > 0 ||
+    props.audit.client_response_complete
+  const result = useMemo(
+    () =>
+      parseBodyAuditResponse({
+        body: hasClientResponse
+          ? props.audit.client_response_body
+          : props.audit.response_body,
+        encoding: hasClientResponse
+          ? props.audit.client_response_body_encoding
+          : props.audit.response_body_encoding,
+        contentType: hasClientResponse
+          ? props.audit.client_response_content_type
+          : props.audit.response_content_type,
+        requestPath: props.requestPath,
+      }),
+    [hasClientResponse, props.audit, props.requestPath]
   )
+  const copyText = useMemo(() => {
+    if (result.kind === 'text') return result.text
+    if (result.media.length > 0) {
+      return result.media.map((item) => item.source).join('\n')
+    }
+    if (result.structured == null) return ''
+    if (typeof result.structured === 'string') return result.structured
+    return JSON.stringify(result.structured, null, 2)
+  }, [result])
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
-  const copied = copiedText === readable.text
+  const copied = copiedText === copyText
 
   return (
     <Tabs defaultValue='result' className='gap-2'>
-      <div className='flex items-center justify-between gap-2'>
-        <TabsList className='h-8'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <TabsList className='h-auto max-w-full flex-wrap'>
           <TabsTrigger value='result' className='h-7 gap-1.5 px-2.5 text-xs'>
             <FileText className='size-3.5' aria-hidden='true' />
             {t('Final Result')}
           </TabsTrigger>
-          <TabsTrigger value='raw' className='h-7 gap-1.5 px-2.5 text-xs'>
+          <TabsTrigger value='client' className='h-7 gap-1.5 px-2.5 text-xs'>
+            <FileJson2 className='size-3.5' aria-hidden='true' />
+            {t('Client Response')}
+          </TabsTrigger>
+          <TabsTrigger value='upstream' className='h-7 gap-1.5 px-2.5 text-xs'>
             <Radio className='size-3.5' aria-hidden='true' />
-            {t('Raw Response')}
+            {t('Upstream Response')}
           </TabsTrigger>
         </TabsList>
-        {readable.isStream && (
+        {result.isStream && (
           <StatusBadge
             label={t('Stream merged')}
             variant='blue'
@@ -279,7 +205,8 @@ function ResponsePanel(props: { audit: BodyAudit }) {
               variant='ghost'
               size='sm'
               className='h-7 gap-1.5 px-2'
-              onClick={() => copyToClipboard(readable.text)}
+              disabled={!copyText}
+              onClick={() => copyToClipboard(copyText)}
               aria-label={t('Copy to clipboard')}
             >
               {copied ? (
@@ -292,12 +219,33 @@ function ResponsePanel(props: { audit: BodyAudit }) {
               </span>
             </Button>
           </div>
-          <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4 text-sm leading-7 break-words whitespace-pre-wrap'>
-            {readable.text || t('No readable text was extracted')}
+          <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4'>
+            <BodyAuditResultContent
+              result={result}
+              emptyLabel={t('No readable text was extracted')}
+              imageAlt={t('Generated image')}
+            />
           </div>
         </div>
       </TabsContent>
-      <TabsContent value='raw'>
+      <TabsContent value='client'>
+        {hasClientResponse ? (
+          <PayloadPanel
+            title={t('Exact response returned by New API')}
+            body={props.audit.client_response_body}
+            encoding={props.audit.client_response_body_encoding}
+            size={props.audit.client_response_body_size}
+            truncated={props.audit.client_response_body_truncated}
+            contentType={props.audit.client_response_content_type}
+            icon={<FileJson2 className='size-3.5' aria-hidden='true' />}
+          />
+        ) : (
+          <div className='bg-muted/30 text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-xs'>
+            {t('Client response was not captured for this legacy record')}
+          </div>
+        )}
+      </TabsContent>
+      <TabsContent value='upstream'>
         <PayloadPanel
           title={t('Raw response returned by upstream')}
           body={props.audit.response_body}
@@ -312,7 +260,7 @@ function ResponsePanel(props: { audit: BodyAudit }) {
   )
 }
 
-function AuditContent(props: { audit: BodyAudit }) {
+function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
   const { t } = useTranslation()
   const responseStatusVariant =
     props.audit.response_status >= 200 && props.audit.response_status < 300
@@ -332,7 +280,7 @@ function AuditContent(props: { audit: BodyAudit }) {
           </TabsTrigger>
           <TabsTrigger value='response' className='gap-1.5 px-3'>
             <ArrowDownToLine className='size-3.5' aria-hidden='true' />
-            {t('Upstream Response')}
+            {t('Response')}
             <span className='text-muted-foreground font-mono text-[10px]'>
               {formatBytes(props.audit.response_body_size)}
             </span>
@@ -370,7 +318,7 @@ function AuditContent(props: { audit: BodyAudit }) {
         />
       </TabsContent>
       <TabsContent value='response'>
-        <ResponsePanel audit={props.audit} />
+        <ResponsePanel audit={props.audit} requestPath={props.requestPath} />
       </TabsContent>
     </Tabs>
   )
@@ -379,6 +327,7 @@ function AuditContent(props: { audit: BodyAudit }) {
 export function BodyAuditSection(props: {
   requestId: string
   enabled: boolean
+  requestPath?: string
 }) {
   const { t } = useTranslation()
   const query = useQuery({
@@ -410,7 +359,9 @@ export function BodyAuditSection(props: {
           <Skeleton className='h-48 w-full' />
         </div>
       )}
-      {!query.isLoading && query.data && <AuditContent audit={query.data} />}
+      {!query.isLoading && query.data && (
+        <AuditContent audit={query.data} requestPath={props.requestPath} />
+      )}
       {!query.isLoading && !query.data && (
         <div className='bg-muted/30 text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-xs'>
           {t('No body audit was stored for this request')}

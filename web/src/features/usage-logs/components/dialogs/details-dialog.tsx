@@ -750,6 +750,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
         <BodyAuditSection
           requestId={props.log.request_id}
           enabled={props.open && showBodyAudit}
+          requestPath={other?.request_path}
         />
 
         {/* Request conversion (admin only, not for refund) */}

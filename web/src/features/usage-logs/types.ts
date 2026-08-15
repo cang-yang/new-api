@@ -351,6 +351,13 @@ export interface BodyAudit {
   response_status: number
   response_content_type: string
   response_complete: boolean
+  client_response_body: string
+  client_response_body_encoding: 'utf-8' | 'base64'
+  client_response_body_size: number
+  client_response_body_truncated: boolean
+  client_response_status: number
+  client_response_content_type: string
+  client_response_complete: boolean
 }
 
 export interface GetLogStatsParams {
