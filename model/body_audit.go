@@ -9,22 +9,28 @@ import (
 // BodyAudit stores request and response payloads separately from usage logs so
 // normal log list queries stay small and fast. RequestId links the row to Log.
 type BodyAudit struct {
-	Id                    int64  `json:"id" gorm:"primaryKey;autoIncrement"`
-	RequestId             string `json:"request_id" gorm:"size:64;uniqueIndex;not null"`
-	CreatedAt             int64  `json:"created_at" gorm:"bigint;index"`
-	UpdatedAt             int64  `json:"updated_at" gorm:"bigint"`
-	UserId                int    `json:"user_id" gorm:"index"`
-	ChannelId             int    `json:"channel_id" gorm:"index"`
-	ModelName             string `json:"model_name" gorm:"size:256"`
-	RequestBody           []byte `json:"-"`
-	RequestBodySize       int64  `json:"request_body_size"`
-	RequestBodyTruncated  bool   `json:"request_body_truncated"`
-	ResponseBody          []byte `json:"-"`
-	ResponseBodySize      int64  `json:"response_body_size"`
-	ResponseBodyTruncated bool   `json:"response_body_truncated"`
-	ResponseStatus        int    `json:"response_status"`
-	ResponseContentType   string `json:"response_content_type" gorm:"size:256"`
-	ResponseComplete      bool   `json:"response_complete"`
+	Id                          int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	RequestId                   string `json:"request_id" gorm:"size:64;uniqueIndex;not null"`
+	CreatedAt                   int64  `json:"created_at" gorm:"bigint;index"`
+	UpdatedAt                   int64  `json:"updated_at" gorm:"bigint"`
+	UserId                      int    `json:"user_id" gorm:"index"`
+	ChannelId                   int    `json:"channel_id" gorm:"index"`
+	ModelName                   string `json:"model_name" gorm:"size:256"`
+	RequestBody                 []byte `json:"-"`
+	RequestBodySize             int64  `json:"request_body_size"`
+	RequestBodyTruncated        bool   `json:"request_body_truncated"`
+	ResponseBody                []byte `json:"-"`
+	ResponseBodySize            int64  `json:"response_body_size"`
+	ResponseBodyTruncated       bool   `json:"response_body_truncated"`
+	ResponseStatus              int    `json:"response_status"`
+	ResponseContentType         string `json:"response_content_type" gorm:"size:256"`
+	ResponseComplete            bool   `json:"response_complete"`
+	ClientResponseBody          []byte `json:"-"`
+	ClientResponseBodySize      int64  `json:"client_response_body_size"`
+	ClientResponseBodyTruncated bool   `json:"client_response_body_truncated"`
+	ClientResponseStatus        int    `json:"client_response_status"`
+	ClientResponseContentType   string `json:"client_response_content_type" gorm:"size:256"`
+	ClientResponseComplete      bool   `json:"client_response_complete"`
 }
 
 func UpsertBodyAudit(audit *BodyAudit) error {
@@ -49,6 +55,12 @@ func UpsertBodyAudit(audit *BodyAudit) error {
 			"response_status",
 			"response_content_type",
 			"response_complete",
+			"client_response_body",
+			"client_response_body_size",
+			"client_response_body_truncated",
+			"client_response_status",
+			"client_response_content_type",
+			"client_response_complete",
 		}),
 	}).Create(audit).Error
 }

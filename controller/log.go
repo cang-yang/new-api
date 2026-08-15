@@ -15,22 +15,29 @@ import (
 )
 
 type bodyAuditDetail struct {
-	RequestId             string `json:"request_id"`
-	CreatedAt             int64  `json:"created_at"`
-	UpdatedAt             int64  `json:"updated_at"`
-	ModelName             string `json:"model_name"`
-	ChannelId             int    `json:"channel_id"`
-	RequestBody           string `json:"request_body"`
-	RequestBodyEncoding   string `json:"request_body_encoding"`
-	RequestBodySize       int64  `json:"request_body_size"`
-	RequestBodyTruncated  bool   `json:"request_body_truncated"`
-	ResponseBody          string `json:"response_body"`
-	ResponseBodyEncoding  string `json:"response_body_encoding"`
-	ResponseBodySize      int64  `json:"response_body_size"`
-	ResponseBodyTruncated bool   `json:"response_body_truncated"`
-	ResponseStatus        int    `json:"response_status"`
-	ResponseContentType   string `json:"response_content_type"`
-	ResponseComplete      bool   `json:"response_complete"`
+	RequestId                   string `json:"request_id"`
+	CreatedAt                   int64  `json:"created_at"`
+	UpdatedAt                   int64  `json:"updated_at"`
+	ModelName                   string `json:"model_name"`
+	ChannelId                   int    `json:"channel_id"`
+	RequestBody                 string `json:"request_body"`
+	RequestBodyEncoding         string `json:"request_body_encoding"`
+	RequestBodySize             int64  `json:"request_body_size"`
+	RequestBodyTruncated        bool   `json:"request_body_truncated"`
+	ResponseBody                string `json:"response_body"`
+	ResponseBodyEncoding        string `json:"response_body_encoding"`
+	ResponseBodySize            int64  `json:"response_body_size"`
+	ResponseBodyTruncated       bool   `json:"response_body_truncated"`
+	ResponseStatus              int    `json:"response_status"`
+	ResponseContentType         string `json:"response_content_type"`
+	ResponseComplete            bool   `json:"response_complete"`
+	ClientResponseBody          string `json:"client_response_body"`
+	ClientResponseBodyEncoding  string `json:"client_response_body_encoding"`
+	ClientResponseBodySize      int64  `json:"client_response_body_size"`
+	ClientResponseBodyTruncated bool   `json:"client_response_body_truncated"`
+	ClientResponseStatus        int    `json:"client_response_status"`
+	ClientResponseContentType   string `json:"client_response_content_type"`
+	ClientResponseComplete      bool   `json:"client_response_complete"`
 }
 
 func bodyAuditPayload(data []byte) (string, string) {
@@ -55,23 +62,31 @@ func GetBodyAudit(c *gin.Context) {
 	}
 	requestBody, requestEncoding := bodyAuditPayload(audit.RequestBody)
 	responseBody, responseEncoding := bodyAuditPayload(audit.ResponseBody)
+	clientResponseBody, clientResponseEncoding := bodyAuditPayload(audit.ClientResponseBody)
 	common.ApiSuccess(c, bodyAuditDetail{
-		RequestId:             audit.RequestId,
-		CreatedAt:             audit.CreatedAt,
-		UpdatedAt:             audit.UpdatedAt,
-		ModelName:             audit.ModelName,
-		ChannelId:             audit.ChannelId,
-		RequestBody:           requestBody,
-		RequestBodyEncoding:   requestEncoding,
-		RequestBodySize:       audit.RequestBodySize,
-		RequestBodyTruncated:  audit.RequestBodyTruncated,
-		ResponseBody:          responseBody,
-		ResponseBodyEncoding:  responseEncoding,
-		ResponseBodySize:      audit.ResponseBodySize,
-		ResponseBodyTruncated: audit.ResponseBodyTruncated,
-		ResponseStatus:        audit.ResponseStatus,
-		ResponseContentType:   audit.ResponseContentType,
-		ResponseComplete:      audit.ResponseComplete,
+		RequestId:                   audit.RequestId,
+		CreatedAt:                   audit.CreatedAt,
+		UpdatedAt:                   audit.UpdatedAt,
+		ModelName:                   audit.ModelName,
+		ChannelId:                   audit.ChannelId,
+		RequestBody:                 requestBody,
+		RequestBodyEncoding:         requestEncoding,
+		RequestBodySize:             audit.RequestBodySize,
+		RequestBodyTruncated:        audit.RequestBodyTruncated,
+		ResponseBody:                responseBody,
+		ResponseBodyEncoding:        responseEncoding,
+		ResponseBodySize:            audit.ResponseBodySize,
+		ResponseBodyTruncated:       audit.ResponseBodyTruncated,
+		ResponseStatus:              audit.ResponseStatus,
+		ResponseContentType:         audit.ResponseContentType,
+		ResponseComplete:            audit.ResponseComplete,
+		ClientResponseBody:          clientResponseBody,
+		ClientResponseBodyEncoding:  clientResponseEncoding,
+		ClientResponseBodySize:      audit.ClientResponseBodySize,
+		ClientResponseBodyTruncated: audit.ClientResponseBodyTruncated,
+		ClientResponseStatus:        audit.ClientResponseStatus,
+		ClientResponseContentType:   audit.ClientResponseContentType,
+		ClientResponseComplete:      audit.ClientResponseComplete,
 	})
 }
 

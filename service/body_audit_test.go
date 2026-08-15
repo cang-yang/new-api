@@ -145,6 +145,131 @@ func TestBodyAuditCapturesNonStreamingJSONResponse(t *testing.T) {
 	assert.True(t, audit.ResponseComplete)
 }
 
+func TestBodyAuditCapturesConvertedClientResponseSeparately(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}))
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Set(common.RequestIdKey, "req-client-response-audit")
+	context.Set("id", 12)
+	context.Set("channel_id", 34)
+	BeginBodyAuditClientResponse(context)
+
+	request, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", strings.NewReader(`{"model":"mapped-model"}`))
+	require.NoError(t, err)
+	capture := BeginBodyAudit(context, request, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+	})
+	require.NotNil(t, capture)
+	_, err = io.ReadAll(request.Body)
+	require.NoError(t, err)
+
+	upstreamJSON := `{"data":{"choices":[{"message":{"content":"provider text"}}]},"success":true}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamJSON)),
+	}
+	WrapBodyAuditResponse(capture, response)
+	_, err = io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+
+	clientJSON := `{"choices":[{"message":{"role":"assistant","content":"provider text"}}]}`
+	context.Header("Content-Type", "application/json; charset=utf-8")
+	context.Status(http.StatusOK)
+	_, err = context.Writer.Write([]byte(clientJSON))
+	require.NoError(t, err)
+	FinalizeBodyAuditClientResponse(context)
+
+	audit, err := model.GetBodyAuditByRequestId("req-client-response-audit")
+	require.NoError(t, err)
+	assert.Equal(t, upstreamJSON, string(audit.ResponseBody))
+	assert.Equal(t, clientJSON, string(audit.ClientResponseBody))
+	assert.Equal(t, int64(len(clientJSON)), audit.ClientResponseBodySize)
+	assert.Equal(t, http.StatusOK, audit.ClientResponseStatus)
+	assert.Equal(t, "application/json; charset=utf-8", audit.ClientResponseContentType)
+	assert.True(t, audit.ClientResponseComplete)
+}
+
+func TestBodyAuditCapturesStreamingClientWritesWithoutBlockingFlush(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}))
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Set(common.RequestIdKey, "req-client-stream-audit")
+	context.Set("id", 12)
+	context.Set("channel_id", 34)
+	BeginBodyAuditClientResponse(context)
+
+	request, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	require.NoError(t, err)
+	capture := BeginBodyAudit(context, request, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+	})
+	require.NotNil(t, capture)
+	_, err = io.ReadAll(request.Body)
+	require.NoError(t, err)
+
+	upstreamSSE := "data: {\"provider\":\"chunk\"}\n\ndata: [DONE]\n\n"
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}
+	WrapBodyAuditResponse(capture, response)
+	_, err = io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+
+	clientChunks := []string{
+		"data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n",
+		"data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
+		"data: [DONE]\n\n",
+	}
+	context.Header("Content-Type", "text/event-stream")
+	for _, chunk := range clientChunks {
+		_, err = context.Writer.WriteString(chunk)
+		require.NoError(t, err)
+		context.Writer.Flush()
+	}
+	FinalizeBodyAuditClientResponse(context)
+
+	audit, err := model.GetBodyAuditByRequestId("req-client-stream-audit")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Join(clientChunks, ""), string(audit.ClientResponseBody))
+	assert.True(t, recorder.Flushed)
+	assert.True(t, audit.ClientResponseComplete)
+}
+
 func TestBodyAuditMarksTerminatedSSECompleteWhenConsumerClosesBeforeEOF(t *testing.T) {
 	previousDB := model.DB
 	previousEnabled := constant.BodyAuditEnabled
