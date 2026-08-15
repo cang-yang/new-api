@@ -1,8 +1,10 @@
 package service
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -145,8 +147,36 @@ func (r *auditResponseReadCloser) Read(p []byte) (int, error) {
 
 func (r *auditResponseReadCloser) Close() error {
 	err := r.closer.Close()
-	r.capture.save(false)
+	responseComplete := false
+	if err == nil {
+		responseBody, _, responseTruncated := r.capture.response.snapshot()
+		responseComplete = bodyAuditResponseLooksComplete(r.capture.mediaType, responseBody, responseTruncated)
+	}
+	r.capture.save(responseComplete)
 	return err
+}
+
+// Some streaming adaptors stop reading as soon as they consume the protocol's
+// terminal event and then close the upstream body without performing the extra
+// read that would return io.EOF. Recognize those terminal payloads so a fully
+// captured response is not incorrectly reported as incomplete.
+func bodyAuditResponseLooksComplete(mediaType string, body []byte, truncated bool) bool {
+	if truncated || len(body) == 0 {
+		return false
+	}
+
+	mediaType = strings.ToLower(mediaType)
+	if strings.Contains(mediaType, "text/event-stream") {
+		for _, line := range strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "data: [DONE]" || line == "event: message_stop" || line == "event: response.completed" {
+				return true
+			}
+		}
+		return false
+	}
+
+	return strings.Contains(mediaType, "json") && json.Valid(body)
 }
 
 func (capture *bodyAuditCapture) save(responseComplete bool) {

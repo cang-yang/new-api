@@ -19,6 +19,21 @@ import (
 	"gorm.io/gorm"
 )
 
+type singleChunkReadCloser struct {
+	data []byte
+	read bool
+}
+
+func (r *singleChunkReadCloser) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, nil
+	}
+	r.read = true
+	return copy(p, r.data), nil
+}
+
+func (r *singleChunkReadCloser) Close() error { return nil }
+
 func TestBodyAuditCapturesTransportRequestAndRawResponse(t *testing.T) {
 	previousDB := model.DB
 	previousEnabled := constant.BodyAuditEnabled
@@ -127,5 +142,55 @@ func TestBodyAuditCapturesNonStreamingJSONResponse(t *testing.T) {
 	assert.Equal(t, int64(len(responseJSON)), audit.ResponseBodySize)
 	assert.Equal(t, http.StatusOK, audit.ResponseStatus)
 	assert.Equal(t, "application/json; charset=utf-8", audit.ResponseContentType)
+	assert.True(t, audit.ResponseComplete)
+}
+
+func TestBodyAuditMarksTerminatedSSECompleteWhenConsumerClosesBeforeEOF(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}))
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(common.RequestIdKey, "req-stream-close-audit")
+	context.Set("id", 12)
+	context.Set("channel_id", 34)
+
+	request, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	require.NoError(t, err)
+	capture := BeginBodyAudit(context, request, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+	})
+	require.NotNil(t, capture)
+	_, err = io.ReadAll(request.Body)
+	require.NoError(t, err)
+
+	responseSSE := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       &singleChunkReadCloser{data: []byte(responseSSE)},
+	}
+	WrapBodyAuditResponse(capture, response)
+	buffer := make([]byte, len(responseSSE)+16)
+	n, err := response.Body.Read(buffer)
+	require.NoError(t, err)
+	assert.Equal(t, responseSSE, string(buffer[:n]))
+	require.NoError(t, response.Body.Close())
+
+	audit, err := model.GetBodyAuditByRequestId("req-stream-close-audit")
+	require.NoError(t, err)
+	assert.Equal(t, responseSSE, string(audit.ResponseBody))
 	assert.True(t, audit.ResponseComplete)
 }
