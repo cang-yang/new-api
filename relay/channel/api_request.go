@@ -529,14 +529,18 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	bodyAudit := service.BeginBodyAudit(c, req, info)
 	resp, err := relayClient.Do(req)
 	if err != nil {
+		service.SaveBodyAuditRequestFailure(bodyAudit)
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
+		service.SaveBodyAuditRequestFailure(bodyAudit)
 		return nil, errors.New("resp is nil")
 	}
+	service.WrapBodyAuditResponse(bodyAudit, resp)
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
 		logger.LogDebug(c, fmt.Sprintf(

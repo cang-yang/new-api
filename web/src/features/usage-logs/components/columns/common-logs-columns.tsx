@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { GitBranch, Sparkles, KeyRound } from 'lucide-react'
+import { Eye, GitBranch, Sparkles, KeyRound } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -724,7 +724,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
     },
 
     {
-      accessorKey: 'content',
+      id: 'audit_details',
       header: t('Details'),
       cell: function DetailsCell({ row }) {
         const [dialogOpen, setDialogOpen] = useState(false)
@@ -740,7 +740,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         } else if (primary?.danger) {
           primaryTextClass = 'text-red-600 dark:text-red-400'
         }
-        let detailPreview = <span className='text-muted-foreground/40'>—</span>
+        let detailPreview = <span>{t('View')}</span>
         if (primary) {
           detailPreview = (
             <span
@@ -769,10 +769,11 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           <>
             <button
               type='button'
-              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
+              className='group border-border/60 bg-muted/30 hover:bg-muted flex h-7 max-w-[200px] items-center gap-1.5 rounded-md border px-2.5 text-left text-xs transition-colors'
               onClick={() => setDialogOpen(true)}
               title={t('Click to view full details')}
             >
+              <Eye className='size-3.5 shrink-0' aria-hidden='true' />
               {detailPreview}
             </button>
             <DetailsDialog
@@ -786,6 +787,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       },
       size: 180,
       maxSize: 200,
+      enableHiding: false,
     }
   )
 

@@ -82,6 +82,7 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
+import { BodyAuditSection } from './body-audit-section'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -496,6 +497,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
     !!other?.expr_b64
   const hasAudioTokens = other?.ws || other?.audio
   const showTiming = isTimingLogType(props.log.type)
+  const showBodyAudit =
+    props.isAdmin &&
+    isDisplayableType(props.log.type) &&
+    props.log.request_id.length > 0
   const showAdminIp =
     !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
   const adminInfo = other?.admin_info
@@ -630,7 +635,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentClassName={cn(
         'min-w-0 overflow-hidden',
         'max-sm:max-h-[calc(100dvh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
-        isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
+        isTieredBilling || showBodyAudit
+          ? 'sm:max-w-4xl lg:max-w-5xl'
+          : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
@@ -739,6 +746,11 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
         </div>
+
+        <BodyAuditSection
+          requestId={props.log.request_id}
+          enabled={props.open && showBodyAudit}
+        />
 
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (

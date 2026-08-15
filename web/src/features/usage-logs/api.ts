@@ -18,8 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import { buildQueryParams } from './lib/utils'
+import { buildQueryParams } from './lib/query-params'
 import type {
+  BodyAudit,
   GetLogsParams,
   GetLogsResponse,
   GetLogStatsParams,
@@ -83,6 +84,21 @@ export const getLogStats = (params: GetLogStatsParams = {}) =>
 export const getUserLogStats = (
   params: Omit<GetLogStatsParams, 'username' | 'channel'> = {}
 ) => fetchLogStats('/api/log', params, false)
+
+export async function getBodyAudit(
+  requestId: string
+): Promise<BodyAudit | null> {
+  const res = await api.get(
+    `/api/log/body-audit/${encodeURIComponent(requestId)}`,
+    {
+      validateStatus: (status) => status === 200 || status === 404,
+    }
+  )
+  if (res.status === 404 || !res.data?.success || !res.data?.data) {
+    return null
+  }
+  return res.data.data as BodyAudit
+}
 
 export async function getUserInfo(
   userId: number

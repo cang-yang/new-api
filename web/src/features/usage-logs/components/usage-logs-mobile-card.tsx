@@ -361,7 +361,7 @@ function CommonLogsCard<TData>({
         )}
         <SummaryField
           label={t('Details')}
-          cell={cells.get('content')}
+          cell={cells.get('audit_details')}
           className='col-span-2 bg-transparent px-0 py-0'
         />
       </div>

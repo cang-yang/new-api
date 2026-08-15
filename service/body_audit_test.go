@@ -1,0 +1,131 @@
+package service
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+
+	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+func TestBodyAuditCapturesTransportRequestAndRawResponse(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}))
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(common.RequestIdKey, "req-transport-audit")
+	context.Set("id", 12)
+	context.Set("channel_id", 34)
+
+	requestJSON := `{"model":"mapped-model","messages":[{"role":"user","content":"hello"}]}`
+	request, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", strings.NewReader(requestJSON))
+	require.NoError(t, err)
+	capture := BeginBodyAudit(context, request, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+	})
+	require.NotNil(t, capture)
+	sentBody, err := io.ReadAll(request.Body)
+	require.NoError(t, err)
+	assert.Equal(t, requestJSON, string(sentBody))
+
+	responseSSE := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(responseSSE)),
+	}
+	WrapBodyAuditResponse(capture, response)
+	receivedBody, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.Equal(t, responseSSE, string(receivedBody))
+
+	audit, err := model.GetBodyAuditByRequestId("req-transport-audit")
+	require.NoError(t, err)
+	assert.Equal(t, requestJSON, string(audit.RequestBody))
+	assert.Equal(t, responseSSE, string(audit.ResponseBody))
+	assert.Equal(t, int64(len(requestJSON)), audit.RequestBodySize)
+	assert.Equal(t, int64(len(responseSSE)), audit.ResponseBodySize)
+	assert.Equal(t, http.StatusOK, audit.ResponseStatus)
+	assert.Equal(t, "text/event-stream", audit.ResponseContentType)
+	assert.True(t, audit.ResponseComplete)
+}
+
+func TestBodyAuditCapturesNonStreamingJSONResponse(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}))
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(common.RequestIdKey, "req-nonstream-audit")
+	context.Set("id", 12)
+	context.Set("channel_id", 34)
+
+	requestJSON := `{"model":"mapped-model","stream":false,"messages":[{"role":"user","content":"hello"}]}`
+	request, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", strings.NewReader(requestJSON))
+	require.NoError(t, err)
+	capture := BeginBodyAudit(context, request, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "mapped-model"},
+	})
+	require.NotNil(t, capture)
+	sentBody, err := io.ReadAll(request.Body)
+	require.NoError(t, err)
+	assert.Equal(t, requestJSON, string(sentBody))
+
+	responseJSON := `{"id":"chatcmpl-nonstream","choices":[{"message":{"role":"assistant","content":"complete response"},"finish_reason":"stop"}]}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+		Body:       io.NopCloser(strings.NewReader(responseJSON)),
+	}
+	WrapBodyAuditResponse(capture, response)
+	receivedBody, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.Equal(t, responseJSON, string(receivedBody))
+
+	audit, err := model.GetBodyAuditByRequestId("req-nonstream-audit")
+	require.NoError(t, err)
+	assert.Equal(t, requestJSON, string(audit.RequestBody))
+	assert.Equal(t, responseJSON, string(audit.ResponseBody))
+	assert.Equal(t, int64(len(responseJSON)), audit.ResponseBodySize)
+	assert.Equal(t, http.StatusOK, audit.ResponseStatus)
+	assert.Equal(t, "application/json; charset=utf-8", audit.ResponseContentType)
+	assert.True(t, audit.ResponseComplete)
+}

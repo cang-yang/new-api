@@ -334,6 +334,25 @@ export interface GetLogsResponse {
   }
 }
 
+export interface BodyAudit {
+  request_id: string
+  created_at: number
+  updated_at: number
+  model_name: string
+  channel_id: number
+  request_body: string
+  request_body_encoding: 'utf-8' | 'base64'
+  request_body_size: number
+  request_body_truncated: boolean
+  response_body: string
+  response_body_encoding: 'utf-8' | 'base64'
+  response_body_size: number
+  response_body_truncated: boolean
+  response_status: number
+  response_content_type: string
+  response_complete: boolean
+}
+
 export interface GetLogStatsParams {
   type?: number
   username?: string

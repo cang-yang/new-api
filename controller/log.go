@@ -1,14 +1,79 @@
 package controller
 
 import (
+	"encoding/base64"
+	"errors"
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
+
+type bodyAuditDetail struct {
+	RequestId             string `json:"request_id"`
+	CreatedAt             int64  `json:"created_at"`
+	UpdatedAt             int64  `json:"updated_at"`
+	ModelName             string `json:"model_name"`
+	ChannelId             int    `json:"channel_id"`
+	RequestBody           string `json:"request_body"`
+	RequestBodyEncoding   string `json:"request_body_encoding"`
+	RequestBodySize       int64  `json:"request_body_size"`
+	RequestBodyTruncated  bool   `json:"request_body_truncated"`
+	ResponseBody          string `json:"response_body"`
+	ResponseBodyEncoding  string `json:"response_body_encoding"`
+	ResponseBodySize      int64  `json:"response_body_size"`
+	ResponseBodyTruncated bool   `json:"response_body_truncated"`
+	ResponseStatus        int    `json:"response_status"`
+	ResponseContentType   string `json:"response_content_type"`
+	ResponseComplete      bool   `json:"response_complete"`
+}
+
+func bodyAuditPayload(data []byte) (string, string) {
+	if utf8.Valid(data) {
+		return string(data), "utf-8"
+	}
+	return base64.StdEncoding.EncodeToString(data), "base64"
+}
+
+func GetBodyAudit(c *gin.Context) {
+	audit, err := model.GetBodyAuditByRequestId(c.Param("request_id"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": "body audit not found",
+			})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	requestBody, requestEncoding := bodyAuditPayload(audit.RequestBody)
+	responseBody, responseEncoding := bodyAuditPayload(audit.ResponseBody)
+	common.ApiSuccess(c, bodyAuditDetail{
+		RequestId:             audit.RequestId,
+		CreatedAt:             audit.CreatedAt,
+		UpdatedAt:             audit.UpdatedAt,
+		ModelName:             audit.ModelName,
+		ChannelId:             audit.ChannelId,
+		RequestBody:           requestBody,
+		RequestBodyEncoding:   requestEncoding,
+		RequestBodySize:       audit.RequestBodySize,
+		RequestBodyTruncated:  audit.RequestBodyTruncated,
+		ResponseBody:          responseBody,
+		ResponseBodyEncoding:  responseEncoding,
+		ResponseBodySize:      audit.ResponseBodySize,
+		ResponseBodyTruncated: audit.ResponseBodyTruncated,
+		ResponseStatus:        audit.ResponseStatus,
+		ResponseContentType:   audit.ResponseContentType,
+		ResponseComplete:      audit.ResponseComplete,
+	})
+}
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)

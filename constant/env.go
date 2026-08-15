@@ -11,6 +11,12 @@ var GetMediaTokenNotStream bool
 var UpdateTask bool
 var MaxRequestBodyMB int
 var AnonymousRequestBodyLimitKB int
+
+// Body audit captures the final upstream request and raw upstream response for
+// administrator-only inspection from the usage log details dialog.
+var BodyAuditEnabled bool
+var BodyAuditMaxBodyMB int
+var BodyAuditRetentionDays int
 var AzureDefaultAPIVersion string
 var NotifyLimitCount int
 var NotificationLimitDurationMinute int
