@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,71 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestChannelTestStoresBodyAuditUnderConsumeLogRequestID(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	withSelfUseModeEnabled(t)
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.BodyAudit{}))
+
+	previousAuditEnabled := constant.BodyAuditEnabled
+	previousAuditLimit := constant.BodyAuditMaxBodyMB
+	previousConsumeLogEnabled := common.LogConsumeEnabled
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+	common.LogConsumeEnabled = true
+	t.Cleanup(func() {
+		constant.BodyAuditEnabled = previousAuditEnabled
+		constant.BodyAuditMaxBodyMB = previousAuditLimit
+		common.LogConsumeEnabled = previousConsumeLogEnabled
+	})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-channel-test",
+			"object":"chat.completion",
+			"created":1,
+			"model":"gpt-4o-mini",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	user := &model.User{
+		Username: "channel-audit-user",
+		Password: "unused-password",
+		Role:     common.RoleRootUser,
+		Status:   common.UserStatusEnabled,
+		Quota:    1000000,
+		Group:    "default",
+	}
+	require.NoError(t, db.Create(user).Error)
+
+	channel := &model.Channel{
+		Id:      321,
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "test-key",
+		Status:  common.ChannelStatusEnabled,
+		Name:    "body-audit-channel",
+		BaseURL: common.GetPointer(upstream.URL),
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+	}
+
+	result := testChannel(context.Background(), channel, user.Id, "gpt-4o-mini", string(constant.EndpointTypeOpenAI), false)
+	require.NoError(t, result.localErr)
+	require.Nil(t, result.newAPIError)
+
+	var consumeLog model.Log
+	require.NoError(t, db.Where("token_name = ?", "模型测试").First(&consumeLog).Error)
+	require.NotEmpty(t, consumeLog.RequestId)
+
+	audit, err := model.GetBodyAuditByRequestId(consumeLog.RequestId)
+	require.NoError(t, err)
+	assert.Positive(t, audit.RequestBodySize)
+	assert.Positive(t, audit.ResponseBodySize)
+}
 
 func TestValidateChannelProxy(t *testing.T) {
 	tests := []struct {

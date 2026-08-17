@@ -161,6 +161,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, requestPath, nil)
+	requestID := common.NewRequestId()
+	c.Set(common.RequestIdKey, requestID)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), common.RequestIdKey, requestID))
 
 	cache, err := model.GetUserCache(testUserID)
 	if err != nil {
