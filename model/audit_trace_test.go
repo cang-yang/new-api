@@ -19,6 +19,7 @@ func setupAuditTraceTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&AuditTrace{},
 		&AuditAttempt{},
+		&AuditWireSend{},
 		&AuditBlob{},
 		&AuditConfigSnapshot{},
 	))
@@ -103,4 +104,30 @@ func TestFinalizeAuditTraceKeepsFinalAttemptAndClientResult(t *testing.T) {
 	assert.Equal(t, blob.Id, stored.ClientResponseBlobId)
 	assert.Equal(t, "succeeded", stored.Status)
 	assert.Equal(t, "protocol_terminal", stored.ClientTerminalKind)
+}
+
+func TestDeleteAuditTracesBeforeRemovesOwnedAttemptsAndBlobs(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	trace := &AuditTrace{RequestId: "req-expired", Source: "relay", Status: "succeeded", CreatedAt: 10}
+	require.NoError(t, CreateAuditTrace(trace))
+	requestBlob, err := CreateAuditBlob(&AuditBlob{CaptureStage: "upstream_request", Body: []byte(`{}`)})
+	require.NoError(t, err)
+	responseBlob, err := CreateAuditBlob(&AuditBlob{CaptureStage: "upstream_response", Body: []byte(`{}`)})
+	require.NoError(t, err)
+	clientBlob, err := CreateAuditBlob(&AuditBlob{CaptureStage: "client_response", Body: []byte(`{}`)})
+	require.NoError(t, err)
+	attempt := &AuditAttempt{TraceId: trace.Id, AttemptNo: 0, RequestBlobId: requestBlob.Id, ResponseBlobId: responseBlob.Id}
+	require.NoError(t, CreateAuditAttempt(attempt))
+	require.NoError(t, DB.Model(&AuditTrace{}).Where("id = ?", trace.Id).Update("client_response_blob_id", clientBlob.Id).Error)
+
+	require.NoError(t, DeleteAuditTracesBefore(20))
+	_, err = GetAuditTraceByRequestId(trace.RequestId)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	attempts, err := ListAuditAttempts(trace.Id)
+	require.NoError(t, err)
+	assert.Empty(t, attempts)
+	for _, id := range []int64{requestBlob.Id, responseBlob.Id, clientBlob.Id} {
+		_, err = GetAuditBlob(id)
+		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	}
 }

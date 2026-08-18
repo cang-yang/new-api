@@ -361,3 +361,57 @@ func DeleteAuditTrace(traceId int64) error {
 		return nil
 	})
 }
+
+func DeleteAuditTracesBefore(timestamp int64) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var traces []AuditTrace
+		if err := tx.Where("created_at < ?", timestamp).Find(&traces).Error; err != nil {
+			return err
+		}
+		if len(traces) == 0 {
+			return nil
+		}
+		traceIds := make([]int64, 0, len(traces))
+		blobIds := make([]int64, 0, len(traces)*3)
+		for _, trace := range traces {
+			traceIds = append(traceIds, trace.Id)
+			if trace.OriginalRequestBlobId != 0 {
+				blobIds = append(blobIds, trace.OriginalRequestBlobId)
+			}
+			if trace.ClientResponseBlobId != 0 {
+				blobIds = append(blobIds, trace.ClientResponseBlobId)
+			}
+		}
+		var attempts []AuditAttempt
+		if err := tx.Where("trace_id IN ?", traceIds).Find(&attempts).Error; err != nil {
+			return err
+		}
+		attemptIds := make([]int64, 0, len(attempts))
+		for _, attempt := range attempts {
+			attemptIds = append(attemptIds, attempt.Id)
+			if attempt.RequestBlobId != 0 {
+				blobIds = append(blobIds, attempt.RequestBlobId)
+			}
+			if attempt.ResponseBlobId != 0 {
+				blobIds = append(blobIds, attempt.ResponseBlobId)
+			}
+		}
+		if len(attemptIds) > 0 {
+			if err := tx.Where("attempt_id IN ?", attemptIds).Delete(&AuditWireSend{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("trace_id IN ?", traceIds).Delete(&AuditAttempt{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id IN ?", traceIds).Delete(&AuditTrace{}).Error; err != nil {
+			return err
+		}
+		if len(blobIds) > 0 {
+			if err := tx.Where("id IN ?", blobIds).Delete(&AuditBlob{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

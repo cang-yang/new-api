@@ -470,4 +470,7 @@ func maybeCleanupBodyAudits() {
 	if err := model.DeleteBodyAuditsBefore(cutoff); err != nil {
 		logger.LogError(nil, "failed to clean expired body audits: "+err.Error())
 	}
+	if err := model.DeleteAuditTracesBefore(cutoff * 1000); err != nil {
+		logger.LogError(nil, "failed to clean expired audit traces: "+err.Error())
+	}
 }
