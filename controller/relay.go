@@ -397,6 +397,19 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_id"] = channelId
 		other["channel_name"] = c.GetString("channel_name")
 		other["channel_type"] = c.GetInt("channel_type")
+		signature := channelErrorSignature{
+			ErrorType:   string(err.GetErrorType()),
+			ErrorCode:   string(err.GetErrorCode()),
+			StatusCode:  err.StatusCode,
+			ChannelType: c.GetInt("channel_type"),
+			Model:       modelName,
+			IsStream:    common.GetContextKeyBool(c, constant.ContextKeyIsStream),
+		}
+		if c.Request != nil && c.Request.URL != nil {
+			signature.RequestPath = c.Request.URL.Path
+		}
+		other["error_fingerprint"] = fingerprintChannelError(signature)
+		other["error_signature"] = signature
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
