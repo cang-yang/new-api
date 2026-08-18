@@ -21,7 +21,10 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.BodyAudit{}, &model.AuditTrace{}, &model.AuditAttempt{},
+		&model.AuditWireSend{}, &model.AuditConfigSnapshot{}, &model.AuditBlob{},
+	))
 	model.DB = db
 
 	require.NoError(t, model.UpsertBodyAudit(&model.BodyAudit{
@@ -35,6 +38,19 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 		ClientResponseComplete:      true,
 		ClientResponseBodyTruncated: false,
 	}))
+	trace, err := model.GetOrCreateAuditTrace(&model.AuditTrace{
+		RequestId: "req-controller-audit", Source: "relay", Status: "succeeded",
+	})
+	require.NoError(t, err)
+	requestBlob, err := model.CreateAuditBlob(&model.AuditBlob{CaptureStage: "upstream_request", Body: []byte(`{"attempt":0}`), Complete: true})
+	require.NoError(t, err)
+	responseBlob, err := model.CreateAuditBlob(&model.AuditBlob{CaptureStage: "upstream_response", Body: []byte(`{"provider":"raw"}`), Complete: true})
+	require.NoError(t, err)
+	attempt := &model.AuditAttempt{
+		TraceId: trace.Id, AttemptNo: 0, ChannelId: 9, State: "succeeded", HTTPStatus: http.StatusOK,
+		RequestBlobId: requestBlob.Id, ResponseBlobId: responseBlob.Id, Complete: true,
+	}
+	require.NoError(t, model.CreateAuditAttempt(attempt))
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
@@ -55,4 +71,12 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 	assert.Equal(t, float64(http.StatusOK), payload.Data["client_response_status"])
 	assert.Equal(t, "application/json", payload.Data["client_response_content_type"])
 	assert.Equal(t, true, payload.Data["client_response_complete"])
+	attempts, ok := payload.Data["attempts"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, attempts, 1)
+	firstAttempt, ok := attempts[0].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(9), firstAttempt["channel_id"])
+	assert.Equal(t, `{"attempt":0}`, firstAttempt["request_body"])
+	assert.Equal(t, `{"provider":"raw"}`, firstAttempt["response_body"])
 }

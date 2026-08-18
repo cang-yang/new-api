@@ -69,16 +69,20 @@ func (r *auditRequestReadCloser) Close() error {
 }
 
 type bodyAuditCapture struct {
-	requestId string
-	userId    int
-	channelId int
-	modelName string
-	request   *limitedAuditBuffer
-	response  *limitedAuditBuffer
-	status    int
-	mediaType string
-	complete  bool
-	saveOnce  sync.Once
+	requestId          string
+	userId             int
+	channelId          int
+	modelName          string
+	request            *limitedAuditBuffer
+	response           *limitedAuditBuffer
+	status             int
+	mediaType          string
+	complete           bool
+	saveOnce           sync.Once
+	traceId            int64
+	attemptId          int64
+	attemptPersistOnce sync.Once
+	clientPersistOnce  sync.Once
 }
 
 const bodyAuditClientResponseKey = "body_audit_client_response"
@@ -193,6 +197,7 @@ func BeginBodyAudit(c *gin.Context, req *http.Request, info *relaycommon.RelayIn
 		request:   newLimitedAuditBuffer(limit),
 		response:  newLimitedAuditBuffer(limit),
 	}
+	capture.beginTrace(c, req, info)
 	if value, exists := c.Get(bodyAuditClientResponseKey); exists {
 		if session, ok := value.(*bodyAuditClientResponseCapture); ok && session != nil {
 			session.mu.Lock()
@@ -238,7 +243,8 @@ type auditResponseReadCloser struct {
 func (r *auditResponseReadCloser) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	if err == io.EOF {
-		r.capture.save(true)
+		responseBody, _, responseTruncated := r.capture.response.snapshot()
+		r.capture.save(bodyAuditResponseLooksComplete(r.capture.mediaType, responseBody, responseTruncated))
 	}
 	return n, err
 }
@@ -321,9 +327,137 @@ func (capture *bodyAuditCapture) persist(client *bodyAuditClientResponseSnapshot
 	}
 	if err := model.UpsertBodyAudit(audit); err != nil {
 		logger.LogError(nil, "failed to save body audit: "+err.Error())
+	} else {
+		maybeCleanupBodyAudits()
+	}
+	capture.persistAttemptTrace(requestBody, requestSize, requestTruncated, responseBody, responseSize, responseTruncated)
+	if client != nil {
+		capture.persistClientTrace(client)
+	}
+}
+
+func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) {
+	if model.DB == nil || info == nil {
 		return
 	}
-	maybeCleanupBodyAudits()
+	trace, err := model.GetOrCreateAuditTrace(&model.AuditTrace{
+		RequestId:    capture.requestId,
+		Source:       "relay",
+		Status:       "recording",
+		UserId:       capture.userId,
+		TokenId:      info.TokenId,
+		Method:       req.Method,
+		Route:        req.URL.Path,
+		RequestModel: info.OriginModelName,
+		RelayFormat:  string(info.RelayFormat),
+	})
+	if err != nil {
+		logger.LogError(nil, "failed to create audit trace: "+err.Error())
+		return
+	}
+	capture.traceId = trace.Id
+
+	channelType := 0
+	if info.ChannelMeta != nil {
+		channelType = info.ChannelMeta.ChannelType
+	}
+	snapshotPayload, _ := json.Marshal(map[string]any{
+		"channel_id":               capture.channelId,
+		"channel_type":             channelType,
+		"request_model":            info.OriginModelName,
+		"upstream_model":           capture.modelName,
+		"request_format":           info.RelayFormat,
+		"upstream_format":          info.GetFinalRequestRelayFormat(),
+		"routing_retry_index":      info.RetryIndex,
+		"parameter_override_audit": info.ParamOverrideAudit,
+	})
+	snapshot, snapshotErr := model.GetOrCreateAuditConfigSnapshot("attempt", snapshotPayload)
+	if snapshotErr != nil {
+		logger.LogError(nil, "failed to create audit config snapshot: "+snapshotErr.Error())
+	}
+	configSnapshotId := int64(0)
+	if snapshot != nil {
+		configSnapshotId = snapshot.Id
+	}
+	target := req.URL.Scheme + "://" + req.URL.Host + req.URL.EscapedPath()
+	attempt := &model.AuditAttempt{
+		TraceId:           trace.Id,
+		RoutingRetryIndex: info.RetryIndex,
+		ChannelId:         capture.channelId,
+		ChannelType:       channelType,
+		RequestModel:      info.OriginModelName,
+		UpstreamModel:     capture.modelName,
+		RequestFormat:     string(info.RelayFormat),
+		UpstreamFormat:    string(info.GetFinalRequestRelayFormat()),
+		ConfigSnapshotId:  configSnapshotId,
+		Method:            req.Method,
+		Target:            target,
+		State:             "recording",
+		StartedAt:         time.Now().UnixMilli(),
+	}
+	if err := model.CreateNextAuditAttempt(attempt); err != nil {
+		logger.LogError(nil, "failed to create audit attempt: "+err.Error())
+		return
+	}
+	capture.attemptId = attempt.Id
+}
+
+func (capture *bodyAuditCapture) persistAttemptTrace(requestBody []byte, requestSize int64, requestTruncated bool, responseBody []byte, responseSize int64, responseTruncated bool) {
+	if capture.traceId == 0 || capture.attemptId == 0 {
+		return
+	}
+	capture.attemptPersistOnce.Do(func() {
+		requestBlob, err := model.CreateAuditBlob(&model.AuditBlob{
+			CaptureStage: "upstream_request", MediaType: "application/json", Body: requestBody,
+			OriginalSize: requestSize, Complete: !requestTruncated, Truncated: requestTruncated,
+		})
+		if err != nil {
+			logger.LogError(nil, "failed to save audit request blob: "+err.Error())
+			return
+		}
+		responseBlob, err := model.CreateAuditBlob(&model.AuditBlob{
+			CaptureStage: "upstream_response", MediaType: capture.mediaType, Body: responseBody,
+			OriginalSize: responseSize, Complete: capture.complete, Truncated: responseTruncated,
+		})
+		if err != nil {
+			logger.LogError(nil, "failed to save audit response blob: "+err.Error())
+			return
+		}
+		state := "succeeded"
+		terminalKind := "protocol_terminal"
+		if capture.status < http.StatusOK || capture.status >= http.StatusBadRequest || !capture.complete {
+			state = "failed"
+			terminalKind = "incomplete"
+		}
+		if err := model.UpdateAuditAttemptCapture(capture.attemptId, requestBlob.Id, responseBlob.Id, state, capture.status, capture.complete, terminalKind); err != nil {
+			logger.LogError(nil, "failed to finalize audit attempt: "+err.Error())
+		}
+	})
+}
+
+func (capture *bodyAuditCapture) persistClientTrace(client *bodyAuditClientResponseSnapshot) {
+	if capture.traceId == 0 || capture.attemptId == 0 || client == nil {
+		return
+	}
+	capture.clientPersistOnce.Do(func() {
+		blob, err := model.CreateAuditBlob(&model.AuditBlob{
+			CaptureStage: "client_response", MediaType: client.contentType, Body: client.body,
+			OriginalSize: client.size, Complete: client.complete && capture.complete, Truncated: client.truncated,
+		})
+		if err != nil {
+			logger.LogError(nil, "failed to save audit client response blob: "+err.Error())
+			return
+		}
+		status := "succeeded"
+		terminalKind := "protocol_terminal"
+		if client.status < http.StatusOK || client.status >= http.StatusBadRequest || !client.complete || !capture.complete {
+			status = "failed"
+			terminalKind = "incomplete"
+		}
+		if err := model.FinalizeAuditTrace(capture.traceId, capture.attemptId, blob.Id, status, terminalKind); err != nil {
+			logger.LogError(nil, "failed to finalize audit trace: "+err.Error())
+		}
+	})
 }
 
 func maybeCleanupBodyAudits() {

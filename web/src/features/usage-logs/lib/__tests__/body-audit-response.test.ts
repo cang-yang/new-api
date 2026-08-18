@@ -16,8 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import { parseBodyAuditResponse } from '../body-audit-response'
 
@@ -131,9 +130,9 @@ describe('body audit readable response parsing', () => {
           : 'application/json',
       })
 
-      assert.equal(result.kind, 'text')
-      assert.equal(result.text, scenario.expected)
-      assert.equal(result.isStream, scenario.isStream ?? false)
+      expect(result.kind).toBe('text')
+      expect(result.text).toBe(scenario.expected)
+      expect(result.isStream).toBe(scenario.isStream ?? false)
     })
   }
 
@@ -153,8 +152,8 @@ describe('body audit readable response parsing', () => {
       requestPath: '/v1/images/generations',
     })
 
-    assert.equal(result.kind, 'image')
-    assert.deepEqual(result.media, [
+    expect(result.kind).toBe('image')
+    expect(result.media).toEqual([
       {
         kind: 'image',
         source: 'https://cdn.example/generated.png',
@@ -171,8 +170,8 @@ describe('body audit readable response parsing', () => {
       requestPath: '/v1/audio/speech',
     })
 
-    assert.equal(result.kind, 'audio')
-    assert.deepEqual(result.media, [
+    expect(result.kind).toBe('audio')
+    expect(result.media).toEqual([
       {
         kind: 'audio',
         source: 'data:audio/mpeg;base64,SUQzBAAAAAA=',
@@ -191,8 +190,8 @@ describe('body audit readable response parsing', () => {
       requestPath: '/v1/videos/generations',
     })
 
-    assert.equal(result.kind, 'video')
-    assert.deepEqual(result.media, [
+    expect(result.kind).toBe('video')
+    expect(result.media).toEqual([
       {
         kind: 'video',
         source: 'https://cdn.example/generated.mp4',
@@ -212,7 +211,7 @@ describe('body audit readable response parsing', () => {
       requestPath: '/v1/embeddings',
     })
 
-    assert.equal(result.kind, 'structured')
-    assert.deepEqual(result.structured, body)
+    expect(result.kind).toBe('structured')
+    expect(result.structured).toEqual(body)
   })
 })

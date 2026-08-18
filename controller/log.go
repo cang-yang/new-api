@@ -15,29 +15,71 @@ import (
 )
 
 type bodyAuditDetail struct {
-	RequestId                   string `json:"request_id"`
-	CreatedAt                   int64  `json:"created_at"`
-	UpdatedAt                   int64  `json:"updated_at"`
-	ModelName                   string `json:"model_name"`
-	ChannelId                   int    `json:"channel_id"`
-	RequestBody                 string `json:"request_body"`
-	RequestBodyEncoding         string `json:"request_body_encoding"`
-	RequestBodySize             int64  `json:"request_body_size"`
-	RequestBodyTruncated        bool   `json:"request_body_truncated"`
-	ResponseBody                string `json:"response_body"`
-	ResponseBodyEncoding        string `json:"response_body_encoding"`
-	ResponseBodySize            int64  `json:"response_body_size"`
-	ResponseBodyTruncated       bool   `json:"response_body_truncated"`
-	ResponseStatus              int    `json:"response_status"`
-	ResponseContentType         string `json:"response_content_type"`
-	ResponseComplete            bool   `json:"response_complete"`
-	ClientResponseBody          string `json:"client_response_body"`
-	ClientResponseBodyEncoding  string `json:"client_response_body_encoding"`
-	ClientResponseBodySize      int64  `json:"client_response_body_size"`
-	ClientResponseBodyTruncated bool   `json:"client_response_body_truncated"`
-	ClientResponseStatus        int    `json:"client_response_status"`
-	ClientResponseContentType   string `json:"client_response_content_type"`
-	ClientResponseComplete      bool   `json:"client_response_complete"`
+	RequestId                   string               `json:"request_id"`
+	CreatedAt                   int64                `json:"created_at"`
+	UpdatedAt                   int64                `json:"updated_at"`
+	ModelName                   string               `json:"model_name"`
+	ChannelId                   int                  `json:"channel_id"`
+	RequestBody                 string               `json:"request_body"`
+	RequestBodyEncoding         string               `json:"request_body_encoding"`
+	RequestBodySize             int64                `json:"request_body_size"`
+	RequestBodyTruncated        bool                 `json:"request_body_truncated"`
+	ResponseBody                string               `json:"response_body"`
+	ResponseBodyEncoding        string               `json:"response_body_encoding"`
+	ResponseBodySize            int64                `json:"response_body_size"`
+	ResponseBodyTruncated       bool                 `json:"response_body_truncated"`
+	ResponseStatus              int                  `json:"response_status"`
+	ResponseContentType         string               `json:"response_content_type"`
+	ResponseComplete            bool                 `json:"response_complete"`
+	ClientResponseBody          string               `json:"client_response_body"`
+	ClientResponseBodyEncoding  string               `json:"client_response_body_encoding"`
+	ClientResponseBodySize      int64                `json:"client_response_body_size"`
+	ClientResponseBodyTruncated bool                 `json:"client_response_body_truncated"`
+	ClientResponseStatus        int                  `json:"client_response_status"`
+	ClientResponseContentType   string               `json:"client_response_content_type"`
+	ClientResponseComplete      bool                 `json:"client_response_complete"`
+	Trace                       *auditTraceDetail    `json:"trace,omitempty"`
+	Attempts                    []auditAttemptDetail `json:"attempts,omitempty"`
+}
+
+type auditTraceDetail struct {
+	Id                 int64  `json:"id"`
+	Status             string `json:"status"`
+	Outcome            string `json:"outcome"`
+	Source             string `json:"source"`
+	FinalAttemptId     int64  `json:"final_attempt_id"`
+	ClientTerminalKind string `json:"client_terminal_kind"`
+	CompletedAt        int64  `json:"completed_at"`
+}
+
+type auditAttemptDetail struct {
+	Id                    int64  `json:"id"`
+	AttemptNo             int    `json:"attempt_no"`
+	RoutingRetryIndex     int    `json:"routing_retry_index"`
+	ChannelId             int    `json:"channel_id"`
+	ChannelType           int    `json:"channel_type"`
+	RequestModel          string `json:"request_model"`
+	UpstreamModel         string `json:"upstream_model"`
+	RequestFormat         string `json:"request_format"`
+	UpstreamFormat        string `json:"upstream_format"`
+	Target                string `json:"target"`
+	State                 string `json:"state"`
+	Outcome               string `json:"outcome"`
+	HTTPStatus            int    `json:"http_status"`
+	ErrorCode             string `json:"error_code"`
+	ErrorMessage          string `json:"error_message"`
+	RetryAction           string `json:"retry_action"`
+	TerminalKind          string `json:"terminal_kind"`
+	Complete              bool   `json:"complete"`
+	DurationMs            int64  `json:"duration_ms"`
+	RequestBody           string `json:"request_body"`
+	RequestBodyEncoding   string `json:"request_body_encoding"`
+	RequestBodySize       int64  `json:"request_body_size"`
+	RequestBodyTruncated  bool   `json:"request_body_truncated"`
+	ResponseBody          string `json:"response_body"`
+	ResponseBodyEncoding  string `json:"response_body_encoding"`
+	ResponseBodySize      int64  `json:"response_body_size"`
+	ResponseBodyTruncated bool   `json:"response_body_truncated"`
 }
 
 func bodyAuditPayload(data []byte) (string, string) {
@@ -63,7 +105,7 @@ func GetBodyAudit(c *gin.Context) {
 	requestBody, requestEncoding := bodyAuditPayload(audit.RequestBody)
 	responseBody, responseEncoding := bodyAuditPayload(audit.ResponseBody)
 	clientResponseBody, clientResponseEncoding := bodyAuditPayload(audit.ClientResponseBody)
-	common.ApiSuccess(c, bodyAuditDetail{
+	detail := bodyAuditDetail{
 		RequestId:                   audit.RequestId,
 		CreatedAt:                   audit.CreatedAt,
 		UpdatedAt:                   audit.UpdatedAt,
@@ -87,7 +129,37 @@ func GetBodyAudit(c *gin.Context) {
 		ClientResponseStatus:        audit.ClientResponseStatus,
 		ClientResponseContentType:   audit.ClientResponseContentType,
 		ClientResponseComplete:      audit.ClientResponseComplete,
-	})
+	}
+	trace, attempts, blobs, traceErr := model.GetAuditTraceBundleByRequestId(audit.RequestId)
+	if traceErr == nil {
+		detail.Trace = &auditTraceDetail{
+			Id: trace.Id, Status: trace.Status, Outcome: trace.Outcome, Source: trace.Source,
+			FinalAttemptId: trace.FinalAttemptId, ClientTerminalKind: trace.ClientTerminalKind,
+			CompletedAt: trace.CompletedAt,
+		}
+		detail.Attempts = make([]auditAttemptDetail, 0, len(attempts))
+		for _, attempt := range attempts {
+			requestBlob := blobs[attempt.RequestBlobId]
+			responseBlob := blobs[attempt.ResponseBlobId]
+			attemptRequestBody, attemptRequestEncoding := bodyAuditPayload(requestBlob.Body)
+			attemptResponseBody, attemptResponseEncoding := bodyAuditPayload(responseBlob.Body)
+			detail.Attempts = append(detail.Attempts, auditAttemptDetail{
+				Id: attempt.Id, AttemptNo: attempt.AttemptNo, RoutingRetryIndex: attempt.RoutingRetryIndex,
+				ChannelId: attempt.ChannelId, ChannelType: attempt.ChannelType,
+				RequestModel: attempt.RequestModel, UpstreamModel: attempt.UpstreamModel,
+				RequestFormat: attempt.RequestFormat, UpstreamFormat: attempt.UpstreamFormat,
+				Target: attempt.Target, State: attempt.State, Outcome: attempt.Outcome,
+				HTTPStatus: attempt.HTTPStatus, ErrorCode: attempt.ErrorCode, ErrorMessage: attempt.ErrorMessage,
+				RetryAction: attempt.RetryAction, TerminalKind: attempt.TerminalKind,
+				Complete: attempt.Complete, DurationMs: attempt.DurationMs,
+				RequestBody: attemptRequestBody, RequestBodyEncoding: attemptRequestEncoding,
+				RequestBodySize: requestBlob.OriginalSize, RequestBodyTruncated: requestBlob.Truncated,
+				ResponseBody: attemptResponseBody, ResponseBodyEncoding: attemptResponseEncoding,
+				ResponseBodySize: responseBlob.OriginalSize, ResponseBodyTruncated: responseBlob.Truncated,
+			})
+		}
+	}
+	common.ApiSuccess(c, detail)
 }
 
 func GetAllLogs(c *gin.Context) {

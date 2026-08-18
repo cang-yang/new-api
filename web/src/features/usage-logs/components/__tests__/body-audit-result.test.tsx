@@ -1,3 +1,5 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -16,11 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
-
-import { createElement } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, test } from 'vitest'
 
 import { BodyAuditResultContent } from '../body-audit-result'
 
@@ -46,10 +44,10 @@ describe('body audit result content', () => {
       })
     )
 
-    assert.match(markup, /<img/)
-    assert.match(markup, /alt="a blue mountain"/)
-    assert.match(markup, /loading="lazy"/)
-    assert.match(markup, /<figcaption[^>]*>a blue mountain<\/figcaption>/)
+    expect(markup).toMatch(/<img/)
+    expect(markup).toMatch(/alt="a blue mountain"/)
+    expect(markup).toMatch(/loading="lazy"/)
+    expect(markup).toMatch(/<figcaption[^>]*>a blue mountain<\/figcaption>/)
   })
 
   test('renders playable audio and video results', () => {
@@ -90,8 +88,8 @@ describe('body audit result content', () => {
       })
     )
 
-    assert.match(audioMarkup, /<audio[^>]*controls=""/)
-    assert.match(videoMarkup, /<video[^>]*controls=""/)
+    expect(audioMarkup).toMatch(/<audio[^>]*controls=""/)
+    expect(videoMarkup).toMatch(/<video[^>]*controls=""/)
   })
 
   test('renders unknown JSON as a readable structured result', () => {
@@ -109,8 +107,8 @@ describe('body audit result content', () => {
       })
     )
 
-    assert.match(markup, /<pre/)
-    assert.match(markup, /&quot;status&quot;: &quot;completed&quot;/)
-    assert.match(markup, /&quot;result&quot;: \[/)
+    expect(markup).toMatch(/<pre/)
+    expect(markup).toMatch(/&quot;status&quot;: &quot;completed&quot;/)
+    expect(markup).toMatch(/&quot;result&quot;: \[/)
   })
 })

@@ -361,6 +361,48 @@ export interface BodyAudit {
   client_response_status: number
   client_response_content_type: string
   client_response_complete: boolean
+  trace?: AuditTrace
+  attempts?: AuditAttempt[]
+}
+
+export interface AuditTrace {
+  id: number
+  status: string
+  outcome: string
+  source: string
+  final_attempt_id: number
+  client_terminal_kind: string
+  completed_at: number
+}
+
+export interface AuditAttempt {
+  id: number
+  attempt_no: number
+  routing_retry_index: number
+  channel_id: number
+  channel_type: number
+  request_model: string
+  upstream_model: string
+  request_format: string
+  upstream_format: string
+  target: string
+  state: string
+  outcome: string
+  http_status: number
+  error_code: string
+  error_message: string
+  retry_action: string
+  terminal_kind: string
+  complete: boolean
+  duration_ms: number
+  request_body: string
+  request_body_encoding: 'utf-8' | 'base64'
+  request_body_size: number
+  request_body_truncated: boolean
+  response_body: string
+  response_body_encoding: 'utf-8' | 'base64'
+  response_body_size: number
+  response_body_truncated: boolean
 }
 
 export interface GetLogStatsParams {

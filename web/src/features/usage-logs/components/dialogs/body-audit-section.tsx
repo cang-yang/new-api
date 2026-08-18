@@ -25,9 +25,10 @@ import {
   Copy,
   FileJson2,
   FileText,
+  GitBranch,
   Radio,
 } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
@@ -40,7 +41,7 @@ import { cn } from '@/lib/utils'
 
 import { getBodyAudit } from '../../api'
 import { parseBodyAuditResponse } from '../../lib/body-audit-response'
-import type { BodyAudit } from '../../types'
+import type { AuditAttempt, BodyAudit } from '../../types'
 import { BodyAuditResultContent } from '../body-audit-result'
 
 function formatBytes(bytes: number): string {
@@ -260,6 +261,113 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
   )
 }
 
+function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
+  const { t } = useTranslation()
+  const [selectedId, setSelectedId] = useState(props.attempts.at(-1)?.id ?? 0)
+  const selected =
+    props.attempts.find((attempt) => attempt.id === selectedId) ??
+    props.attempts.at(-1)
+
+  if (!selected) return null
+
+  return (
+    <div className='space-y-2.5 rounded-lg border p-3'>
+      <div className='flex items-center gap-2 text-xs font-semibold'>
+        <GitBranch
+          className='text-muted-foreground size-3.5'
+          aria-hidden='true'
+        />
+        <span>{t('Upstream attempt timeline')}</span>
+        <StatusBadge
+          label={t('{{count}} attempts', { count: props.attempts.length })}
+          variant={props.attempts.length > 1 ? 'orange' : 'neutral'}
+          size='sm'
+          copyable={false}
+        />
+      </div>
+      <div className='scrollbar-thin flex gap-2 overflow-x-auto pb-1'>
+        {props.attempts.map((attempt) => {
+          const succeeded = attempt.state === 'succeeded'
+          const selectedAttempt = attempt.id === selected.id
+          return (
+            <button
+              type='button'
+              key={attempt.id}
+              onClick={() => setSelectedId(attempt.id)}
+              className={cn(
+                'min-w-40 rounded-md border px-3 py-2 text-left transition-colors',
+                selectedAttempt
+                  ? 'border-primary bg-primary/5'
+                  : 'bg-muted/20 hover:bg-muted/45'
+              )}
+              aria-pressed={selectedAttempt}
+            >
+              <div className='flex items-center justify-between gap-2'>
+                <span className='text-xs font-medium'>
+                  {t('Attempt {{number}}', { number: attempt.attempt_no + 1 })}
+                </span>
+                <span
+                  className={cn(
+                    'size-2 rounded-full',
+                    succeeded ? 'bg-emerald-500' : 'bg-red-500'
+                  )}
+                  aria-hidden='true'
+                />
+              </div>
+              <div className='text-muted-foreground mt-1 font-mono text-[10px]'>
+                {t('Channel')} #{attempt.channel_id}
+                {attempt.http_status > 0
+                  ? ` · HTTP ${attempt.http_status}`
+                  : ''}
+              </div>
+            </button>
+          )
+        })}
+      </div>
+      <div className='bg-muted/20 flex flex-wrap gap-x-4 gap-y-1 rounded-md border px-3 py-2 font-mono text-[10px]'>
+        <span>
+          {selected.request_model || '—'} → {selected.upstream_model || '—'}
+        </span>
+        <span>
+          {selected.request_format || '—'} → {selected.upstream_format || '—'}
+        </span>
+        <span className='max-w-full truncate'>{selected.target || '—'}</span>
+        <span>{selected.terminal_kind || selected.state}</span>
+      </div>
+      <Tabs defaultValue='attempt-request' className='gap-2'>
+        <TabsList className='h-8'>
+          <TabsTrigger value='attempt-request' className='h-7 text-xs'>
+            {t('Attempt request')}
+          </TabsTrigger>
+          <TabsTrigger value='attempt-response' className='h-7 text-xs'>
+            {t('Attempt response')}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value='attempt-request'>
+          <PayloadPanel
+            title={t('Exact payload sent in this attempt')}
+            body={selected.request_body}
+            encoding={selected.request_body_encoding}
+            size={selected.request_body_size}
+            truncated={selected.request_body_truncated}
+            icon={<ArrowUpFromLine className='size-3.5' aria-hidden='true' />}
+          />
+        </TabsContent>
+        <TabsContent value='attempt-response'>
+          <PayloadPanel
+            title={t('Exact upstream response for this attempt')}
+            body={selected.response_body}
+            encoding={selected.response_body_encoding}
+            size={selected.response_body_size}
+            truncated={selected.response_body_truncated}
+            icon={<ArrowDownToLine className='size-3.5' aria-hidden='true' />}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
 function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
   const { t } = useTranslation()
   const responseStatusVariant =
@@ -268,59 +376,64 @@ function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
       : 'red'
 
   return (
-    <Tabs defaultValue='request' className='gap-2.5'>
-      <div className='flex flex-wrap items-center justify-between gap-2'>
-        <TabsList className='h-9'>
-          <TabsTrigger value='request' className='gap-1.5 px-3'>
-            <ArrowUpFromLine className='size-3.5' aria-hidden='true' />
-            {t('Sent Request')}
-            <span className='text-muted-foreground font-mono text-[10px]'>
-              {formatBytes(props.audit.request_body_size)}
-            </span>
-          </TabsTrigger>
-          <TabsTrigger value='response' className='gap-1.5 px-3'>
-            <ArrowDownToLine className='size-3.5' aria-hidden='true' />
-            {t('Response')}
-            <span className='text-muted-foreground font-mono text-[10px]'>
-              {formatBytes(props.audit.response_body_size)}
-            </span>
-          </TabsTrigger>
-        </TabsList>
-        <div className='flex items-center gap-1.5'>
-          {props.audit.response_status > 0 && (
+    <div className='space-y-3'>
+      {props.audit.attempts && props.audit.attempts.length > 0 && (
+        <AttemptTimeline attempts={props.audit.attempts} />
+      )}
+      <Tabs defaultValue='request' className='gap-2.5'>
+        <div className='flex flex-wrap items-center justify-between gap-2'>
+          <TabsList className='h-9'>
+            <TabsTrigger value='request' className='gap-1.5 px-3'>
+              <ArrowUpFromLine className='size-3.5' aria-hidden='true' />
+              {t('Sent Request')}
+              <span className='text-muted-foreground font-mono text-[10px]'>
+                {formatBytes(props.audit.request_body_size)}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value='response' className='gap-1.5 px-3'>
+              <ArrowDownToLine className='size-3.5' aria-hidden='true' />
+              {t('Response')}
+              <span className='text-muted-foreground font-mono text-[10px]'>
+                {formatBytes(props.audit.response_body_size)}
+              </span>
+            </TabsTrigger>
+          </TabsList>
+          <div className='flex items-center gap-1.5'>
+            {props.audit.response_status > 0 && (
+              <StatusBadge
+                label={`HTTP ${props.audit.response_status}`}
+                variant={responseStatusVariant}
+                size='sm'
+                copyable={false}
+              />
+            )}
             <StatusBadge
-              label={`HTTP ${props.audit.response_status}`}
-              variant={responseStatusVariant}
+              label={
+                props.audit.response_complete
+                  ? t('Capture complete')
+                  : t('Capture incomplete')
+              }
+              variant={props.audit.response_complete ? 'green' : 'orange'}
               size='sm'
               copyable={false}
             />
-          )}
-          <StatusBadge
-            label={
-              props.audit.response_complete
-                ? t('Capture complete')
-                : t('Capture incomplete')
-            }
-            variant={props.audit.response_complete ? 'green' : 'orange'}
-            size='sm'
-            copyable={false}
-          />
+          </div>
         </div>
-      </div>
-      <TabsContent value='request'>
-        <PayloadPanel
-          title={t('Final request sent to upstream')}
-          body={props.audit.request_body}
-          encoding={props.audit.request_body_encoding}
-          size={props.audit.request_body_size}
-          truncated={props.audit.request_body_truncated}
-          icon={<ArrowUpFromLine className='size-3.5' aria-hidden='true' />}
-        />
-      </TabsContent>
-      <TabsContent value='response'>
-        <ResponsePanel audit={props.audit} requestPath={props.requestPath} />
-      </TabsContent>
-    </Tabs>
+        <TabsContent value='request'>
+          <PayloadPanel
+            title={t('Final request sent to upstream')}
+            body={props.audit.request_body}
+            encoding={props.audit.request_body_encoding}
+            size={props.audit.request_body_size}
+            truncated={props.audit.request_body_truncated}
+            icon={<ArrowUpFromLine className='size-3.5' aria-hidden='true' />}
+          />
+        </TabsContent>
+        <TabsContent value='response'>
+          <ResponsePanel audit={props.audit} requestPath={props.requestPath} />
+        </TabsContent>
+      </Tabs>
+    </div>
   )
 }
 

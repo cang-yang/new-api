@@ -147,7 +147,11 @@ func ApplyParamOverride(jsonData []byte, paramOverride map[string]interface{}, c
 	auditRecorder := getParamOverrideAuditRecorder(conditionContext)
 
 	// 尝试断言为操作格式
-	if operations, ok := tryParseOperations(paramOverride); ok {
+	operations, operationsPresent, operationsErr := tryParseOperations(paramOverride)
+	if operationsErr != nil {
+		return nil, operationsErr
+	}
+	if operationsPresent {
 		legacyOverride := buildLegacyParamOverride(paramOverride)
 		workingJSON := jsonData
 		var err error
@@ -260,7 +264,7 @@ func shouldEnableParamOverrideAudit(paramOverride map[string]interface{}) bool {
 	if len(paramOverride) == 0 {
 		return false
 	}
-	if operations, ok := tryParseOperations(paramOverride); ok {
+	if operations, present, err := tryParseOperations(paramOverride); present && err == nil {
 		for _, operation := range operations {
 			if shouldAuditParamPath(strings.TrimSpace(operation.Path)) ||
 				shouldAuditParamPath(strings.TrimSpace(operation.From)) ||
@@ -489,11 +493,11 @@ func GetEffectiveHeaderOverride(info *RelayInfo) map[string]interface{} {
 	return sanitizeHeaderOverrideMap(getHeaderOverrideMap(info))
 }
 
-func tryParseOperations(paramOverride map[string]interface{}) ([]ParamOperation, bool) {
+func tryParseOperations(paramOverride map[string]interface{}) ([]ParamOperation, bool, error) {
 	// 检查是否包含 "operations" 字段
 	opsValue, exists := paramOverride["operations"]
 	if !exists {
-		return nil, false
+		return nil, false, nil
 	}
 
 	var opMaps []map[string]interface{}
@@ -503,18 +507,18 @@ func tryParseOperations(paramOverride map[string]interface{}) ([]ParamOperation,
 		for _, op := range ops {
 			opMap, ok := op.(map[string]interface{})
 			if !ok {
-				return nil, false
+				return nil, true, fmt.Errorf("parameter override operations must contain objects")
 			}
 			opMaps = append(opMaps, opMap)
 		}
 	case []map[string]interface{}:
 		opMaps = ops
 	default:
-		return nil, false
+		return nil, true, fmt.Errorf("parameter override operations must be an array")
 	}
 
 	operations := make([]ParamOperation, 0, len(opMaps))
-	for _, opMap := range opMaps {
+	for index, opMap := range opMaps {
 		operation := ParamOperation{}
 
 		// 断言必要字段
@@ -524,7 +528,7 @@ func tryParseOperations(paramOverride map[string]interface{}) ([]ParamOperation,
 		if mode, ok := opMap["mode"].(string); ok {
 			operation.Mode = mode
 		} else {
-			return nil, false // mode 是必需的
+			return nil, true, fmt.Errorf("parameter override operation %d requires a string mode", index)
 		}
 
 		// 可选字段
@@ -550,14 +554,14 @@ func tryParseOperations(paramOverride map[string]interface{}) ([]ParamOperation,
 		if conditions, exists := opMap["conditions"]; exists {
 			parsedConditions, err := parseConditionOperations(conditions)
 			if err != nil {
-				return nil, false
+				return nil, true, fmt.Errorf("parameter override operation %d has invalid conditions: %w", index, err)
 			}
 			operation.Conditions = append(operation.Conditions, parsedConditions...)
 		}
 
 		operations = append(operations, operation)
 	}
-	return operations, true
+	return operations, true, nil
 }
 
 func checkConditions(data []byte, contextJSON string, conditions []ConditionOperation, logic string) (bool, error) {

@@ -16,6 +16,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestApplyParamOverrideRejectsMalformedOperationsInsteadOfLeakingFieldUpstream(t *testing.T) {
+	tests := []struct {
+		name     string
+		override map[string]interface{}
+	}{
+		{name: "wrong type", override: map[string]interface{}{"operations": "set"}},
+		{name: "non object item", override: map[string]interface{}{"operations": []interface{}{"set"}}},
+		{name: "missing mode", override: map[string]interface{}{"operations": []interface{}{map[string]interface{}{"path": "temperature", "value": 1}}}},
+		{name: "mode is not string", override: map[string]interface{}{"operations": []interface{}{map[string]interface{}{"mode": 7, "path": "temperature"}}}},
+		{name: "invalid conditions", override: map[string]interface{}{"operations": []interface{}{map[string]interface{}{"mode": "set", "path": "temperature", "value": 1, "conditions": "bad"}}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ApplyParamOverride([]byte(`{"model":"test"}`), tt.override, nil)
+			require.Error(t, err)
+			assert.Nil(t, out)
+		})
+	}
+}
+
 func TestApplyParamOverrideTrimPrefix(t *testing.T) {
 	// trim_prefix example:
 	// {"operations":[{"path":"model","mode":"trim_prefix","value":"openai/"}]}
