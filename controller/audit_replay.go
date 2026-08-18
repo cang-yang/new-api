@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
@@ -204,6 +205,34 @@ func isSafeReplayPathPrefix(prefix string) bool {
 		}
 	}
 	return true
+}
+
+func exactReplayAPIType(channelType int) (int, bool) {
+	apiType, supported := common.ChannelType2APIType(channelType)
+	if supported {
+		return apiType, true
+	}
+	// Custom channels follow the OpenAI-compatible adaptor in the normal relay
+	// path. Preserve that behavior while keeping unknown/non-LLM channel types
+	// unavailable for exact replay.
+	if channelType == constant.ChannelTypeCustom {
+		return constant.APITypeOpenAI, true
+	}
+	return apiType, false
+}
+
+func hasUsableExactReplayAuthentication(header http.Header) bool {
+	for _, name := range []string{"Authorization", "api-key", "x-api-key", "x-goog-api-key"} {
+		value := strings.TrimSpace(header.Get(name))
+		if value == "" {
+			continue
+		}
+		if strings.EqualFold(value, "Bearer") || strings.EqualFold(value, "Basic") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func redactReplayPreviewValue(value any) any {
@@ -637,7 +666,7 @@ func ExecuteAuditReplay(c *gin.Context) {
 		common.ApiErrorMsg(c, message)
 		return
 	}
-	apiType, supported := common.ChannelType2APIType(resources.channel.Type)
+	apiType, supported := exactReplayAPIType(resources.channel.Type)
 	if !supported {
 		message := "current channel type does not support exact replay authentication"
 		failExecution(0, "authentication_error", message)
@@ -685,6 +714,12 @@ func ExecuteAuditReplay(c *gin.Context) {
 	// newly generated adaptor headers, current channel overrides, and safe media headers.
 	upstreamRequest.Header.Del("Cookie")
 	upstreamRequest.Header.Del("Proxy-Authorization")
+	if resources.channel.Type == constant.ChannelTypeCustom && !hasUsableExactReplayAuthentication(upstreamRequest.Header) {
+		message := "current channel credentials are unavailable"
+		failExecution(0, "authentication_error", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
 
 	startedAt := time.Now()
 	response, err := service.GetHttpClient().Do(upstreamRequest)

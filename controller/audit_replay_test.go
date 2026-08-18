@@ -271,7 +271,7 @@ func TestExactUpstreamReplayUsesCurrentChannelCredentialAndIsIdempotent(t *testi
 
 	baseURL := upstream.URL
 	channel := &model.Channel{
-		Type: constant.ChannelTypeOpenAI, Name: "replay-current-channel",
+		Type: constant.ChannelTypeCustom, Name: "replay-current-channel",
 		Key: "CURRENT-CHANNEL-KEY", BaseURL: &baseURL, Models: "demo", Group: "default",
 	}
 	require.NoError(t, model.DB.Create(channel).Error)
@@ -328,6 +328,52 @@ func TestExactUpstreamReplayUsesCurrentChannelCredentialAndIsIdempotent(t *testi
 	require.NoError(t, model.DB.First(&snapshot, replayTrace.PolicySnapshotId).Error)
 	assert.NotContains(t, string(snapshot.CanonicalJson), "CURRENT-CHANNEL-KEY")
 	assert.NotContains(t, string(snapshot.CanonicalJson), "HISTORICAL-KEY")
+}
+
+func TestExactUpstreamReplayRejectsMissingCurrentCustomChannelCredentialWithoutSending(t *testing.T) {
+	setupAuditReplayControllerTest(t)
+	callCount := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	baseURL := upstream.URL
+	channel := &model.Channel{Type: constant.ChannelTypeCustom, Name: "missing-current-key", Key: "", BaseURL: &baseURL}
+	require.NoError(t, model.DB.Create(channel).Error)
+	trace := &model.AuditTrace{RequestId: "req-exact-missing-current-key", Source: "relay", Status: "succeeded"}
+	require.NoError(t, model.CreateAuditTrace(trace))
+	requestBlob, err := model.CreateAuditBlob(&model.AuditBlob{
+		CaptureStage: "upstream_request", MediaType: "application/json", Body: []byte(`{"model":"demo"}`), Complete: true,
+	})
+	require.NoError(t, err)
+	attempt := &model.AuditAttempt{
+		TraceId: trace.Id, AttemptNo: 0, ChannelId: channel.Id, ChannelType: channel.Type,
+		RequestModel: "demo", UpstreamModel: "demo", Method: http.MethodPost,
+		Target: "https://qianfan.baidubce.com/v2/tokenplan/personal/chat/completions", RequestBlobId: requestBlob.Id,
+	}
+	require.NoError(t, model.CreateAuditAttempt(attempt))
+
+	preview := callAuditReplayHandler(t, PreviewAuditReplay, trace.RequestId,
+		`{"mode":"exact_upstream","attempt_id":`+strconv.FormatInt(attempt.Id, 10)+`}`)
+	confirmation, ok := preview["confirmation_token"].(string)
+	require.True(t, ok)
+	payload, err := common.Marshal(map[string]any{"confirmation_token": confirmation})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(payload)))
+	context.Params = gin.Params{{Key: "request_id", Value: trace.RequestId}}
+	ExecuteAuditReplay(context)
+
+	var envelope struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &envelope))
+	assert.False(t, envelope.Success)
+	assert.Equal(t, "current channel credentials are unavailable", envelope.Message)
+	assert.Zero(t, callCount)
 }
 
 func TestExactUpstreamReplayRejectsNonAIPathBeforeIssuingConfirmation(t *testing.T) {
