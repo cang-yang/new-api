@@ -3,9 +3,10 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -120,6 +121,30 @@ type AuditBlob struct {
 	CreatedAt      int64  `json:"created_at" gorm:"bigint;index"`
 }
 
+var (
+	ErrAuditReplayGrantExpired = errors.New("audit replay confirmation expired")
+)
+
+// AuditReplayGrant is the server-side half of a short-lived replay
+// confirmation. Only a SHA-256 digest of the bearer confirmation is stored.
+// The row is also the idempotency record: once claimed, repeated execution
+// reads the stored result and never sends another upstream request.
+type AuditReplayGrant struct {
+	Id             int64  `json:"id" gorm:"primaryKey;autoIncrement"`
+	TokenDigest    string `json:"-" gorm:"size:64;uniqueIndex;not null"`
+	TraceId        int64  `json:"trace_id" gorm:"not null;index"`
+	AttemptId      int64  `json:"attempt_id" gorm:"index"`
+	Mode           string `json:"mode" gorm:"size:32;not null"`
+	State          string `json:"state" gorm:"size:32;not null;index"`
+	CreatedAt      int64  `json:"created_at" gorm:"bigint;index"`
+	ExpiresAt      int64  `json:"expires_at" gorm:"bigint;index"`
+	ConsumedAt     int64  `json:"consumed_at" gorm:"bigint"`
+	ReplayTraceId  int64  `json:"replay_trace_id" gorm:"index"`
+	ResponseStatus int    `json:"response_status"`
+	ResponseBlobId int64  `json:"response_blob_id" gorm:"index"`
+	ErrorMessage   string `json:"error_message" gorm:"type:text"`
+}
+
 func nowMillis() int64 { return time.Now().UnixMilli() }
 
 func CreateAuditTrace(trace *AuditTrace) error {
@@ -156,6 +181,14 @@ func GetOrCreateAuditTrace(trace *AuditTrace) (*AuditTrace, error) {
 func GetAuditTraceByRequestId(requestId string) (*AuditTrace, error) {
 	var trace AuditTrace
 	if err := DB.Where("request_id = ?", requestId).First(&trace).Error; err != nil {
+		return nil, err
+	}
+	return &trace, nil
+}
+
+func GetAuditTraceById(id int64) (*AuditTrace, error) {
+	var trace AuditTrace
+	if err := DB.First(&trace, id).Error; err != nil {
 		return nil, err
 	}
 	return &trace, nil
@@ -210,10 +243,31 @@ func UpdateAuditAttemptCapture(attemptId, requestBlobId, responseBlobId int64, s
 	return nil
 }
 
+func UpdateAuditAttemptOutcome(attemptId int64, durationMs int64, outcome string) error {
+	result := DB.Model(&AuditAttempt{}).Where("id = ?", attemptId).Updates(map[string]any{
+		"updated_at": nowMillis(), "duration_ms": durationMs, "outcome": outcome,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func ListAuditAttempts(traceId int64) ([]AuditAttempt, error) {
 	var attempts []AuditAttempt
 	err := DB.Where("trace_id = ?", traceId).Order("attempt_no ASC").Find(&attempts).Error
 	return attempts, err
+}
+
+func GetAuditAttemptById(id int64) (*AuditAttempt, error) {
+	var attempt AuditAttempt
+	if err := DB.First(&attempt, id).Error; err != nil {
+		return nil, err
+	}
+	return &attempt, nil
 }
 
 func GetAuditTraceBundleByRequestId(requestId string) (*AuditTrace, []AuditAttempt, map[int64]AuditBlob, error) {
@@ -277,10 +331,62 @@ func CreateAuditBlob(blob *AuditBlob) (*AuditBlob, error) {
 
 func canonicalJSON(payload []byte) ([]byte, error) {
 	var value any
-	if err := json.Unmarshal(payload, &value); err != nil {
+	if err := common.Unmarshal(payload, &value); err != nil {
 		return nil, err
 	}
-	return json.Marshal(value)
+	return common.Marshal(value)
+}
+
+func CreateAuditReplayGrant(grant *AuditReplayGrant) error {
+	if grant.CreatedAt == 0 {
+		grant.CreatedAt = nowMillis()
+	}
+	return DB.Create(grant).Error
+}
+
+// ClaimAuditReplayGrant performs an atomic prepared -> executing transition.
+// A false didClaim with a nil error means the same confirmation was already
+// consumed and the caller must return its persisted state/result verbatim.
+func ClaimAuditReplayGrant(tokenDigest string, traceId, now int64) (*AuditReplayGrant, bool, error) {
+	var grant AuditReplayGrant
+	if err := DB.Where("token_digest = ? AND trace_id = ?", tokenDigest, traceId).First(&grant).Error; err != nil {
+		return nil, false, err
+	}
+	if grant.State != "prepared" {
+		return &grant, false, nil
+	}
+	if grant.ExpiresAt < now {
+		return nil, false, ErrAuditReplayGrantExpired
+	}
+	result := DB.Model(&AuditReplayGrant{}).
+		Where("id = ? AND trace_id = ? AND state = ? AND expires_at >= ?", grant.Id, traceId, "prepared", now).
+		Updates(map[string]any{"state": "executing", "consumed_at": now})
+	if result.Error != nil {
+		return nil, false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		if err := DB.First(&grant, grant.Id).Error; err != nil {
+			return nil, false, err
+		}
+		return &grant, false, nil
+	}
+	grant.State = "executing"
+	grant.ConsumedAt = now
+	return &grant, true, nil
+}
+
+func CompleteAuditReplayGrant(id, replayTraceId int64, responseStatus int, responseBlobId int64, state, errorMessage string) error {
+	result := DB.Model(&AuditReplayGrant{}).Where("id = ? AND state = ?", id, "executing").Updates(map[string]any{
+		"state": state, "replay_trace_id": replayTraceId, "response_status": responseStatus,
+		"response_blob_id": responseBlobId, "error_message": errorMessage,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func GetOrCreateAuditConfigSnapshot(kind string, payload []byte) (*AuditConfigSnapshot, error) {
@@ -329,6 +435,19 @@ func FinalizeAuditTrace(traceId, finalAttemptId, clientResponseBlobId int64, sta
 	return nil
 }
 
+func UpdateAuditTraceResult(traceId int64, clientStatus int, outcome string) error {
+	result := DB.Model(&AuditTrace{}).Where("id = ?", traceId).Updates(map[string]any{
+		"updated_at": nowMillis(), "client_status": clientStatus, "outcome": outcome,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func GetAuditBlob(id int64) (*AuditBlob, error) {
 	var blob AuditBlob
 	if err := DB.First(&blob, id).Error; err != nil {
@@ -339,6 +458,9 @@ func GetAuditBlob(id int64) (*AuditBlob, error) {
 
 func DeleteAuditTrace(traceId int64) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("trace_id = ? OR replay_trace_id = ?", traceId, traceId).Delete(&AuditReplayGrant{}).Error; err != nil {
+			return err
+		}
 		var attempts []AuditAttempt
 		if err := tx.Where("trace_id = ?", traceId).Find(&attempts).Error; err != nil {
 			return err
@@ -400,6 +522,9 @@ func DeleteAuditTracesBefore(timestamp int64) error {
 			if err := tx.Where("attempt_id IN ?", attemptIds).Delete(&AuditWireSend{}).Error; err != nil {
 				return err
 			}
+		}
+		if err := tx.Where("trace_id IN ? OR replay_trace_id IN ?", traceIds, traceIds).Delete(&AuditReplayGrant{}).Error; err != nil {
+			return err
 		}
 		if err := tx.Where("trace_id IN ?", traceIds).Delete(&AuditAttempt{}).Error; err != nil {
 			return err

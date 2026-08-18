@@ -1,0 +1,592 @@
+package controller
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"path"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+const (
+	auditReplayModeClientLevel   = "client_level"
+	auditReplayModeExactUpstream = "exact_upstream"
+	auditReplayConfirmationTTL   = 5 * time.Minute
+	auditReplayResponseLimit     = int64(32 * 1024 * 1024)
+)
+
+type auditReplayPreviewRequest struct {
+	Mode      string `json:"mode"`
+	AttemptId int64  `json:"attempt_id"`
+}
+
+type auditReplayExecuteRequest struct {
+	ConfirmationToken string `json:"confirmation_token"`
+}
+
+type auditReplayResources struct {
+	attempt *model.AuditAttempt
+	body    *model.AuditBlob
+	channel *model.Channel
+	target  *url.URL
+}
+
+func confirmationDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func newAuditReplayConfirmation() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func isCredentialQueryKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "authorization", "api_key", "apikey", "key", "access_token", "token", "signature", "sig":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCredentialBodyField(key string) bool {
+	normalized := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	case "authorization", "apikey", "accesstoken", "token", "bearertoken",
+		"idtoken", "refreshtoken", "password", "secret", "clientsecret", "signingsecret":
+		return true
+	default:
+		return false
+	}
+}
+
+func scrubCredentialQuery(query url.Values) url.Values {
+	cleaned := make(url.Values, len(query))
+	for key, values := range query {
+		if isCredentialQueryKey(key) {
+			continue
+		}
+		cleaned[key] = append([]string(nil), values...)
+	}
+	return cleaned
+}
+
+func sanitizedReplayTarget(rawTarget string) string {
+	parsed, err := url.Parse(rawTarget)
+	if err != nil {
+		return "[invalid target]"
+	}
+	parsed.User = nil
+	parsed.RawQuery = scrubCredentialQuery(parsed.Query()).Encode()
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func buildExactReplayTarget(channelBaseURL, historicalTarget string) (*url.URL, error) {
+	base, err := url.Parse(channelBaseURL)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil {
+		return nil, errors.New("current channel base URL is not a safe HTTP target")
+	}
+	historical, err := url.Parse(historicalTarget)
+	if err != nil || historical.Path == "" {
+		return nil, errors.New("historical upstream target is invalid")
+	}
+
+	target := *base
+	basePath := strings.TrimSuffix(base.EscapedPath(), "/")
+	historicalPath := historical.EscapedPath()
+	if basePath == "" || basePath == "/" || strings.HasPrefix(historicalPath, basePath+"/") || historicalPath == basePath {
+		target.RawPath = historical.RawPath
+		target.Path = historical.Path
+	} else {
+		joined := path.Join(base.Path, historical.Path)
+		if !strings.HasPrefix(joined, "/") {
+			joined = "/" + joined
+		}
+		target.Path = joined
+		target.RawPath = ""
+	}
+	target.RawQuery = scrubCredentialQuery(historical.Query()).Encode()
+	target.Fragment = ""
+	target.User = nil
+	return &target, nil
+}
+
+func isReplayableAIPath(method, requestPath string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	cleaned := strings.TrimSuffix(requestPath, "/")
+	switch cleaned {
+	case "/v1/chat/completions", "/chat/completions", "/v1/completions",
+		"/v1/responses", "/v1/responses/compact", "/v1/messages",
+		"/v1/embeddings", "/v1/rerank", "/rerank", "/v1/images/generations":
+		return true
+	}
+	if strings.HasPrefix(cleaned, "/v1beta/models/") || strings.HasPrefix(cleaned, "/v1/models/") {
+		separator := strings.LastIndex(cleaned, ":")
+		if separator < 0 {
+			return false
+		}
+		switch cleaned[separator+1:] {
+		case "generateContent", "streamGenerateContent", "embedContent", "batchEmbedContents", "predict":
+			return true
+		}
+	}
+	return false
+}
+
+func redactReplayPreviewValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		copyValue := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if isCredentialBodyField(key) {
+				copyValue[key] = "[REDACTED]"
+				continue
+			}
+			copyValue[key] = redactReplayPreviewValue(item)
+		}
+		return copyValue
+	case []any:
+		copyValue := make([]any, len(typed))
+		for index, item := range typed {
+			copyValue[index] = redactReplayPreviewValue(item)
+		}
+		return copyValue
+	default:
+		return value
+	}
+}
+
+func containsHistoricalCredential(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if isCredentialBodyField(key) {
+				return true
+			}
+			if containsHistoricalCredential(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if containsHistoricalCredential(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func replayBodyIsCredentialFreeJSON(body []byte) (bool, bool) {
+	var value any
+	if err := common.Unmarshal(body, &value); err != nil {
+		return false, false
+	}
+	return !containsHistoricalCredential(value), true
+}
+
+func auditReplayBodyPreview(blob *model.AuditBlob) any {
+	var value any
+	if common.Unmarshal(blob.Body, &value) == nil {
+		return redactReplayPreviewValue(value)
+	}
+	body, encoding := bodyAuditPayload(blob.Body)
+	return gin.H{"value": body, "encoding": encoding}
+}
+
+func readAuditReplayResponse(reader io.Reader, limit int64) ([]byte, int64, bool, error) {
+	observed, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	observedSize := int64(len(observed))
+	truncated := observedSize > limit
+	if truncated {
+		observed = observed[:limit]
+	}
+	return observed, observedSize, truncated, err
+}
+
+func loadExactReplayResources(trace *model.AuditTrace, attemptId int64) (*auditReplayResources, string, error) {
+	if attemptId == 0 {
+		attemptId = trace.FinalAttemptId
+	}
+	if attemptId == 0 {
+		return nil, "attempt_not_selected", nil
+	}
+	attempt, err := model.GetAuditAttemptById(attemptId)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "attempt_not_found", nil
+		}
+		return nil, "", err
+	}
+	if attempt.TraceId != trace.Id {
+		return nil, "attempt_not_in_trace", nil
+	}
+	if attempt.RequestBlobId == 0 {
+		return nil, "upstream_request_not_captured", nil
+	}
+	body, err := model.GetAuditBlob(attempt.RequestBlobId)
+	if err != nil {
+		return nil, "", err
+	}
+	if body.Truncated || !body.Complete {
+		return nil, "upstream_request_capture_incomplete", nil
+	}
+	credentialFree, validJSON := replayBodyIsCredentialFreeJSON(body.Body)
+	if !validJSON {
+		return nil, "upstream_request_body_is_not_json", nil
+	}
+	if !credentialFree {
+		return nil, "historical_credentials_in_request_body", nil
+	}
+	if !isReplayableAIPath(attempt.Method, func() string {
+		parsed, parseErr := url.Parse(attempt.Target)
+		if parseErr != nil {
+			return ""
+		}
+		return parsed.Path
+	}()) {
+		return nil, "non_ai_or_side_effecting_path", nil
+	}
+	channel, err := model.GetChannelById(attempt.ChannelId, true)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "current_channel_not_found", nil
+		}
+		return nil, "", err
+	}
+	target, err := buildExactReplayTarget(channel.GetBaseURL(), attempt.Target)
+	if err != nil {
+		return nil, "unsafe_or_invalid_target", nil
+	}
+	return &auditReplayResources{attempt: attempt, body: body, channel: channel, target: target}, "", nil
+}
+
+func PreviewAuditReplay(c *gin.Context) {
+	var request auditReplayPreviewRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorMsg(c, "invalid replay preview request")
+		return
+	}
+	trace, err := model.GetAuditTraceByRequestId(c.Param("request_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if request.Mode == auditReplayModeClientLevel {
+		reason := "client_level_replay_not_supported"
+		if trace.OriginalRequestBlobId == 0 {
+			reason = "original_client_request_not_captured"
+		}
+		common.ApiSuccess(c, gin.H{
+			"mode": request.Mode, "available": false, "unavailable_reason": reason,
+			"risks": []string{"re-enters_current_routing_and_billing"},
+		})
+		return
+	}
+	if request.Mode != auditReplayModeExactUpstream {
+		common.ApiErrorMsg(c, "unsupported replay mode")
+		return
+	}
+
+	resources, unavailableReason, err := loadExactReplayResources(trace, request.AttemptId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if unavailableReason != "" {
+		common.ApiSuccess(c, gin.H{
+			"mode": request.Mode, "available": false, "unavailable_reason": unavailableReason,
+		})
+		return
+	}
+	confirmation, err := newAuditReplayConfirmation()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	expiresAt := time.Now().Add(auditReplayConfirmationTTL).UnixMilli()
+	if err := model.CreateAuditReplayGrant(&model.AuditReplayGrant{
+		TokenDigest: confirmationDigest(confirmation), TraceId: trace.Id,
+		AttemptId: resources.attempt.Id, Mode: request.Mode, State: "prepared", ExpiresAt: expiresAt,
+	}); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"mode": request.Mode, "available": true, "attempt_id": resources.attempt.Id,
+		"method":            resources.attempt.Method,
+		"historical_target": sanitizedReplayTarget(resources.attempt.Target),
+		"target":            resources.target.String(),
+		"body":              auditReplayBodyPreview(resources.body), "body_digest": resources.body.Digest,
+		"differences": []gin.H{
+			{"path": "target", "before": sanitizedReplayTarget(resources.attempt.Target), "after": resources.target.String(), "change": "rewritten_to_current_channel_base_url"},
+			{"path": "request.credentials", "change": "generated_from_current_channel; historical_authorization_is_never_reused"},
+			{"path": "request.body", "change": "unchanged"},
+		},
+		"risks":              []string{"sends_real_upstream_request", "may_incur_provider_cost", "bypasses_gateway_conversion_and_billing"},
+		"confirmation_token": confirmation, "expires_at": expiresAt,
+	})
+}
+
+func auditReplayResult(grant *model.AuditReplayGrant, idempotent bool) gin.H {
+	result := gin.H{
+		"state": grant.State, "replay_trace_id": grant.ReplayTraceId,
+		"response_status": grant.ResponseStatus, "idempotent_replay": idempotent,
+	}
+	if grant.ResponseBlobId != 0 {
+		if blob, err := model.GetAuditBlob(grant.ResponseBlobId); err == nil {
+			body, encoding := bodyAuditPayload(blob.Body)
+			result["response_body"] = body
+			result["response_body_encoding"] = encoding
+			result["response_truncated"] = blob.Truncated
+		}
+	}
+	if grant.ReplayTraceId != 0 {
+		if trace, err := model.GetAuditTraceById(grant.ReplayTraceId); err == nil {
+			result["replay_request_id"] = trace.RequestId
+		}
+	}
+	if grant.ErrorMessage != "" {
+		result["error"] = grant.ErrorMessage
+	}
+	return result
+}
+
+func ExecuteAuditReplay(c *gin.Context) {
+	var request auditReplayExecuteRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || strings.TrimSpace(request.ConfirmationToken) == "" {
+		common.ApiErrorMsg(c, "confirmation_token is required")
+		return
+	}
+	trace, err := model.GetAuditTraceByRequestId(c.Param("request_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	grant, claimed, err := model.ClaimAuditReplayGrant(confirmationDigest(request.ConfirmationToken), trace.Id, time.Now().UnixMilli())
+	if err != nil {
+		if errors.Is(err, model.ErrAuditReplayGrantExpired) {
+			common.ApiErrorMsg(c, "replay confirmation expired; request a new preview")
+			return
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorMsg(c, "confirmation does not match this trace")
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	if !claimed {
+		common.ApiSuccess(c, auditReplayResult(grant, true))
+		return
+	}
+	if grant.Mode != auditReplayModeExactUpstream {
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", "unsupported replay mode")
+		common.ApiErrorMsg(c, "unsupported replay mode")
+		return
+	}
+	resources, unavailableReason, err := loadExactReplayResources(trace, grant.AttemptId)
+	if err != nil || unavailableReason != "" {
+		message := unavailableReason
+		if err != nil {
+			message = err.Error()
+		}
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+
+	replayTrace := &model.AuditTrace{
+		RequestId: common.NewRequestId(), Source: "replay_exact_upstream", Status: "recording",
+		UserId: c.GetInt("id"), Method: resources.attempt.Method, Route: resources.target.Path,
+		RequestModel: resources.attempt.RequestModel, RelayFormat: resources.attempt.RequestFormat,
+		ReplayOfTraceId: trace.Id,
+	}
+	headerOverrideKeys := make([]string, 0, len(resources.channel.GetHeaderOverride()))
+	for key := range resources.channel.GetHeaderOverride() {
+		headerOverrideKeys = append(headerOverrideKeys, key)
+	}
+	sort.Strings(headerOverrideKeys)
+	targetOrigin := resources.target.Scheme + "://" + resources.target.Host
+	snapshotPayload, _ := common.Marshal(map[string]any{
+		"channel_id": resources.channel.Id, "channel_type": resources.channel.Type,
+		"channel_target_origin": targetOrigin, "header_override_names": headerOverrideKeys,
+		"credentials":       "current_at_execute_not_persisted",
+		"source_attempt_id": resources.attempt.Id, "request_body_digest": resources.body.Digest,
+	})
+	snapshot, snapshotErr := model.GetOrCreateAuditConfigSnapshot("exact_upstream_replay", snapshotPayload)
+	if snapshotErr == nil {
+		replayTrace.PolicySnapshotId = snapshot.Id
+	}
+	if err := model.CreateAuditTrace(replayTrace); err != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+	replayAttempt := &model.AuditAttempt{
+		TraceId: replayTrace.Id, AttemptNo: 0, RoutingRetryIndex: 0,
+		ChannelId: resources.channel.Id, ChannelType: resources.channel.Type,
+		RequestModel: resources.attempt.RequestModel, UpstreamModel: resources.attempt.UpstreamModel,
+		RequestFormat: resources.attempt.RequestFormat, UpstreamFormat: resources.attempt.UpstreamFormat,
+		RequestBlobId: resources.body.Id, Method: resources.attempt.Method,
+		Target: resources.target.String(), State: "recording", StartedAt: time.Now().UnixMilli(),
+	}
+	if snapshot != nil {
+		replayAttempt.ConfigSnapshotId = snapshot.Id
+	}
+	if err := model.CreateAuditAttempt(replayAttempt); err != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+
+	timeoutContext, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancel()
+	upstreamRequest, err := http.NewRequestWithContext(timeoutContext, resources.attempt.Method, resources.target.String(), bytes.NewReader(resources.body.Body))
+	if err != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+	contentType := resources.body.MediaType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	upstreamRequest.Header.Set("Content-Type", contentType)
+	upstreamRequest.Header.Set("Accept", "application/json, text/event-stream")
+
+	replayContext := c.Copy()
+	replayContext.Request = upstreamRequest
+	if apiError := middleware.SetupContextForSelectedChannel(replayContext, resources.channel, resources.attempt.UpstreamModel); apiError != nil {
+		message := "failed to load current channel credentials"
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	apiType, supported := common.ChannelType2APIType(resources.channel.Type)
+	if !supported {
+		message := "current channel type does not support exact replay authentication"
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	info := &relaycommon.RelayInfo{
+		RequestId: replayTrace.RequestId, IsChannelTest: true,
+		RelayMode:       relayconstant.Path2RelayMode(resources.target.Path),
+		OriginModelName: resources.attempt.RequestModel,
+		RequestURLPath:  resources.target.RequestURI(),
+		RelayFormat:     types.RelayFormat(resources.attempt.UpstreamFormat),
+	}
+	info.InitChannelMeta(replayContext)
+	info.ApiType = apiType
+	adaptor := relay.GetAdaptor(apiType)
+	if adaptor == nil {
+		message := "current channel adaptor is unavailable"
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	adaptor.Init(info)
+	headers := upstreamRequest.Header
+	if err := adaptor.SetupRequestHeader(replayContext, &headers, info); err != nil {
+		message := "failed to prepare current channel authentication"
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	overrides, err := relaychannel.ResolveHeaderOverride(info, replayContext)
+	if err != nil {
+		message := "failed to prepare current channel header overrides"
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	for key, value := range overrides {
+		upstreamRequest.Header.Set(key, value)
+		if strings.EqualFold(key, "Host") {
+			upstreamRequest.Host = value
+		}
+	}
+	// Historical headers are never loaded. These are the only values present:
+	// newly generated adaptor headers, current channel overrides, and safe media headers.
+	upstreamRequest.Header.Del("Cookie")
+	upstreamRequest.Header.Del("Proxy-Authorization")
+
+	startedAt := time.Now()
+	response, err := service.GetHttpClient().Do(upstreamRequest)
+	if err != nil {
+		_ = model.UpdateAuditAttemptCapture(replayAttempt.Id, resources.body.Id, 0, "failed", 0, false, "transport_error")
+		_ = model.FinalizeAuditTrace(replayTrace.Id, replayAttempt.Id, 0, "failed", "transport_error")
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+	defer response.Body.Close()
+	responseBytes, readSize, truncated, readErr := readAuditReplayResponse(response.Body, auditReplayResponseLimit)
+	complete := readErr == nil && !truncated
+	responseBlob, blobErr := model.CreateAuditBlob(&model.AuditBlob{
+		CaptureStage: "upstream_response", MediaType: response.Header.Get("Content-Type"), Body: responseBytes,
+		OriginalSize: readSize, Complete: complete, Truncated: truncated,
+	})
+	if blobErr != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, response.StatusCode, 0, "failed", blobErr.Error())
+		common.ApiError(c, blobErr)
+		return
+	}
+	state := "completed"
+	traceStatus := "succeeded"
+	terminalKind := "response_complete"
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusBadRequest || !complete {
+		state = "failed"
+		traceStatus = "failed"
+		terminalKind = "incomplete_or_error"
+	}
+	_ = model.UpdateAuditAttemptCapture(replayAttempt.Id, resources.body.Id, responseBlob.Id, traceStatus, response.StatusCode, complete, terminalKind)
+	_ = model.UpdateAuditAttemptOutcome(replayAttempt.Id, time.Since(startedAt).Milliseconds(), traceStatus)
+	_ = model.FinalizeAuditTrace(replayTrace.Id, replayAttempt.Id, responseBlob.Id, traceStatus, terminalKind)
+	_ = model.UpdateAuditTraceResult(replayTrace.Id, response.StatusCode, traceStatus)
+	if err := model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, response.StatusCode, responseBlob.Id, state, func() string {
+		if readErr != nil {
+			return fmt.Sprintf("read upstream response: %v", readErr)
+		}
+		return ""
+	}()); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	grant.State = state
+	grant.ReplayTraceId = replayTrace.Id
+	grant.ResponseStatus = response.StatusCode
+	grant.ResponseBlobId = responseBlob.Id
+	common.ApiSuccess(c, auditReplayResult(grant, false))
+}

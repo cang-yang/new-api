@@ -22,9 +22,82 @@ func setupAuditTraceTestDB(t *testing.T) *gorm.DB {
 		&AuditWireSend{},
 		&AuditBlob{},
 		&AuditConfigSnapshot{},
+		&AuditReplayGrant{},
 	))
 	DB = db
 	return db
+}
+
+func TestAuditReplayGrantCanOnlyBeClaimedOnce(t *testing.T) {
+	setupAuditTraceTestDB(t)
+
+	grant := &AuditReplayGrant{
+		TokenDigest: "digest-once",
+		TraceId:     7,
+		AttemptId:   9,
+		Mode:        "exact_upstream",
+		State:       "prepared",
+		ExpiresAt:   2_000,
+	}
+	require.NoError(t, CreateAuditReplayGrant(grant))
+
+	claimed, didClaim, err := ClaimAuditReplayGrant("digest-once", 7, 1_000)
+	require.NoError(t, err)
+	assert.True(t, didClaim)
+	assert.Equal(t, "executing", claimed.State)
+
+	repeated, didClaim, err := ClaimAuditReplayGrant("digest-once", 7, 1_001)
+	require.NoError(t, err)
+	assert.False(t, didClaim)
+	assert.Equal(t, claimed.Id, repeated.Id)
+}
+
+func TestAuditReplayGrantRejectsExpiredConfirmation(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	require.NoError(t, CreateAuditReplayGrant(&AuditReplayGrant{
+		TokenDigest: "digest-expired", TraceId: 7, AttemptId: 9,
+		Mode: "exact_upstream", State: "prepared", ExpiresAt: 999,
+	}))
+
+	_, claimed, err := ClaimAuditReplayGrant("digest-expired", 7, 1_000)
+	assert.False(t, claimed)
+	require.ErrorIs(t, err, ErrAuditReplayGrantExpired)
+}
+
+func TestAuditReplayGrantCannotBeConsumedThroughAnotherTrace(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	require.NoError(t, CreateAuditReplayGrant(&AuditReplayGrant{
+		TokenDigest: "digest-bound", TraceId: 7, AttemptId: 9,
+		Mode: "exact_upstream", State: "prepared", ExpiresAt: 2_000,
+	}))
+
+	_, claimed, err := ClaimAuditReplayGrant("digest-bound", 8, 1_000)
+	assert.False(t, claimed)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	stored, claimed, err := ClaimAuditReplayGrant("digest-bound", 7, 1_000)
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	assert.Equal(t, int64(7), stored.TraceId)
+}
+
+func TestAuditReplayGrantPersistsIdempotentResult(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	grant := &AuditReplayGrant{
+		TokenDigest: "digest-result", TraceId: 7, AttemptId: 9,
+		Mode: "exact_upstream", State: "prepared", ExpiresAt: 2_000,
+	}
+	require.NoError(t, CreateAuditReplayGrant(grant))
+	_, claimed, err := ClaimAuditReplayGrant(grant.TokenDigest, 7, 1_000)
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	require.NoError(t, CompleteAuditReplayGrant(grant.Id, 23, 200, 41, "completed", ""))
+
+	stored, didClaim, err := ClaimAuditReplayGrant(grant.TokenDigest, 7, 1_001)
+	require.NoError(t, err)
+	assert.False(t, didClaim)
+	assert.Equal(t, "completed", stored.State)
+	assert.Equal(t, int64(23), stored.ReplayTraceId)
+	assert.Equal(t, int64(41), stored.ResponseBlobId)
 }
 
 func TestAuditAttemptsPreserveEveryApplicationRetry(t *testing.T) {

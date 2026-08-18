@@ -274,6 +274,8 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/", middleware.AdminAuth(), controller.GetAllLogs)
 		logRoute.GET("/stat", middleware.AdminAuth(), controller.GetLogsStat)
 		logRoute.GET("/body-audit/:request_id", middleware.AdminAuth(), controller.GetBodyAudit)
+		logRoute.POST("/body-audit/:request_id/replay/preview", middleware.AdminAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewAuditReplay)
+		logRoute.POST("/body-audit/:request_id/replay/execute", middleware.AdminAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.ExecuteAuditReplay)
 		logRoute.GET("/self/stat", middleware.UserAuth(), controller.GetLogsSelfStat)
 		logRoute.GET("/channel_affinity_usage_cache", middleware.AdminAuth(), controller.GetChannelAffinityUsageCacheStats)
 		logRoute.GET("/search", middleware.AdminAuth(), controller.SearchAllLogs)

@@ -296,6 +296,7 @@ func migrateDB() error {
 		&AuditWireSend{},
 		&AuditConfigSnapshot{},
 		&AuditBlob{},
+		&AuditReplayGrant{},
 		&CasbinRule{},
 		&AuthzRole{},
 	)
@@ -365,6 +366,7 @@ func migrateDBFast() error {
 		{&AuditWireSend{}, "AuditWireSend"},
 		{&AuditConfigSnapshot{}, "AuditConfigSnapshot"},
 		{&AuditBlob{}, "AuditBlob"},
+		{&AuditReplayGrant{}, "AuditReplayGrant"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
