@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -53,33 +54,42 @@ type auditTraceDetail struct {
 }
 
 type auditAttemptDetail struct {
-	Id                    int64  `json:"id"`
-	AttemptNo             int    `json:"attempt_no"`
-	RoutingRetryIndex     int    `json:"routing_retry_index"`
-	ChannelId             int    `json:"channel_id"`
-	ChannelType           int    `json:"channel_type"`
-	RequestModel          string `json:"request_model"`
-	UpstreamModel         string `json:"upstream_model"`
-	RequestFormat         string `json:"request_format"`
-	UpstreamFormat        string `json:"upstream_format"`
-	Target                string `json:"target"`
-	State                 string `json:"state"`
-	Outcome               string `json:"outcome"`
-	HTTPStatus            int    `json:"http_status"`
-	ErrorCode             string `json:"error_code"`
-	ErrorMessage          string `json:"error_message"`
-	RetryAction           string `json:"retry_action"`
-	TerminalKind          string `json:"terminal_kind"`
-	Complete              bool   `json:"complete"`
-	DurationMs            int64  `json:"duration_ms"`
-	RequestBody           string `json:"request_body"`
-	RequestBodyEncoding   string `json:"request_body_encoding"`
-	RequestBodySize       int64  `json:"request_body_size"`
-	RequestBodyTruncated  bool   `json:"request_body_truncated"`
-	ResponseBody          string `json:"response_body"`
-	ResponseBodyEncoding  string `json:"response_body_encoding"`
-	ResponseBodySize      int64  `json:"response_body_size"`
-	ResponseBodyTruncated bool   `json:"response_body_truncated"`
+	Id                    int64                      `json:"id"`
+	AttemptNo             int                        `json:"attempt_no"`
+	RoutingRetryIndex     int                        `json:"routing_retry_index"`
+	ChannelId             int                        `json:"channel_id"`
+	ChannelType           int                        `json:"channel_type"`
+	ChannelName           string                     `json:"channel_name"`
+	RequestModel          string                     `json:"request_model"`
+	UpstreamModel         string                     `json:"upstream_model"`
+	RequestFormat         string                     `json:"request_format"`
+	UpstreamFormat        string                     `json:"upstream_format"`
+	Target                string                     `json:"target"`
+	State                 string                     `json:"state"`
+	Outcome               string                     `json:"outcome"`
+	HTTPStatus            int                        `json:"http_status"`
+	ErrorCode             string                     `json:"error_code"`
+	ErrorMessage          string                     `json:"error_message"`
+	RetryAction           string                     `json:"retry_action"`
+	TerminalKind          string                     `json:"terminal_kind"`
+	Complete              bool                       `json:"complete"`
+	DurationMs            int64                      `json:"duration_ms"`
+	RequestBody           string                     `json:"request_body"`
+	RequestBodyEncoding   string                     `json:"request_body_encoding"`
+	RequestBodySize       int64                      `json:"request_body_size"`
+	RequestBodyTruncated  bool                       `json:"request_body_truncated"`
+	ResponseBody          string                     `json:"response_body"`
+	ResponseBodyEncoding  string                     `json:"response_body_encoding"`
+	ResponseBodySize      int64                      `json:"response_body_size"`
+	ResponseBodyTruncated bool                       `json:"response_body_truncated"`
+	ConfigSnapshot        *auditConfigSnapshotDetail `json:"config_snapshot,omitempty"`
+}
+
+type auditConfigSnapshotDetail struct {
+	Id            int64           `json:"id"`
+	Digest        string          `json:"digest"`
+	SchemaVersion int             `json:"schema_version"`
+	CanonicalJson json.RawMessage `json:"canonical_json"`
 }
 
 func bodyAuditPayload(data []byte) (string, string) {
@@ -138,14 +148,24 @@ func GetBodyAudit(c *gin.Context) {
 			CompletedAt: trace.CompletedAt,
 		}
 		detail.Attempts = make([]auditAttemptDetail, 0, len(attempts))
+		snapshotIds := make([]int64, 0, len(attempts))
+		for _, attempt := range attempts {
+			if attempt.ConfigSnapshotId != 0 {
+				snapshotIds = append(snapshotIds, attempt.ConfigSnapshotId)
+			}
+		}
+		snapshots, snapshotErr := model.GetAuditConfigSnapshots(snapshotIds)
+		if snapshotErr != nil {
+			snapshots = map[int64]model.AuditConfigSnapshot{}
+		}
 		for _, attempt := range attempts {
 			requestBlob := blobs[attempt.RequestBlobId]
 			responseBlob := blobs[attempt.ResponseBlobId]
 			attemptRequestBody, attemptRequestEncoding := bodyAuditPayload(requestBlob.Body)
 			attemptResponseBody, attemptResponseEncoding := bodyAuditPayload(responseBlob.Body)
-			detail.Attempts = append(detail.Attempts, auditAttemptDetail{
+			attemptDetail := auditAttemptDetail{
 				Id: attempt.Id, AttemptNo: attempt.AttemptNo, RoutingRetryIndex: attempt.RoutingRetryIndex,
-				ChannelId: attempt.ChannelId, ChannelType: attempt.ChannelType,
+				ChannelId: attempt.ChannelId, ChannelType: attempt.ChannelType, ChannelName: attempt.ChannelName,
 				RequestModel: attempt.RequestModel, UpstreamModel: attempt.UpstreamModel,
 				RequestFormat: attempt.RequestFormat, UpstreamFormat: attempt.UpstreamFormat,
 				Target: attempt.Target, State: attempt.State, Outcome: attempt.Outcome,
@@ -156,7 +176,14 @@ func GetBodyAudit(c *gin.Context) {
 				RequestBodySize: requestBlob.OriginalSize, RequestBodyTruncated: requestBlob.Truncated,
 				ResponseBody: attemptResponseBody, ResponseBodyEncoding: attemptResponseEncoding,
 				ResponseBodySize: responseBlob.OriginalSize, ResponseBodyTruncated: responseBlob.Truncated,
-			})
+			}
+			if snapshot, exists := snapshots[attempt.ConfigSnapshotId]; exists && json.Valid(snapshot.CanonicalJson) {
+				attemptDetail.ConfigSnapshot = &auditConfigSnapshotDetail{
+					Id: snapshot.Id, Digest: snapshot.Digest, SchemaVersion: snapshot.SchemaVersion,
+					CanonicalJson: json.RawMessage(append([]byte(nil), snapshot.CanonicalJson...)),
+				}
+			}
+			detail.Attempts = append(detail.Attempts, attemptDetail)
 		}
 	}
 	common.ApiSuccess(c, detail)

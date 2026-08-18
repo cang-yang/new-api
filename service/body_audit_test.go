@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -553,4 +554,79 @@ func TestBodyAuditMarksOversizedOriginalClientRequestUnavailableForReplay(t *tes
 	assert.Equal(t, int64(len(originalBody)), blob.OriginalSize)
 	assert.True(t, blob.Truncated)
 	assert.False(t, blob.Complete)
+}
+
+func TestAttemptConfigSnapshotIsSecretFreeImmutableAndDeduplicated(t *testing.T) {
+	previousDB := model.DB
+	t.Cleanup(func() { model.DB = previousDB })
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	migrateBodyAuditTestModels(t, db)
+	model.DB = db
+
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(string(constant.ContextKeyChannelId), 42)
+	context.Set(string(constant.ContextKeyChannelName), "private-upstream")
+	baseInfo := func(prompt string) *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			OriginModelName: "client-model", RetryIndex: 2, TokenGroup: "vip",
+			UserGroup: "default", UsingGroup: "vip", IsStream: true,
+			ParamOverrideAudit: []string{"set_header Authorization = audit-secret", "set temperature = 0.8", "set max_tokens = 4096"},
+			ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelId: 42, ChannelType: 1, ChannelBaseUrl: "https://user:pass@api.example.com/v1?key=query-secret",
+				UpstreamModelName: "mapped-model", IsModelMapped: true,
+				ApiKey: "channel-secret", Organization: "org-secret",
+				ParamOverride: map[string]interface{}{
+					"max_tokens": 4096,
+					"operations": []interface{}{
+						map[string]interface{}{"mode": "set", "path": "instructions", "value": prompt},
+						map[string]interface{}{"mode": "set_header", "path": "Authorization", "value": "Bearer override-secret"},
+						map[string]interface{}{"mode": "set", "path": "provider_access_token", "value": "operation-access-secret"},
+						map[string]interface{}{"mode": "set", "path": "x-api-key", "value": "operation-api-secret"},
+					},
+					"api_key": "nested-secret",
+					"legacy": map[string]interface{}{
+						"credentials":           map[string]interface{}{"my_client_secret": "legacy-client-secret"},
+						"provider_access_token": "legacy-access-secret",
+						"x-api-key":             "legacy-api-secret",
+					},
+				},
+				HeadersOverride: map[string]interface{}{"Authorization": "Bearer header-secret", "X-Debug": "header-value"},
+			},
+			RuntimeHeadersOverride: map[string]interface{}{"Cookie": "runtime-cookie"},
+		}
+	}
+
+	firstPayload, err := buildAttemptConfigSnapshot(context, baseInfo("prompt-a"))
+	require.NoError(t, err)
+	first, err := model.GetOrCreateAuditConfigSnapshot("attempt", firstPayload)
+	require.NoError(t, err)
+	secondPayload, err := buildAttemptConfigSnapshot(context, baseInfo("prompt-a"))
+	require.NoError(t, err)
+	second, err := model.GetOrCreateAuditConfigSnapshot("attempt", secondPayload)
+	require.NoError(t, err)
+	changedPayload, err := buildAttemptConfigSnapshot(context, baseInfo("prompt-b"))
+	require.NoError(t, err)
+	changed, err := model.GetOrCreateAuditConfigSnapshot("attempt", changedPayload)
+	require.NoError(t, err)
+
+	assert.Equal(t, first.Id, second.Id)
+	assert.Equal(t, first.Digest, second.Digest)
+	assert.Equal(t, 2, first.SchemaVersion)
+	assert.NotEqual(t, first.Digest, changed.Digest)
+	canonical := string(first.CanonicalJson)
+	for _, forbidden := range []string{
+		"channel-secret", "org-secret", "query-secret", "override-secret", "nested-secret",
+		"header-secret", "header-value", "runtime-cookie", "audit-secret", "user:pass",
+		"operation-access-secret", "operation-api-secret", "legacy-client-secret",
+		"legacy-access-secret", "legacy-api-secret",
+	} {
+		assert.NotContains(t, canonical, forbidden)
+	}
+	assert.Contains(t, canonical, `"base_origin":"https://api.example.com"`)
+	assert.Contains(t, canonical, `"header_names":["Authorization","Cookie","X-Debug"]`)
+	assert.Contains(t, canonical, `"value":"[REDACTED]"`)
+	assert.Contains(t, canonical, `"max_tokens":4096`)
+	assert.Contains(t, canonical, `"set max_tokens = 4096"`)
+	assert.True(t, json.Valid(first.CanonicalJson))
 }

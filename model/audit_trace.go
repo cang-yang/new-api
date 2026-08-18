@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -424,10 +425,17 @@ func GetOrCreateAuditConfigSnapshot(kind string, payload []byte) (*AuditConfigSn
 		return nil, err
 	}
 	sum := sha256.Sum256(canonical)
+	schemaVersion := 1
+	var envelope struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if json.Unmarshal(canonical, &envelope) == nil && envelope.SchemaVersion > 0 {
+		schemaVersion = envelope.SchemaVersion
+	}
 	snapshot := &AuditConfigSnapshot{
 		Kind:          kind,
 		Digest:        hex.EncodeToString(sum[:]),
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		CanonicalJson: canonical,
 		CreatedAt:     nowMillis(),
 	}
@@ -444,6 +452,21 @@ func GetOrCreateAuditConfigSnapshot(kind string, payload []byte) (*AuditConfigSn
 		}
 	}
 	return snapshot, nil
+}
+
+func GetAuditConfigSnapshots(ids []int64) (map[int64]AuditConfigSnapshot, error) {
+	result := make(map[int64]AuditConfigSnapshot, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var snapshots []AuditConfigSnapshot
+	if err := DB.Where("id IN ?", ids).Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+	for _, snapshot := range snapshots {
+		result[snapshot.Id] = snapshot
+	}
+	return result, nil
 }
 
 func FinalizeAuditTrace(traceId, finalAttemptId, clientResponseBlobId int64, status, terminalKind string) error {

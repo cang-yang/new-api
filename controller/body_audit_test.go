@@ -46,9 +46,12 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 	require.NoError(t, err)
 	responseBlob, err := model.CreateAuditBlob(&model.AuditBlob{CaptureStage: "upstream_response", Body: []byte(`{"provider":"raw"}`), Complete: true})
 	require.NoError(t, err)
+	snapshot, err := model.GetOrCreateAuditConfigSnapshot("attempt", []byte(`{"channel":{"id":9},"overrides":{"header_names":["Authorization"]}}`))
+	require.NoError(t, err)
 	attempt := &model.AuditAttempt{
 		TraceId: trace.Id, AttemptNo: 0, ChannelId: 9, State: "succeeded", HTTPStatus: http.StatusOK,
 		RequestBlobId: requestBlob.Id, ResponseBlobId: responseBlob.Id, Complete: true,
+		ConfigSnapshotId: snapshot.Id,
 	}
 	require.NoError(t, model.CreateAuditAttempt(attempt))
 
@@ -79,4 +82,10 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 	assert.Equal(t, float64(9), firstAttempt["channel_id"])
 	assert.Equal(t, `{"attempt":0}`, firstAttempt["request_body"])
 	assert.Equal(t, `{"provider":"raw"}`, firstAttempt["response_body"])
+	configSnapshot, ok := firstAttempt["config_snapshot"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, snapshot.Digest, configSnapshot["digest"])
+	canonical, ok := configSnapshot["canonical_json"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Contains(t, canonical, "overrides")
 }

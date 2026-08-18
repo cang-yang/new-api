@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -370,16 +372,10 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 	if info.ChannelMeta != nil {
 		channelType = info.ChannelMeta.ChannelType
 	}
-	snapshotPayload, _ := common.Marshal(map[string]any{
-		"channel_id":               capture.channelId,
-		"channel_type":             channelType,
-		"request_model":            info.OriginModelName,
-		"upstream_model":           capture.modelName,
-		"request_format":           info.RelayFormat,
-		"upstream_format":          info.GetFinalRequestRelayFormat(),
-		"routing_retry_index":      info.RetryIndex,
-		"parameter_override_audit": info.ParamOverrideAudit,
-	})
+	snapshotPayload, snapshotBuildErr := buildAttemptConfigSnapshot(c, info)
+	if snapshotBuildErr != nil {
+		logger.LogError(nil, "failed to build audit config snapshot: "+snapshotBuildErr.Error())
+	}
 	snapshot, snapshotErr := model.GetOrCreateAuditConfigSnapshot("attempt", snapshotPayload)
 	if snapshotErr != nil {
 		logger.LogError(nil, "failed to create audit config snapshot: "+snapshotErr.Error())
@@ -394,6 +390,7 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 		RoutingRetryIndex: info.RetryIndex,
 		ChannelId:         capture.channelId,
 		ChannelType:       channelType,
+		ChannelName:       common.GetContextKeyString(c, constant.ContextKeyChannelName),
 		RequestModel:      info.OriginModelName,
 		UpstreamModel:     capture.modelName,
 		RequestFormat:     string(info.RelayFormat),
@@ -409,6 +406,221 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 		return
 	}
 	capture.attemptId = attempt.Id
+}
+
+// buildAttemptConfigSnapshot produces the immutable, deliberately secret-free
+// explanation of an upstream attempt. It is kept separate from the captured
+// wire request: this object describes routing and policy decisions, while the
+// wire blob records their result.
+func buildAttemptConfigSnapshot(c *gin.Context, info *relaycommon.RelayInfo) ([]byte, error) {
+	channelId := 0
+	channelName := ""
+	if c != nil {
+		channelId = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+		channelName = common.GetContextKeyString(c, constant.ContextKeyChannelName)
+	}
+	if info == nil {
+		return common.Marshal(map[string]any{"schema_version": 2, "channel": map[string]any{"id": channelId, "name": channelName}})
+	}
+
+	channelType := 0
+	baseOrigin := ""
+	apiType := 0
+	apiVersion := ""
+	isMultiKey := false
+	multiKeyIndex := 0
+	isModelMapped := false
+	supportStreamOptions := false
+	paramOverride := map[string]interface{}(nil)
+	headerNames := make([]string, 0)
+	if info.ChannelMeta != nil {
+		channelType = info.ChannelMeta.ChannelType
+		if channelId == 0 {
+			channelId = info.ChannelMeta.ChannelId
+		}
+		baseOrigin = sanitizeBaseOrigin(info.ChannelMeta.ChannelBaseUrl)
+		apiType = info.ChannelMeta.ApiType
+		apiVersion = info.ChannelMeta.ApiVersion
+		isMultiKey = info.ChannelMeta.ChannelIsMultiKey
+		multiKeyIndex = info.ChannelMeta.ChannelMultiKeyIndex
+		isModelMapped = info.ChannelMeta.IsModelMapped
+		supportStreamOptions = info.ChannelMeta.SupportStreamOptions
+		paramOverride = info.ChannelMeta.ParamOverride
+		headerNames = append(headerNames, mapKeys(info.ChannelMeta.HeadersOverride)...)
+	}
+	headerNames = append(headerNames, mapKeys(info.RuntimeHeadersOverride)...)
+	headerNames = uniqueSortedStrings(headerNames)
+
+	sanitizedOverride, err := sanitizeParamOverrideForSnapshot(paramOverride)
+	if err != nil {
+		return nil, err
+	}
+	conversionChain := make([]string, 0, len(info.RequestConversionChain))
+	for _, format := range info.RequestConversionChain {
+		conversionChain = append(conversionChain, string(format))
+	}
+	payload := map[string]any{
+		"schema_version": 2,
+		"channel": map[string]any{
+			"id": channelId, "type": channelType, "name": channelName,
+			"base_origin": baseOrigin, "api_type": apiType, "api_version": apiVersion,
+			"is_multi_key": isMultiKey, "multi_key_index": multiKeyIndex,
+		},
+		"models": map[string]any{
+			"requested": info.OriginModelName, "upstream": info.UpstreamModelName,
+			"mapped": isModelMapped,
+		},
+		"formats": map[string]any{
+			"request": string(info.RelayFormat), "upstream": string(info.GetFinalRequestRelayFormat()),
+			"conversion_chain": conversionChain,
+		},
+		"routing": map[string]any{
+			"retry_index": info.RetryIndex, "token_group": info.TokenGroup,
+			"user_group": info.UserGroup, "using_group": info.UsingGroup,
+		},
+		"overrides": map[string]any{
+			"parameter_config": sanitizedOverride, "parameter_audit": sanitizeParamOverrideAudit(info.ParamOverrideAudit),
+			"header_names": headerNames,
+		},
+		"policies": map[string]any{
+			"stream": info.IsStream, "include_usage": info.ShouldIncludeUsage,
+			"disable_ping": info.DisablePing, "support_stream_options": supportStreamOptions,
+			"playground": info.IsPlayground, "channel_test": info.IsChannelTest,
+			"use_price": info.UsePrice, "relay_mode": info.RelayMode,
+			"reasoning_effort": info.ReasoningEffort, "force_preconsume": info.ForcePreConsume,
+			"billing_source": info.BillingSource,
+		},
+	}
+	return common.Marshal(payload)
+}
+
+func sanitizeParamOverrideAudit(lines []string) []string {
+	result := append([]string(nil), lines...)
+	for index, line := range result {
+		trimmed := strings.TrimSpace(line)
+		separator := strings.Index(line, "=")
+		target := ""
+		if separator >= 0 {
+			fields := strings.Fields(line[:separator])
+			if len(fields) > 1 {
+				target = fields[len(fields)-1]
+			}
+		}
+		if separator >= 0 && (strings.HasPrefix(trimmed, "set_header ") || isSnapshotSecretPath(target)) {
+			result[index] = strings.TrimSpace(line[:separator]) + "= [REDACTED]"
+		}
+	}
+	return result
+}
+
+func sanitizeBaseOrigin(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func mapKeys(values map[string]interface{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sanitizeParamOverrideForSnapshot(value map[string]interface{}) (any, error) {
+	if len(value) == 0 {
+		return map[string]any{}, nil
+	}
+	raw, err := common.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, err
+	}
+	return sanitizeSnapshotValue(decoded, false), nil
+}
+
+func sanitizeSnapshotValue(value any, redactValue bool) any {
+	if redactValue {
+		return "[REDACTED]"
+	}
+	switch typed := value.(type) {
+	case []any:
+		result := make([]any, len(typed))
+		for index, item := range typed {
+			result[index] = sanitizeSnapshotValue(item, false)
+		}
+		return result
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = sanitizeSnapshotValue(item, isSnapshotSecretKey(key))
+		}
+		mode, _ := result["mode"].(string)
+		path, _ := result["path"].(string)
+		// Header operations and writes to credential-shaped JSON paths keep
+		// their target name, but never their value.
+		if mode == "set_header" || isSnapshotSecretPath(path) {
+			if _, exists := result["value"]; exists {
+				result["value"] = "[REDACTED]"
+			}
+		}
+		return result
+	default:
+		return value
+	}
+}
+
+func isSnapshotSecretPath(path string) bool {
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '.' || r == '/' || r == '[' || r == ']'
+	})
+	if len(parts) == 0 {
+		return false
+	}
+	return isSnapshotSecretKey(parts[len(parts)-1])
+}
+
+func isSnapshotSecretKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(key))
+	switch normalized {
+	case "key", "auth", "bearer":
+		return true
+	}
+	return strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "authorization") ||
+		strings.Contains(normalized, "cookie") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "credential") ||
+		strings.HasSuffix(normalized, "secret") ||
+		strings.HasSuffix(normalized, "token")
 }
 
 func captureOriginalClientRequest(c *gin.Context, trace *model.AuditTrace) {
