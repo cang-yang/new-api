@@ -41,6 +41,13 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
+	if failure := geminiResponseFailure(&geminiResponse); failure != nil {
+		return &usage, types.NewOpenAIError(failure, types.ErrorCodePromptBlocked, http.StatusBadGateway)
+	}
+	if !geminiResponseMeaningful(&geminiResponse) {
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
+		return &usage, geminiEmptyResponseError()
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 

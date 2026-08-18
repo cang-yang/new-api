@@ -32,7 +32,7 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	markGeminiGoogleSearchCall(c, &geminiResponse)
-	if len(geminiResponse.Candidates) == 0 {
+	if len(geminiResponse.Candidates) == 0 || !geminiResponseMeaningful(&geminiResponse) || geminiResponseFailure(&geminiResponse) != nil {
 		usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
@@ -42,12 +42,12 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 				http.StatusBadRequest,
 			)
 		}
+		if failure := geminiResponseFailure(&geminiResponse); failure != nil {
+			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_finish_reason_failure")
+			return &usage, types.NewOpenAIError(failure, types.ErrorCodePromptBlocked, http.StatusBadGateway)
+		}
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
-		return &usage, types.NewOpenAIError(
-			errors.New("empty response from Gemini API"),
-			types.ErrorCodeEmptyResponse,
-			http.StatusInternalServerError,
-		)
+		return &usage, geminiEmptyResponseError()
 	}
 
 	chatResp := responseGeminiChat2OpenAI(c, &geminiResponse)

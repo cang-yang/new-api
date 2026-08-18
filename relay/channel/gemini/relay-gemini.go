@@ -88,6 +88,66 @@ func markGeminiGoogleSearchCall(c *gin.Context, response *dto.GeminiChatResponse
 	}
 }
 
+func geminiResponseMeaningful(response *dto.GeminiChatResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, candidate := range response.Candidates {
+		for _, part := range candidate.Content.Parts {
+			if strings.TrimSpace(part.Text) != "" || part.FunctionCall != nil || part.InlineData != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func geminiResponseTerminal(response *dto.GeminiChatResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, candidate := range response.Candidates {
+		if candidate.FinishReason == nil {
+			continue
+		}
+		reason := strings.ToUpper(strings.TrimSpace(*candidate.FinishReason))
+		if reason != "" && reason != "FINISH_REASON_UNSPECIFIED" {
+			return true
+		}
+	}
+	return false
+}
+
+func geminiResponseFailure(response *dto.GeminiChatResponse) error {
+	if response == nil {
+		return nil
+	}
+	if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != nil {
+		return fmt.Errorf("request blocked by Gemini API: %s", *response.PromptFeedback.BlockReason)
+	}
+	for _, candidate := range response.Candidates {
+		if candidate.FinishReason == nil {
+			continue
+		}
+		reason := strings.ToUpper(strings.TrimSpace(*candidate.FinishReason))
+		switch reason {
+		case "", "FINISH_REASON_UNSPECIFIED", "STOP", "MAX_TOKENS":
+			continue
+		default:
+			return fmt.Errorf("Gemini candidate terminated with failure reason %s", reason)
+		}
+	}
+	return nil
+}
+
+func geminiEmptyResponseError() *types.NewAPIError {
+	return types.NewOpenAIError(errors.New("empty response from Gemini API"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
+}
+
+func geminiStreamOutcomeError(outcome relaycommon.ResponseOutcome) *types.NewAPIError {
+	return types.NewOpenAIError(fmt.Errorf("upstream Gemini stream ended with outcome %s", outcome), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+}
+
 func buildUsageFromGeminiResponse(c *gin.Context, info *relaycommon.RelayInfo, response *dto.GeminiChatResponse) dto.Usage {
 	metadata := response.GetUsageMetadata()
 	if dto.HasGeminiUsageMetadataTokens(metadata) {
@@ -149,6 +209,8 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var imageCount int
 	var hasBillableUsageMetadata bool
 	responseText := strings.Builder{}
+	meaningful := false
+	var protocolErr *types.NewAPIError
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var geminiResponse dto.GeminiChatResponse
@@ -174,6 +236,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 				}
 			}
 		}
+		if geminiResponseMeaningful(&geminiResponse) {
+			meaningful = true
+		}
 
 		// 更新使用量统计
 		if metadata := geminiResponse.GetUsageMetadata(); dto.HasGeminiUsageMetadataTokens(metadata) {
@@ -182,8 +247,18 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			hasBillableUsageMetadata = true
 		}
 
+		if failure := geminiResponseFailure(&geminiResponse); failure != nil {
+			protocolErr = types.NewOpenAIError(failure, types.ErrorCodePromptBlocked, http.StatusBadGateway)
+			sr.Fail(failure)
+			return
+		}
+
 		if !callback(data, &geminiResponse) {
 			sr.Stop(fmt.Errorf("gemini callback stopped"))
+			return
+		}
+		if geminiResponseTerminal(&geminiResponse) {
+			sr.Complete()
 		}
 	})
 
@@ -201,6 +276,18 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		attachEstimatedGeminiBillingUsage(usage)
 	} else {
 		patchGeminiZeroCompletionUsage(c, info, usage, responseText.String(), imageCount)
+	}
+
+	if protocolErr != nil {
+		return usage, protocolErr
+	}
+	outcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
+	if outcome != relaycommon.ResponseOutcomeComplete {
+		return usage, geminiStreamOutcomeError(outcome)
+	}
+	if !meaningful {
+		info.StreamStatus.MarkProtocolEmpty()
+		return usage, geminiEmptyResponseError()
 	}
 
 	return usage, nil
@@ -323,7 +410,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	markGeminiGoogleSearchCall(c, &geminiResponse)
-	if len(geminiResponse.Candidates) == 0 {
+	if len(geminiResponse.Candidates) == 0 || !geminiResponseMeaningful(&geminiResponse) || geminiResponseFailure(&geminiResponse) != nil {
 		usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 
 		var newAPIError *types.NewAPIError
@@ -335,28 +422,17 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 				http.StatusBadRequest,
 			)
 		} else {
-			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
-			newAPIError = types.NewOpenAIError(
-				errors.New("empty response from Gemini API"),
-				types.ErrorCodeEmptyResponse,
-				http.StatusInternalServerError,
-			)
+			if failure := geminiResponseFailure(&geminiResponse); failure != nil {
+				common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_finish_reason_failure")
+				newAPIError = types.NewOpenAIError(failure, types.ErrorCodePromptBlocked, http.StatusBadGateway)
+			} else {
+				common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_empty_candidates")
+				newAPIError = geminiEmptyResponseError()
+			}
 		}
 
 		service.ResetStatusCode(newAPIError, c.GetString("status_code_mapping"))
-
-		switch info.RelayFormat {
-		case types.RelayFormatClaude:
-			c.JSON(newAPIError.StatusCode, gin.H{
-				"type":  "error",
-				"error": newAPIError.ToClaudeError(),
-			})
-		default:
-			c.JSON(newAPIError.StatusCode, gin.H{
-				"error": newAPIError.ToOpenAIError(),
-			})
-		}
-		return &usage, nil
+		return &usage, newAPIError
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
 	fullTextResponse.Model = info.UpstreamModelName

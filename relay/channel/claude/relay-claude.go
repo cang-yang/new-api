@@ -1,6 +1,8 @@
 package claude
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -30,6 +32,49 @@ func maybeMarkClaudeRefusal(c *gin.Context, stopReason string) {
 	if strings.EqualFold(stopReason, "refusal") {
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "claude_stop_reason=refusal")
 	}
+}
+
+func claudeResponseMeaningful(response *dto.ClaudeResponse) bool {
+	if response == nil {
+		return false
+	}
+	if strings.TrimSpace(response.Completion) != "" {
+		return true
+	}
+	isMeaningfulBlock := func(block dto.ClaudeMediaMessage) bool {
+		if block.Type == "tool_use" || block.Type == "server_tool_use" {
+			return true
+		}
+		return block.Text != nil && strings.TrimSpace(*block.Text) != ""
+	}
+	for _, block := range response.Content {
+		if isMeaningfulBlock(block) {
+			return true
+		}
+	}
+	if response.ContentBlock != nil && isMeaningfulBlock(*response.ContentBlock) {
+		return true
+	}
+	if response.Delta != nil && isMeaningfulBlock(*response.Delta) {
+		return true
+	}
+	return false
+}
+
+func claudeEmptyResponseError() *types.NewAPIError {
+	return types.NewErrorWithStatusCode(
+		errors.New("upstream returned an empty Claude response"),
+		types.ErrorCodeEmptyResponse,
+		http.StatusBadGateway,
+	)
+}
+
+func claudeStreamOutcomeError(outcome relaycommon.ResponseOutcome) *types.NewAPIError {
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("upstream Claude stream ended with outcome %s", outcome),
+		types.ErrorCodeBadResponseBody,
+		http.StatusBadGateway,
+	)
 }
 
 func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCompletionsStreamResponse {
@@ -200,14 +245,54 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
+	meaningful := false
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		var event dto.ClaudeResponse
+		if parseErr := common.UnmarshalJsonStr(data, &event); parseErr != nil {
+			err = types.NewError(parseErr, types.ErrorCodeBadResponseBody)
+			sr.Stop(parseErr)
+			return
+		}
+		if claudeError := event.GetClaudeError(); event.Type == "error" || (claudeError != nil && claudeError.Type != "") {
+			if claudeError != nil && claudeError.Type != "" {
+				err = types.WithClaudeError(*claudeError, http.StatusBadGateway)
+			} else {
+				err = types.NewErrorWithStatusCode(errors.New("Claude upstream emitted an error event"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+			}
+			sr.Fail(err)
+			return
+		}
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
+			return
+		}
+		stopReason := event.StopReason
+		if event.Delta != nil && event.Delta.StopReason != nil {
+			stopReason = *event.Delta.StopReason
+		}
+		if strings.EqualFold(stopReason, "refusal") {
+			err = types.NewErrorWithStatusCode(errors.New("request refused by Claude upstream"), types.ErrorCodePromptBlocked, http.StatusBadGateway)
+			sr.Fail(err)
+			return
+		}
+		if claudeResponseMeaningful(&event) {
+			meaningful = true
+		}
+		if event.Type == "message_stop" {
+			sr.Complete()
 		}
 	})
 	if err != nil {
 		return nil, err
+	}
+	outcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
+	if outcome != relaycommon.ResponseOutcomeComplete {
+		return nil, claudeStreamOutcomeError(outcome)
+	}
+	if !meaningful {
+		info.StreamStatus.MarkProtocolEmpty()
+		return nil, claudeEmptyResponseError()
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
@@ -280,6 +365,24 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	logger.LogDebug(c, "responseBody: %s", responseBody)
+	var claudeResponse dto.ClaudeResponse
+	if parseErr := common.Unmarshal(responseBody, &claudeResponse); parseErr != nil {
+		return nil, types.NewError(parseErr, types.ErrorCodeBadResponseBody)
+	}
+	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
+		return nil, types.WithClaudeError(*claudeError, http.StatusBadGateway)
+	}
+	if strings.EqualFold(claudeResponse.StopReason, "refusal") {
+		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
+		return nil, types.NewErrorWithStatusCode(
+			errors.New("request refused by Claude upstream"),
+			types.ErrorCodePromptBlocked,
+			http.StatusBadGateway,
+		)
+	}
+	if !claudeResponseMeaningful(&claudeResponse) {
+		return nil, claudeEmptyResponseError()
+	}
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
 		return nil, handleErr

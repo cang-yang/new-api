@@ -177,6 +177,20 @@ func TestStreamStatusProtocolFailureOverridesRacingDoneMarker(t *testing.T) {
 	assert.False(t, s.IsNormalEnd())
 }
 
+func TestStreamStatusProtocolCompleteOverridesTransportEOF(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.MarkProtocolComplete()
+	s.SetEndReason(StreamEndReasonEOF, nil)
+
+	assert.Equal(t, ResponseOutcomeComplete, s.Outcome(2))
+	assert.True(t, s.IsNormalEnd())
+
+	s.MarkProtocolEmpty()
+	assert.Equal(t, ResponseOutcomeEmpty, s.Outcome(2))
+	assert.False(t, s.IsNormalEnd())
+}
+
 func TestStreamStatus_IsNormalEnd_NilSafe(t *testing.T) {
 	t.Parallel()
 	var s *StreamStatus

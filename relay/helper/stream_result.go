@@ -45,6 +45,12 @@ func (r *StreamResult) Fail(err error) {
 	r.stopped = true
 }
 
+// Complete marks a protocol-level successful terminal event without stopping
+// the scanner, allowing trailing usage-only events to be consumed.
+func (r *StreamResult) Complete() {
+	r.status.MarkProtocolComplete()
+}
+
 // Done signals that the handler has finished processing normally
 // (e.g., Dify "message_end"). The stream stops after this chunk.
 func (r *StreamResult) Done() {
