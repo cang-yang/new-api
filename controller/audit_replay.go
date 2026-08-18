@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +57,25 @@ type auditReplayResources struct {
 	target  *url.URL
 }
 
+type clientReplayResources struct {
+	body                   *model.AuditBlob
+	token                  *model.Token
+	route                  *url.URL
+	credentialQueryRemoved bool
+}
+
+var auditReplayLoopbackBaseURL = func() (string, error) {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = strconv.Itoa(*common.Port)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("server listening port is invalid")
+	}
+	return "http://" + net.JoinHostPort("127.0.0.1", port), nil
+}
+
 func confirmationDigest(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -68,8 +90,11 @@ func newAuditReplayConfirmation() (string, error) {
 }
 
 func isCredentialQueryKey(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "authorization", "api_key", "apikey", "key", "access_token", "token", "signature", "sig":
+	normalized := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	case "authorization", "auth", "apikey", "xapikey", "xgoogapikey", "key", "accesskey",
+		"accesstoken", "token", "signature", "sig", "password", "secret", "secretkey",
+		"clientsecret", "credential":
 		return true
 	default:
 		return false
@@ -291,6 +316,56 @@ func loadExactReplayResources(trace *model.AuditTrace, attemptId int64) (*auditR
 	return &auditReplayResources{attempt: attempt, body: body, channel: channel, target: target}, "", nil
 }
 
+func loadClientReplayResources(trace *model.AuditTrace) (*clientReplayResources, string, error) {
+	if trace.OriginalRequestBlobId == 0 {
+		return nil, "original_client_request_not_captured", nil
+	}
+	body, err := model.GetAuditBlob(trace.OriginalRequestBlobId)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "original_client_request_not_captured", nil
+		}
+		return nil, "", err
+	}
+	if body.Truncated || !body.Complete {
+		return nil, "original_client_request_capture_incomplete", nil
+	}
+	route, err := url.ParseRequestURI(trace.Route)
+	if err != nil || route.IsAbs() || route.Host != "" || !strings.HasPrefix(route.Path, "/") {
+		return nil, "invalid_original_client_route", nil
+	}
+	if !isReplayableAIPath(trace.Method, route.Path) {
+		return nil, "non_ai_or_side_effecting_path", nil
+	}
+	originalQueryCount := len(route.Query())
+	cleanedQuery := scrubCredentialQuery(route.Query())
+	route.RawQuery = cleanedQuery.Encode()
+	credentialQueryRemoved := len(cleanedQuery) != originalQueryCount
+	credentialFree, validJSON := replayBodyIsCredentialFreeJSON(body.Body)
+	if !validJSON {
+		return nil, "original_client_request_body_is_not_json", nil
+	}
+	if !credentialFree {
+		return nil, "historical_credentials_in_request_body", nil
+	}
+	token, err := model.GetTokenById(trace.TokenId)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || trace.TokenId == 0 {
+			return nil, "current_token_not_found", nil
+		}
+		return nil, "", err
+	}
+	if strings.TrimSpace(token.Key) == "" {
+		return nil, "current_token_not_found", nil
+	}
+	if trace.UserId != 0 && token.UserId != trace.UserId {
+		return nil, "current_token_owner_changed", nil
+	}
+	return &clientReplayResources{
+		body: body, token: token, route: route, credentialQueryRemoved: credentialQueryRemoved,
+	}, "", nil
+}
+
 func PreviewAuditReplay(c *gin.Context) {
 	var request auditReplayPreviewRequest
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
@@ -303,13 +378,51 @@ func PreviewAuditReplay(c *gin.Context) {
 		return
 	}
 	if request.Mode == auditReplayModeClientLevel {
-		reason := "client_level_replay_not_supported"
-		if trace.OriginalRequestBlobId == 0 {
-			reason = "original_client_request_not_captured"
+		resources, unavailableReason, loadErr := loadClientReplayResources(trace)
+		if loadErr != nil {
+			common.ApiError(c, loadErr)
+			return
+		}
+		if unavailableReason != "" {
+			common.ApiSuccess(c, gin.H{
+				"mode": request.Mode, "available": false, "unavailable_reason": unavailableReason,
+				"risks": []string{"re_enters_current_routing_and_billing"},
+			})
+			return
+		}
+		confirmation, confirmationErr := newAuditReplayConfirmation()
+		if confirmationErr != nil {
+			common.ApiError(c, confirmationErr)
+			return
+		}
+		expiresAt := time.Now().Add(auditReplayConfirmationTTL).UnixMilli()
+		if err := model.CreateAuditReplayGrant(&model.AuditReplayGrant{
+			TokenDigest: confirmationDigest(confirmation), TraceId: trace.Id,
+			Mode: request.Mode, State: "prepared", ExpiresAt: expiresAt,
+		}); err != nil {
+			common.ApiError(c, err)
+			return
 		}
 		common.ApiSuccess(c, gin.H{
-			"mode": request.Mode, "available": false, "unavailable_reason": reason,
-			"risks": []string{"re-enters_current_routing_and_billing"},
+			"mode": request.Mode, "available": true, "method": trace.Method,
+			"target": resources.route.String(), "body": auditReplayBodyPreview(resources.body),
+			"body_digest": resources.body.Digest,
+			"differences": []gin.H{
+				{"path": "routing", "change": "current_token_policy_and_current_channel_selection_are_reapplied"},
+				{"path": "request.credentials", "change": "generated_from_current_token; historical_headers_are_never_reused"},
+				{"path": "request.query_credentials", "change": func() string {
+					if resources.credentialQueryRemoved {
+						return "historical_credential_query_parameters_removed"
+					}
+					return "no_historical_credential_query_parameters_present"
+				}()},
+				{"path": "request.body", "change": "unchanged"},
+			},
+			"risks": []string{
+				"re_enters_current_routing_and_billing", "may_select_a_different_channel",
+				"may_incur_provider_cost", "current_token_limits_and_quota_are_enforced",
+			},
+			"confirmation_token": confirmation, "expires_at": expiresAt,
 		})
 		return
 	}
@@ -410,6 +523,10 @@ func ExecuteAuditReplay(c *gin.Context) {
 		common.ApiSuccess(c, auditReplayResult(grant, true))
 		return
 	}
+	if grant.Mode == auditReplayModeClientLevel {
+		executeClientLevelAuditReplay(c, grant, trace)
+		return
+	}
 	if grant.Mode != auditReplayModeExactUpstream {
 		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", "unsupported replay mode")
 		common.ApiErrorMsg(c, "unsupported replay mode")
@@ -465,16 +582,25 @@ func ExecuteAuditReplay(c *gin.Context) {
 		replayAttempt.ConfigSnapshotId = snapshot.Id
 	}
 	if err := model.CreateAuditAttempt(replayAttempt); err != nil {
+		_ = model.FinalizeAuditTrace(replayTrace.Id, 0, 0, "failed", "persistence_error")
+		_ = model.UpdateAuditTraceResult(replayTrace.Id, 0, "failed")
 		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", err.Error())
 		common.ApiError(c, err)
 		return
+	}
+	failExecution := func(responseStatus int, terminalKind, message string) {
+		_ = model.UpdateAuditAttemptCapture(replayAttempt.Id, resources.body.Id, 0, "failed", responseStatus, false, terminalKind)
+		_ = model.UpdateAuditAttemptOutcome(replayAttempt.Id, 0, "failed")
+		_ = model.FinalizeAuditTrace(replayTrace.Id, replayAttempt.Id, 0, "failed", terminalKind)
+		_ = model.UpdateAuditTraceResult(replayTrace.Id, responseStatus, "failed")
+		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, responseStatus, 0, "failed", message)
 	}
 
 	timeoutContext, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer cancel()
 	upstreamRequest, err := http.NewRequestWithContext(timeoutContext, resources.attempt.Method, resources.target.String(), bytes.NewReader(resources.body.Body))
 	if err != nil {
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", err.Error())
+		failExecution(0, "request_build_error", err.Error())
 		common.ApiError(c, err)
 		return
 	}
@@ -489,14 +615,14 @@ func ExecuteAuditReplay(c *gin.Context) {
 	replayContext.Request = upstreamRequest
 	if apiError := middleware.SetupContextForSelectedChannel(replayContext, resources.channel, resources.attempt.UpstreamModel); apiError != nil {
 		message := "failed to load current channel credentials"
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		failExecution(0, "authentication_error", message)
 		common.ApiErrorMsg(c, message)
 		return
 	}
 	apiType, supported := common.ChannelType2APIType(resources.channel.Type)
 	if !supported {
 		message := "current channel type does not support exact replay authentication"
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		failExecution(0, "authentication_error", message)
 		common.ApiErrorMsg(c, message)
 		return
 	}
@@ -512,7 +638,7 @@ func ExecuteAuditReplay(c *gin.Context) {
 	adaptor := relay.GetAdaptor(apiType)
 	if adaptor == nil {
 		message := "current channel adaptor is unavailable"
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		failExecution(0, "authentication_error", message)
 		common.ApiErrorMsg(c, message)
 		return
 	}
@@ -520,14 +646,14 @@ func ExecuteAuditReplay(c *gin.Context) {
 	headers := upstreamRequest.Header
 	if err := adaptor.SetupRequestHeader(replayContext, &headers, info); err != nil {
 		message := "failed to prepare current channel authentication"
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		failExecution(0, "authentication_error", message)
 		common.ApiErrorMsg(c, message)
 		return
 	}
 	overrides, err := relaychannel.ResolveHeaderOverride(info, replayContext)
 	if err != nil {
 		message := "failed to prepare current channel header overrides"
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", message)
+		failExecution(0, "authentication_error", message)
 		common.ApiErrorMsg(c, message)
 		return
 	}
@@ -545,9 +671,7 @@ func ExecuteAuditReplay(c *gin.Context) {
 	startedAt := time.Now()
 	response, err := service.GetHttpClient().Do(upstreamRequest)
 	if err != nil {
-		_ = model.UpdateAuditAttemptCapture(replayAttempt.Id, resources.body.Id, 0, "failed", 0, false, "transport_error")
-		_ = model.FinalizeAuditTrace(replayTrace.Id, replayAttempt.Id, 0, "failed", "transport_error")
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, 0, 0, "failed", err.Error())
+		failExecution(0, "transport_error", err.Error())
 		common.ApiError(c, err)
 		return
 	}
@@ -559,7 +683,7 @@ func ExecuteAuditReplay(c *gin.Context) {
 		OriginalSize: readSize, Complete: complete, Truncated: truncated,
 	})
 	if blobErr != nil {
-		_ = model.CompleteAuditReplayGrant(grant.Id, replayTrace.Id, response.StatusCode, 0, "failed", blobErr.Error())
+		failExecution(response.StatusCode, "persistence_error", blobErr.Error())
 		common.ApiError(c, blobErr)
 		return
 	}
@@ -589,4 +713,152 @@ func ExecuteAuditReplay(c *gin.Context) {
 	grant.ResponseStatus = response.StatusCode
 	grant.ResponseBlobId = responseBlob.Id
 	common.ApiSuccess(c, auditReplayResult(grant, false))
+}
+
+func executeClientLevelAuditReplay(c *gin.Context, grant *model.AuditReplayGrant, sourceTrace *model.AuditTrace) {
+	resources, unavailableReason, err := loadClientReplayResources(sourceTrace)
+	if err != nil || unavailableReason != "" {
+		message := unavailableReason
+		if err != nil {
+			message = err.Error()
+		}
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	baseURL, err := auditReplayLoopbackBaseURL()
+	if err != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Scheme != "http" || base.User != nil || base.Host == "" {
+		message := "loopback replay endpoint is invalid"
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	parsedIP := net.ParseIP(base.Hostname())
+	if parsedIP == nil || !parsedIP.IsLoopback() {
+		message := "client replay endpoint must be loopback"
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	target := base.ResolveReference(resources.route)
+	if target.Host != base.Host || target.Scheme != base.Scheme {
+		message := "client replay route escaped loopback"
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	timeoutContext, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancel()
+	request, err := http.NewRequestWithContext(timeoutContext, sourceTrace.Method, target.String(), bytes.NewReader(resources.body.Body))
+	if err != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+	contentType := resources.body.MediaType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	request.Header.Set("Content-Type", contentType)
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Authorization", "Bearer sk-"+strings.TrimPrefix(resources.token.Key, "sk-"))
+
+	loopbackClient := newAuditReplayLoopbackHTTPClient()
+	defer loopbackClient.CloseIdleConnections()
+	loopbackStartedAt := time.Now().UnixMilli()
+	response, err := loopbackClient.Do(request)
+	if err != nil {
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, 0, 0, "failed", err.Error())
+		common.ApiError(c, err)
+		return
+	}
+	defer response.Body.Close()
+	responseBytes, responseSize, truncated, readErr := readAuditReplayResponse(response.Body, auditReplayResponseLimit)
+	replayedRequestId := response.Header.Get(common.RequestIdKey)
+	if replayedRequestId == "" {
+		message := "loopback replay response did not include a request id"
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, response.StatusCode, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	replayedTrace, err := model.GetAuditTraceByRequestId(replayedRequestId)
+	if err != nil || replayedTrace.TokenId != resources.token.Id || replayedTrace.Method != sourceTrace.Method ||
+		replayedTrace.Route != resources.route.RequestURI() || replayedTrace.CreatedAt < loopbackStartedAt || replayedTrace.ReplayOfTraceId != 0 {
+		message := "loopback replay did not produce an auditable trace"
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, response.StatusCode, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	if err := model.MarkAuditTraceReplayOf(replayedRequestId, sourceTrace.Id, "replay_client_level"); err != nil {
+		message := "failed to link loopback replay trace"
+		_ = model.CompleteAuditReplayGrant(grant.Id, 0, response.StatusCode, 0, "failed", message)
+		common.ApiErrorMsg(c, message)
+		return
+	}
+	responseBlobId := replayedTrace.ClientResponseBlobId
+	if responseBlobId == 0 {
+		fallbackBlob, blobErr := model.CreateAuditBlob(&model.AuditBlob{
+			CaptureStage: "client_response", MediaType: response.Header.Get("Content-Type"), Body: responseBytes,
+			OriginalSize: responseSize, Complete: readErr == nil && !truncated, Truncated: truncated,
+		})
+		if blobErr != nil {
+			_ = model.CompleteAuditReplayGrant(grant.Id, replayedTrace.Id, response.StatusCode, 0, "failed", blobErr.Error())
+			common.ApiError(c, blobErr)
+			return
+		}
+		responseBlobId = fallbackBlob.Id
+		_ = model.FinalizeAuditTrace(replayedTrace.Id, replayedTrace.FinalAttemptId, fallbackBlob.Id, replayedTrace.Status, replayedTrace.ClientTerminalKind)
+	}
+	state := "completed"
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusBadRequest || readErr != nil || truncated {
+		state = "failed"
+	}
+	errorMessage := ""
+	if readErr != nil {
+		errorMessage = "failed to read loopback replay response"
+	} else if truncated {
+		errorMessage = "loopback replay response exceeded capture limit"
+	}
+	if err := model.CompleteAuditReplayGrant(grant.Id, replayedTrace.Id, response.StatusCode, responseBlobId, state, errorMessage); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	grant.State = state
+	grant.ReplayTraceId = replayedTrace.Id
+	grant.ResponseStatus = response.StatusCode
+	grant.ResponseBlobId = responseBlobId
+	grant.ErrorMessage = errorMessage
+	common.ApiSuccess(c, auditReplayResult(grant, false))
+}
+
+func newAuditReplayLoopbackHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: -1}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, errors.New("invalid loopback dial address")
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || !ip.IsLoopback() {
+				return nil, errors.New("audit replay dial blocked non-loopback destination")
+			}
+			return dialer.DialContext(ctx, network, address)
+		},
+		DisableKeepAlives: true,
+	}
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: 2 * time.Minute,
+	}
 }

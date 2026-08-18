@@ -2,6 +2,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -179,6 +180,38 @@ func TestFinalizeAuditTraceKeepsFinalAttemptAndClientResult(t *testing.T) {
 	assert.Equal(t, "protocol_terminal", stored.ClientTerminalKind)
 }
 
+func TestSetAuditTraceOriginalRequestBlobIfEmptyPreservesFirstCapture(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	trace := &AuditTrace{RequestId: "req-original-capture", Source: "relay", Status: "recording"}
+	require.NoError(t, CreateAuditTrace(trace))
+
+	assigned, err := SetAuditTraceOriginalRequestBlobIfEmpty(trace.Id, 11)
+	require.NoError(t, err)
+	assert.True(t, assigned)
+	assigned, err = SetAuditTraceOriginalRequestBlobIfEmpty(trace.Id, 22)
+	require.NoError(t, err)
+	assert.False(t, assigned)
+
+	stored, err := GetAuditTraceById(trace.Id)
+	require.NoError(t, err)
+	assert.Equal(t, int64(11), stored.OriginalRequestBlobId)
+}
+
+func TestMarkAuditTraceReplayOfLinksGeneratedTraceOnce(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	trace := &AuditTrace{RequestId: "req-generated-replay", Source: "relay", Status: "succeeded"}
+	require.NoError(t, CreateAuditTrace(trace))
+
+	require.NoError(t, MarkAuditTraceReplayOf(trace.RequestId, 41, "replay_client_level"))
+	stored, err := GetAuditTraceById(trace.Id)
+	require.NoError(t, err)
+	assert.Equal(t, int64(41), stored.ReplayOfTraceId)
+	assert.Equal(t, "replay_client_level", stored.Source)
+
+	err = MarkAuditTraceReplayOf(trace.RequestId, 42, "replay_client_level")
+	require.ErrorIs(t, err, ErrAuditTraceAlreadyLinkedToReplay)
+}
+
 func TestDeleteAuditTracesBeforeRemovesOwnedAttemptsAndBlobs(t *testing.T) {
 	setupAuditTraceTestDB(t)
 	trace := &AuditTrace{RequestId: "req-expired", Source: "relay", Status: "succeeded", CreatedAt: 10}
@@ -192,6 +225,11 @@ func TestDeleteAuditTracesBeforeRemovesOwnedAttemptsAndBlobs(t *testing.T) {
 	attempt := &AuditAttempt{TraceId: trace.Id, AttemptNo: 0, RequestBlobId: requestBlob.Id, ResponseBlobId: responseBlob.Id}
 	require.NoError(t, CreateAuditAttempt(attempt))
 	require.NoError(t, DB.Model(&AuditTrace{}).Where("id = ?", trace.Id).Update("client_response_blob_id", clientBlob.Id).Error)
+	grant := &AuditReplayGrant{
+		TokenDigest: "unused-expired-preview", TraceId: trace.Id, Mode: "client_level",
+		State: "prepared", ExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
+	}
+	require.NoError(t, CreateAuditReplayGrant(grant))
 
 	require.NoError(t, DeleteAuditTracesBefore(20))
 	_, err = GetAuditTraceByRequestId(trace.RequestId)
@@ -203,4 +241,35 @@ func TestDeleteAuditTracesBeforeRemovesOwnedAttemptsAndBlobs(t *testing.T) {
 		_, err = GetAuditBlob(id)
 		require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 	}
+	require.ErrorIs(t, DB.First(&AuditReplayGrant{}, grant.Id).Error, gorm.ErrRecordNotFound)
+}
+
+func TestDeleteAuditTracesBeforeRemovesExpiredUnusedPreviewGrantForRetainedTrace(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	trace := &AuditTrace{RequestId: "req-retained", Source: "relay", Status: "succeeded", CreatedAt: 100}
+	require.NoError(t, CreateAuditTrace(trace))
+	grant := &AuditReplayGrant{
+		TokenDigest: "unused-expired-retained", TraceId: trace.Id, Mode: "client_level",
+		State: "prepared", ExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
+	}
+	require.NoError(t, CreateAuditReplayGrant(grant))
+
+	require.NoError(t, DeleteAuditTracesBefore(20))
+	_, err := GetAuditTraceByRequestId(trace.RequestId)
+	require.NoError(t, err)
+	require.ErrorIs(t, DB.First(&AuditReplayGrant{}, grant.Id).Error, gorm.ErrRecordNotFound)
+}
+
+func TestDeleteAuditTracesBeforeKeepsInFlightGrantForRetainedTrace(t *testing.T) {
+	setupAuditTraceTestDB(t)
+	trace := &AuditTrace{RequestId: "req-in-flight", Source: "relay", Status: "recording", CreatedAt: 100}
+	require.NoError(t, CreateAuditTrace(trace))
+	grant := &AuditReplayGrant{
+		TokenDigest: "expired-but-in-flight", TraceId: trace.Id, Mode: "client_level",
+		State: "executing", ExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
+	}
+	require.NoError(t, CreateAuditReplayGrant(grant))
+
+	require.NoError(t, DeleteAuditTracesBefore(20))
+	require.NoError(t, DB.First(&AuditReplayGrant{}, grant.Id).Error)
 }

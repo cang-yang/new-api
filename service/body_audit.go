@@ -340,14 +340,20 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 	if model.DB == nil || info == nil {
 		return
 	}
+	clientMethod := req.Method
+	clientRoute := req.URL.Path
+	if c.Request != nil && c.Request.URL != nil {
+		clientMethod = c.Request.Method
+		clientRoute = c.Request.URL.RequestURI()
+	}
 	trace, err := model.GetOrCreateAuditTrace(&model.AuditTrace{
 		RequestId:    capture.requestId,
 		Source:       "relay",
 		Status:       "recording",
 		UserId:       capture.userId,
 		TokenId:      info.TokenId,
-		Method:       req.Method,
-		Route:        req.URL.Path,
+		Method:       clientMethod,
+		Route:        clientRoute,
 		RequestModel: info.OriginModelName,
 		RelayFormat:  string(info.RelayFormat),
 	})
@@ -356,12 +362,15 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 		return
 	}
 	capture.traceId = trace.Id
+	if trace.OriginalRequestBlobId == 0 {
+		captureOriginalClientRequest(c, trace)
+	}
 
 	channelType := 0
 	if info.ChannelMeta != nil {
 		channelType = info.ChannelMeta.ChannelType
 	}
-	snapshotPayload, _ := json.Marshal(map[string]any{
+	snapshotPayload, _ := common.Marshal(map[string]any{
 		"channel_id":               capture.channelId,
 		"channel_type":             channelType,
 		"request_model":            info.OriginModelName,
@@ -400,6 +409,58 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 		return
 	}
 	capture.attemptId = attempt.Id
+}
+
+func captureOriginalClientRequest(c *gin.Context, trace *model.AuditTrace) {
+	if c == nil || c.Request == nil || trace == nil || trace.Id == 0 {
+		return
+	}
+	value, exists := c.Get(common.KeyBodyStorage)
+	if !exists {
+		return
+	}
+	storage, ok := value.(common.BodyStorage)
+	if !ok || storage == nil {
+		return
+	}
+	reader, err := storage.NewReader()
+	if err != nil {
+		logger.LogError(nil, "failed to open original client request for audit: "+err.Error())
+		return
+	}
+	defer reader.Close()
+	limit := int64(constant.BodyAuditMaxBodyMB) * 1024 * 1024
+	originalSize := storage.Size()
+	readLimit := min(originalSize, limit)
+	observed, err := io.ReadAll(io.LimitReader(reader, readLimit))
+	if err != nil {
+		logger.LogError(nil, "failed to read original client request for audit: "+err.Error())
+		return
+	}
+	truncated := originalSize > limit
+	blob, err := model.CreateAuditBlob(&model.AuditBlob{
+		CaptureStage: "client_request", MediaType: c.Request.Header.Get("Content-Type"), Body: observed,
+		OriginalSize: originalSize, Complete: !truncated && int64(len(observed)) == originalSize, Truncated: truncated,
+	})
+	if err != nil {
+		logger.LogError(nil, "failed to save original client request audit blob: "+err.Error())
+		return
+	}
+	assigned, err := model.SetAuditTraceOriginalRequestBlobIfEmpty(trace.Id, blob.Id)
+	if err != nil {
+		if cleanupErr := model.DeleteAuditBlob(blob.Id); cleanupErr != nil {
+			logger.LogError(nil, "failed to clean unlinked original client request audit blob: "+cleanupErr.Error())
+		}
+		logger.LogError(nil, "failed to link original client request audit blob: "+err.Error())
+		return
+	}
+	if assigned {
+		trace.OriginalRequestBlobId = blob.Id
+	} else {
+		if cleanupErr := model.DeleteAuditBlob(blob.Id); cleanupErr != nil {
+			logger.LogError(nil, "failed to clean duplicate original client request audit blob: "+cleanupErr.Error())
+		}
+	}
 }
 
 func (capture *bodyAuditCapture) persistAttemptTrace(requestBody []byte, requestSize int64, requestTruncated bool, responseBody []byte, responseSize int64, responseTruncated bool) {

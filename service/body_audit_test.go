@@ -451,3 +451,106 @@ func TestBodyAuditTracePreservesFailedAndSuccessfulAttempts(t *testing.T) {
 	assert.Equal(t, attempts[1].Id, trace.FinalAttemptId)
 	assert.NotZero(t, trace.ClientResponseBlobId)
 }
+
+func TestBodyAuditCapturesOriginalClientRequestOnceFromIndependentStorageReader(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	migrateBodyAuditTestModels(t, db)
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	originalBody := `{"model":"client-model","messages":[{"role":"user","content":"original"}]}`
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/messages?key=HISTORICAL&alt=sse", strings.NewReader(originalBody))
+	context.Request.Header.Set("Content-Type", "application/json")
+	context.Set(common.RequestIdKey, "req-original-client")
+	context.Set("id", 12)
+	context.Set("channel_id", 34)
+	storage, err := common.GetBodyStorage(context)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+
+	beginAttempt := func(upstreamBody string) {
+		upstreamRequest, requestErr := http.NewRequest(http.MethodPut, "https://upstream.example/internal", strings.NewReader(upstreamBody))
+		require.NoError(t, requestErr)
+		capture := BeginBodyAudit(context, upstreamRequest, &relaycommon.RelayInfo{
+			TokenId: 91, OriginModelName: "client-model",
+			ChannelMeta: &relaycommon.ChannelMeta{ChannelId: 34, UpstreamModelName: "mapped-model"},
+		})
+		require.NotNil(t, capture)
+	}
+	beginAttempt(`{"attempt":0}`)
+	trace, err := model.GetAuditTraceByRequestId("req-original-client")
+	require.NoError(t, err)
+	firstBlobId := trace.OriginalRequestBlobId
+	require.NotZero(t, firstBlobId)
+	assert.Equal(t, http.MethodPost, trace.Method)
+	assert.Equal(t, "/v1/messages?key=HISTORICAL&alt=sse", trace.Route)
+	blob, err := model.GetAuditBlob(firstBlobId)
+	require.NoError(t, err)
+	assert.Equal(t, originalBody, string(blob.Body))
+	assert.True(t, blob.Complete)
+	assert.False(t, blob.Truncated)
+	assert.Equal(t, "client_request", blob.CaptureStage)
+
+	// A concurrent caller may hold a stale trace that still appears unlinked.
+	// Its losing conditional assignment must not leave an orphan blob behind.
+	captureOriginalClientRequest(context, &model.AuditTrace{Id: trace.Id})
+	beginAttempt(`{"attempt":1}`)
+	trace, err = model.GetAuditTraceByRequestId("req-original-client")
+	require.NoError(t, err)
+	assert.Equal(t, firstBlobId, trace.OriginalRequestBlobId)
+	var originalBlobCount int64
+	require.NoError(t, model.DB.Model(&model.AuditBlob{}).Where("capture_stage = ?", "client_request").Count(&originalBlobCount).Error)
+	assert.Equal(t, int64(1), originalBlobCount)
+}
+
+func TestBodyAuditMarksOversizedOriginalClientRequestUnavailableForReplay(t *testing.T) {
+	previousDB := model.DB
+	previousEnabled := constant.BodyAuditEnabled
+	previousMaxBodyMB := constant.BodyAuditMaxBodyMB
+	t.Cleanup(func() {
+		model.DB = previousDB
+		constant.BodyAuditEnabled = previousEnabled
+		constant.BodyAuditMaxBodyMB = previousMaxBodyMB
+	})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	migrateBodyAuditTestModels(t, db)
+	model.DB = db
+	constant.BodyAuditEnabled = true
+	constant.BodyAuditMaxBodyMB = 1
+
+	limit := int64(constant.BodyAuditMaxBodyMB) * 1024 * 1024
+	originalBody := strings.Repeat("x", int(limit+64))
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(originalBody))
+	context.Request.Header.Set("Content-Type", "application/json")
+	context.Set(common.RequestIdKey, "req-original-truncated")
+	storage, err := common.GetBodyStorage(context)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+	upstreamRequest, err := http.NewRequest(http.MethodPost, "https://upstream.example/v1/chat/completions", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	require.NotNil(t, BeginBodyAudit(context, upstreamRequest, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "model"},
+	}))
+
+	trace, err := model.GetAuditTraceByRequestId("req-original-truncated")
+	require.NoError(t, err)
+	blob, err := model.GetAuditBlob(trace.OriginalRequestBlobId)
+	require.NoError(t, err)
+	assert.Len(t, blob.Body, int(limit))
+	assert.Equal(t, int64(len(originalBody)), blob.OriginalSize)
+	assert.True(t, blob.Truncated)
+	assert.False(t, blob.Complete)
+}

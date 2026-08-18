@@ -122,7 +122,8 @@ type AuditBlob struct {
 }
 
 var (
-	ErrAuditReplayGrantExpired = errors.New("audit replay confirmation expired")
+	ErrAuditReplayGrantExpired         = errors.New("audit replay confirmation expired")
+	ErrAuditTraceAlreadyLinkedToReplay = errors.New("audit trace is already linked to a replay source")
 )
 
 // AuditReplayGrant is the server-side half of a short-lived replay
@@ -192,6 +193,34 @@ func GetAuditTraceById(id int64) (*AuditTrace, error) {
 		return nil, err
 	}
 	return &trace, nil
+}
+
+func SetAuditTraceOriginalRequestBlobIfEmpty(traceId, blobId int64) (bool, error) {
+	result := DB.Model(&AuditTrace{}).
+		Where("id = ? AND original_request_blob_id = ?", traceId, 0).
+		Updates(map[string]any{"original_request_blob_id": blobId, "updated_at": nowMillis()})
+	return result.RowsAffected == 1, result.Error
+}
+
+func MarkAuditTraceReplayOf(requestId string, replayOfTraceId int64, source string) error {
+	result := DB.Model(&AuditTrace{}).
+		Where("request_id = ? AND replay_of_trace_id = ?", requestId, 0).
+		Updates(map[string]any{
+			"replay_of_trace_id": replayOfTraceId,
+			"source":             source,
+			"updated_at":         nowMillis(),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		var trace AuditTrace
+		if err := DB.Where("request_id = ?", requestId).First(&trace).Error; err != nil {
+			return err
+		}
+		return ErrAuditTraceAlreadyLinkedToReplay
+	}
+	return nil
 }
 
 func CreateAuditAttempt(attempt *AuditAttempt) error {
@@ -456,6 +485,10 @@ func GetAuditBlob(id int64) (*AuditBlob, error) {
 	return &blob, nil
 }
 
+func DeleteAuditBlob(id int64) error {
+	return DB.Delete(&AuditBlob{}, id).Error
+}
+
 func DeleteAuditTrace(traceId int64) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("trace_id = ? OR replay_trace_id = ?", traceId, traceId).Delete(&AuditReplayGrant{}).Error; err != nil {
@@ -486,6 +519,9 @@ func DeleteAuditTrace(traceId int64) error {
 
 func DeleteAuditTracesBefore(timestamp int64) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("state = ? AND expires_at < ?", "prepared", time.Now().UnixMilli()).Delete(&AuditReplayGrant{}).Error; err != nil {
+			return err
+		}
 		var traces []AuditTrace
 		if err := tx.Where("created_at < ?", timestamp).Find(&traces).Error; err != nil {
 			return err

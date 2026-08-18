@@ -28,11 +28,173 @@ func setupAuditReplayControllerTest(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
-		&model.Channel{}, &model.AuditTrace{}, &model.AuditAttempt{},
+		&model.Channel{}, &model.Token{}, &model.AuditTrace{}, &model.AuditAttempt{},
 		&model.AuditBlob{}, &model.AuditConfigSnapshot{}, &model.AuditReplayGrant{},
 	))
 	model.DB = db
 	service.InitHttpClient()
+}
+
+func TestClientLevelReplayReentersLoopbackWithCurrentTokenAndIsIdempotent(t *testing.T) {
+	setupAuditReplayControllerTest(t)
+	token := &model.Token{UserId: 12, Key: "CURRENT-CLIENT-TOKEN", Status: common.TokenStatusEnabled, Name: "replay", UnlimitedQuota: true}
+	require.NoError(t, model.DB.Create(token).Error)
+	sourceTrace := &model.AuditTrace{
+		RequestId: "req-client-source", Source: "relay", Status: "succeeded", UserId: 12, TokenId: token.Id,
+		Method: http.MethodPost, Route: "/v1/chat/completions?key=HISTORICAL&alt=sse", RequestModel: "demo",
+	}
+	require.NoError(t, model.CreateAuditTrace(sourceTrace))
+	originalBlob, err := model.CreateAuditBlob(&model.AuditBlob{
+		CaptureStage: "client_request", MediaType: "application/json", Complete: true,
+		Body: []byte(`{"model":"demo","max_tokens":16,"messages":[{"role":"user","content":"replay me"}]}`),
+	})
+	require.NoError(t, err)
+	assigned, err := model.SetAuditTraceOriginalRequestBlobIfEmpty(sourceTrace.Id, originalBlob.Id)
+	require.NoError(t, err)
+	require.True(t, assigned)
+
+	callCount := 0
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, "/v1/chat/completions", r.URL.Path)
+		assert.Equal(t, "sse", r.URL.Query().Get("alt"))
+		assert.Empty(t, r.URL.Query().Get("key"))
+		assert.Equal(t, "Bearer sk-CURRENT-CLIENT-TOKEN", r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("X-Historical-Authorization"))
+		body, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		assert.Equal(t, string(originalBlob.Body), string(body))
+
+		responseBlob, createErr := model.CreateAuditBlob(&model.AuditBlob{
+			CaptureStage: "client_response", MediaType: "application/json", Complete: true, Body: []byte(`{"replayed":true}`),
+		})
+		require.NoError(t, createErr)
+		generated := &model.AuditTrace{
+			RequestId: "req-client-generated", Source: "relay", Status: "succeeded", UserId: token.UserId,
+			TokenId: token.Id, Method: http.MethodPost, Route: r.URL.RequestURI(),
+			ClientResponseBlobId: responseBlob.Id, ClientStatus: http.StatusOK,
+		}
+		require.NoError(t, model.CreateAuditTrace(generated))
+		w.Header().Set(common.RequestIdKey, generated.RequestId)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(responseBlob.Body)
+	}))
+	defer loopback.Close()
+	previousLoopback := auditReplayLoopbackBaseURL
+	auditReplayLoopbackBaseURL = func() (string, error) { return loopback.URL, nil }
+	t.Cleanup(func() { auditReplayLoopbackBaseURL = previousLoopback })
+
+	preview := callAuditReplayHandler(t, PreviewAuditReplay, sourceTrace.RequestId, `{"mode":"client_level"}`)
+	assert.Equal(t, true, preview["available"])
+	assert.Equal(t, "/v1/chat/completions?alt=sse", preview["target"])
+	differences, ok := preview["differences"].([]any)
+	require.True(t, ok)
+	var queryCredentialChange string
+	for _, rawDifference := range differences {
+		difference, isMap := rawDifference.(map[string]any)
+		if isMap && difference["path"] == "request.query_credentials" {
+			queryCredentialChange, _ = difference["change"].(string)
+		}
+	}
+	assert.Equal(t, "historical_credential_query_parameters_removed", queryCredentialChange)
+	risks, ok := preview["risks"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, risks, "re_enters_current_routing_and_billing")
+	confirmation := preview["confirmation_token"].(string)
+	payload, err := common.Marshal(map[string]any{"confirmation_token": confirmation})
+	require.NoError(t, err)
+	first := callAuditReplayHandler(t, ExecuteAuditReplay, sourceTrace.RequestId, string(payload))
+	second := callAuditReplayHandler(t, ExecuteAuditReplay, sourceTrace.RequestId, string(payload))
+
+	assert.Equal(t, 1, callCount)
+	assert.Equal(t, first["replay_trace_id"], second["replay_trace_id"])
+	assert.Equal(t, true, second["idempotent_replay"])
+	generated, err := model.GetAuditTraceByRequestId("req-client-generated")
+	require.NoError(t, err)
+	assert.Equal(t, sourceTrace.Id, generated.ReplayOfTraceId)
+	assert.Equal(t, "replay_client_level", generated.Source)
+}
+
+func TestAuditReplayLoopbackClientIgnoresProxyAndBlocksNonLoopbackDial(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer loopback.Close()
+
+	client := newAuditReplayLoopbackHTTPClient()
+	defer client.CloseIdleConnections()
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Nil(t, transport.Proxy)
+
+	response, err := client.Get(loopback.URL)
+	require.NoError(t, err)
+	response.Body.Close()
+	assert.Equal(t, http.StatusNoContent, response.StatusCode)
+
+	_, err = client.Get("http://192.0.2.1/")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blocked non-loopback")
+}
+
+func TestClientLevelPreviewRejectsMissingCurrentToken(t *testing.T) {
+	setupAuditReplayControllerTest(t)
+	trace := &model.AuditTrace{
+		RequestId: "req-client-missing-token", Source: "relay", Status: "succeeded", TokenId: 999,
+		Method: http.MethodPost, Route: "/v1/chat/completions",
+	}
+	require.NoError(t, model.CreateAuditTrace(trace))
+	blob, err := model.CreateAuditBlob(&model.AuditBlob{
+		CaptureStage: "client_request", MediaType: "application/json", Complete: true,
+		Body: []byte(`{"model":"demo","messages":[]}`),
+	})
+	require.NoError(t, err)
+	assigned, err := model.SetAuditTraceOriginalRequestBlobIfEmpty(trace.Id, blob.Id)
+	require.NoError(t, err)
+	require.True(t, assigned)
+
+	data := callAuditReplayHandler(t, PreviewAuditReplay, trace.RequestId, `{"mode":"client_level"}`)
+	assert.Equal(t, false, data["available"])
+	assert.Equal(t, "current_token_not_found", data["unavailable_reason"])
+	assert.Empty(t, data["confirmation_token"])
+}
+
+func TestClientLevelPreviewRejectsUnsafeHistoricalRequest(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		route  string
+		body   string
+		reason string
+	}{
+		{name: "non AI route", route: "/api/user/delete", body: `{"model":"demo"}`, reason: "non_ai_or_side_effecting_path"},
+		{name: "credential in body", route: "/v1/chat/completions", body: `{"model":"demo","secret":"HISTORICAL"}`, reason: "historical_credentials_in_request_body"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			setupAuditReplayControllerTest(t)
+			token := &model.Token{UserId: 12, Key: "CURRENT", Status: common.TokenStatusEnabled, UnlimitedQuota: true}
+			require.NoError(t, model.DB.Create(token).Error)
+			trace := &model.AuditTrace{
+				RequestId: "req-client-unsafe-" + strings.ReplaceAll(testCase.name, " ", "-"),
+				Source:    "relay", Status: "succeeded", UserId: token.UserId, TokenId: token.Id,
+				Method: http.MethodPost, Route: testCase.route,
+			}
+			require.NoError(t, model.CreateAuditTrace(trace))
+			blob, err := model.CreateAuditBlob(&model.AuditBlob{
+				CaptureStage: "client_request", MediaType: "application/json", Complete: true, Body: []byte(testCase.body),
+			})
+			require.NoError(t, err)
+			assigned, err := model.SetAuditTraceOriginalRequestBlobIfEmpty(trace.Id, blob.Id)
+			require.NoError(t, err)
+			require.True(t, assigned)
+
+			data := callAuditReplayHandler(t, PreviewAuditReplay, trace.RequestId, `{"mode":"client_level"}`)
+			assert.Equal(t, false, data["available"])
+			assert.Equal(t, testCase.reason, data["unavailable_reason"])
+			assert.Empty(t, data["confirmation_token"])
+		})
+	}
 }
 
 func callAuditReplayHandler(t *testing.T, handler gin.HandlerFunc, requestId, payload string) map[string]any {
