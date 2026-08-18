@@ -27,6 +27,7 @@ import {
   FileText,
   GitBranch,
   Radio,
+  RotateCcw,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -44,6 +45,7 @@ import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import { diffJsonText } from '../../lib/json-diff'
 import type { AuditAttempt, BodyAudit } from '../../types'
 import { BodyAuditResultContent } from '../body-audit-result'
+import { AuditReplayDialog } from './audit-replay-dialog'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -262,9 +264,10 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
   )
 }
 
-function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
+function AttemptTimeline(props: { attempts: AuditAttempt[]; requestId: string }) {
   const { t } = useTranslation()
   const [selectedId, setSelectedId] = useState(props.attempts.at(-1)?.id ?? 0)
+  const [replayOpen, setReplayOpen] = useState(false)
   const selected =
     props.attempts.find((attempt) => attempt.id === selectedId) ??
     props.attempts.at(-1)
@@ -301,43 +304,72 @@ function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
           size='sm'
           copyable={false}
         />
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          className='ml-auto h-7 gap-1.5 px-2 text-xs'
+          onClick={() => setReplayOpen(true)}
+        >
+          <RotateCcw className='size-3.5' aria-hidden='true' />
+          {t('Replay')}
+        </Button>
       </div>
       <div className='scrollbar-thin flex gap-2 overflow-x-auto pb-1'>
         {props.attempts.map((attempt) => {
           const succeeded = attempt.state === 'succeeded'
           const selectedAttempt = attempt.id === selected.id
           return (
-            <button
-              type='button'
+            <div
               key={attempt.id}
-              onClick={() => setSelectedId(attempt.id)}
               className={cn(
-                'min-w-40 rounded-md border px-3 py-2 text-left transition-colors',
+                'relative min-w-44 rounded-md border transition-colors',
                 selectedAttempt
                   ? 'border-primary bg-primary/5'
                   : 'bg-muted/20 hover:bg-muted/45'
               )}
-              aria-pressed={selectedAttempt}
             >
-              <div className='flex items-center justify-between gap-2'>
-                <span className='text-xs font-medium'>
-                  {t('Attempt {{number}}', { number: attempt.attempt_no + 1 })}
-                </span>
-                <span
-                  className={cn(
-                    'size-2 rounded-full',
-                    succeeded ? 'bg-emerald-500' : 'bg-red-500'
-                  )}
-                  aria-hidden='true'
-                />
-              </div>
-              <div className='text-muted-foreground mt-1 font-mono text-[10px]'>
-                {t('Channel')} #{attempt.channel_id}
-                {attempt.http_status > 0
-                  ? ` · HTTP ${attempt.http_status}`
-                  : ''}
-              </div>
-            </button>
+              <button
+                type='button'
+                onClick={() => setSelectedId(attempt.id)}
+                className='w-full px-3 py-2 pr-9 text-left'
+                aria-pressed={selectedAttempt}
+              >
+                <div className='flex items-center justify-between gap-2'>
+                  <span className='text-xs font-medium'>
+                    {t('Attempt {{number}}', { number: attempt.attempt_no + 1 })}
+                  </span>
+                  <span
+                    className={cn(
+                      'size-2 rounded-full',
+                      succeeded ? 'bg-emerald-500' : 'bg-red-500'
+                    )}
+                    aria-hidden='true'
+                  />
+                </div>
+                <div className='text-muted-foreground mt-1 font-mono text-[10px]'>
+                  {t('Channel')} #{attempt.channel_id}
+                  {attempt.http_status > 0
+                    ? ` · HTTP ${attempt.http_status}`
+                    : ''}
+                </div>
+              </button>
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon-sm'
+                className='absolute right-1.5 bottom-1.5 size-6'
+                aria-label={t('Replay attempt {{number}}', {
+                  number: attempt.attempt_no + 1,
+                })}
+                onClick={() => {
+                  setSelectedId(attempt.id)
+                  setReplayOpen(true)
+                }}
+              >
+                <RotateCcw className='size-3' aria-hidden='true' />
+              </Button>
+            </div>
           )
         })}
       </div>
@@ -401,6 +433,12 @@ function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
           </TabsContent>
         )}
       </Tabs>
+      <AuditReplayDialog
+        open={replayOpen}
+        onOpenChange={setReplayOpen}
+        requestId={props.requestId}
+        attemptId={selected.id}
+      />
     </div>
   )
 }
@@ -415,7 +453,10 @@ function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
   return (
     <div className='space-y-3'>
       {props.audit.attempts && props.audit.attempts.length > 0 && (
-        <AttemptTimeline attempts={props.audit.attempts} />
+        <AttemptTimeline
+          attempts={props.audit.attempts}
+          requestId={props.audit.request_id}
+        />
       )}
       <Tabs defaultValue='request' className='gap-2.5'>
         <div className='flex flex-wrap items-center justify-between gap-2'>

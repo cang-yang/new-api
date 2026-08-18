@@ -20,6 +20,9 @@ import { api } from '@/lib/api'
 
 import { buildQueryParams } from './lib/query-params'
 import type {
+  AuditReplayMode,
+  AuditReplayPreview,
+  AuditReplayResult,
   BodyAudit,
   GetLogsParams,
   GetLogsResponse,
@@ -98,6 +101,35 @@ export async function getBodyAudit(
     return null
   }
   return res.data.data as BodyAudit
+}
+
+export async function previewBodyAuditReplay(
+  requestId: string,
+  attemptId: number,
+  mode: AuditReplayMode
+): Promise<AuditReplayPreview> {
+  const res = await api.post(
+    `/api/log/body-audit/${encodeURIComponent(requestId)}/replay/preview`,
+    { attempt_id: attemptId, mode }
+  )
+  if (!res.data?.success || !res.data?.data) {
+    throw new Error(res.data?.message || 'Failed to preview replay')
+  }
+  return res.data.data as AuditReplayPreview
+}
+
+export async function executeBodyAuditReplay(
+  requestId: string,
+  confirmationToken: string
+): Promise<AuditReplayResult> {
+  const res = await api.post(
+    `/api/log/body-audit/${encodeURIComponent(requestId)}/replay/execute`,
+    { confirmation_token: confirmationToken }
+  )
+  if (!res.data?.success || !res.data?.data) {
+    throw new Error(res.data?.message || 'Failed to execute replay')
+  }
+  return res.data.data as AuditReplayResult
 }
 
 export async function getUserInfo(

@@ -407,6 +407,43 @@ export interface AuditAttempt {
   response_body_truncated: boolean
 }
 
+export type AuditReplayMode = 'client_level' | 'exact_upstream'
+
+export interface AuditReplayDifference {
+  path: string
+  before?: unknown
+  after?: unknown
+  change: string
+}
+
+export interface AuditReplayPreview {
+  mode: AuditReplayMode
+  available: boolean
+  unavailable_reason?: string
+  attempt_id?: number
+  method?: string
+  historical_target?: string
+  target?: string
+  body?: unknown
+  body_digest?: string
+  differences?: AuditReplayDifference[]
+  risks?: string[]
+  confirmation_token?: string
+  expires_at?: number
+}
+
+export interface AuditReplayResult {
+  state: string
+  replay_trace_id: number
+  replay_request_id?: string
+  response_status: number
+  response_body?: string
+  response_body_encoding?: 'utf-8' | 'base64'
+  response_truncated?: boolean
+  idempotent_replay: boolean
+  error?: string
+}
+
 export interface GetLogStatsParams {
   type?: number
   username?: string
