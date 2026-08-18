@@ -40,15 +40,15 @@ jobs:
       - name: Verify custom audit backend
         shell: bash
         run: |
-          go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError' -count=1
-          go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay' -count=1
-          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects' -count=1
+          go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident' -count=1
+          go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay|ErrorIncident' -count=1
+          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot' -count=1
           go test ./relay/common -run 'TestApplyParamOverride|TestCompileParamOverride|TestSimulateParamOverride|TestStreamStatus' -count=1
           go test ./relay/helper -run 'TestStreamScannerHandler' -count=1
           go test ./relay/channel/openai -run 'Empty|OaiStreamHandler|OaiResponsesStreamHandler' -count=1
           go test ./relay/channel/claude -run 'ProtocolOutcome|Empty|Stream' -count=1
           go test ./relay/channel/gemini -run 'ProtocolOutcome|Empty|Stream' -count=1
-          go test ./router -run 'TestParamOverrideSimulator|TestAuditReplay' -count=1
+          go test ./router -run 'TestParamOverrideSimulator|TestAuditReplay|TestErrorIncident' -count=1
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -67,6 +67,7 @@ jobs:
           src/features/usage-logs/components/__tests__/audit-replay-dialog.test.tsx
           src/features/usage-logs/lib/__tests__/body-audit-response.test.ts
           src/features/usage-logs/lib/__tests__/json-diff.test.ts
+          src/features/usage-logs/lib/__tests__/error-incident.test.ts
           src/features/channels/lib/__tests__/param-override-simulator.test.ts
           src/features/channels/components/dialogs/__tests__/param-override-simulator-dialog.test.tsx
           src/features/channels/components/dialogs/__tests__/param-override-editor-simulator-entry.test.tsx
