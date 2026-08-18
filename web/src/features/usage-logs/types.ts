@@ -162,6 +162,10 @@ export interface LogOtherData {
   login_method?: string
   user_agent?: string
   request_path?: string
+  /** Stable, privacy-safe structural fingerprint for channel failures. */
+  error_fingerprint?: string
+  /** Number of occurrences in the server-side incident aggregate at write time. */
+  error_incident_count?: number
   request_conversion?: string[]
   ws?: boolean
   audio?: boolean
@@ -383,6 +387,7 @@ export interface AuditAttempt {
   routing_retry_index: number
   channel_id: number
   channel_type: number
+  channel_name: string
   request_model: string
   upstream_model: string
   request_format: string
@@ -405,6 +410,14 @@ export interface AuditAttempt {
   response_body_encoding: 'utf-8' | 'base64'
   response_body_size: number
   response_body_truncated: boolean
+  config_snapshot?: AuditConfigSnapshot
+}
+
+export interface AuditConfigSnapshot {
+  id: number
+  digest: string
+  schema_version: number
+  canonical_json: Record<string, unknown>
 }
 
 export type AuditReplayMode = 'client_level' | 'exact_upstream'

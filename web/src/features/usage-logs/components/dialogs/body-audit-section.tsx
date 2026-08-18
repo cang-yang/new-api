@@ -28,6 +28,7 @@ import {
   GitBranch,
   Radio,
   RotateCcw,
+  Settings2,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -264,7 +265,10 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
   )
 }
 
-function AttemptTimeline(props: { attempts: AuditAttempt[]; requestId: string }) {
+function AttemptTimeline(props: {
+  attempts: AuditAttempt[]
+  requestId: string
+}) {
   const { t } = useTranslation()
   const [selectedId, setSelectedId] = useState(props.attempts.at(-1)?.id ?? 0)
   const [replayOpen, setReplayOpen] = useState(false)
@@ -337,7 +341,9 @@ function AttemptTimeline(props: { attempts: AuditAttempt[]; requestId: string })
               >
                 <div className='flex items-center justify-between gap-2'>
                   <span className='text-xs font-medium'>
-                    {t('Attempt {{number}}', { number: attempt.attempt_no + 1 })}
+                    {t('Attempt {{number}}', {
+                      number: attempt.attempt_no + 1,
+                    })}
                   </span>
                   <span
                     className={cn(
@@ -348,7 +354,7 @@ function AttemptTimeline(props: { attempts: AuditAttempt[]; requestId: string })
                   />
                 </div>
                 <div className='text-muted-foreground mt-1 font-mono text-[10px]'>
-                  {t('Channel')} #{attempt.channel_id}
+                  {attempt.channel_name || t('Channel')} #{attempt.channel_id}
                   {attempt.http_status > 0
                     ? ` · HTTP ${attempt.http_status}`
                     : ''}
@@ -396,6 +402,11 @@ function AttemptTimeline(props: { attempts: AuditAttempt[]; requestId: string })
               {t('Changes from previous attempt')}
             </TabsTrigger>
           )}
+          {selected.config_snapshot && (
+            <TabsTrigger value='attempt-config' className='h-7 text-xs'>
+              {t('Execution config')}
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value='attempt-request'>
           <PayloadPanel
@@ -429,6 +440,27 @@ function AttemptTimeline(props: { attempts: AuditAttempt[]; requestId: string })
               truncated={requestDiff.length >= 500}
               contentType='application/json'
               icon={<GitBranch className='size-3.5' aria-hidden='true' />}
+            />
+          </TabsContent>
+        )}
+        {selected.config_snapshot && (
+          <TabsContent value='attempt-config'>
+            <PayloadPanel
+              title={`${t('Immutable execution config')} · ${selected.config_snapshot.digest.slice(0, 12)}`}
+              body={JSON.stringify(
+                selected.config_snapshot.canonical_json,
+                null,
+                2
+              )}
+              encoding='utf-8'
+              size={
+                new TextEncoder().encode(
+                  JSON.stringify(selected.config_snapshot.canonical_json)
+                ).length
+              }
+              truncated={false}
+              contentType={`application/json · schema v${selected.config_snapshot.schema_version}`}
+              icon={<Settings2 className='size-3.5' aria-hidden='true' />}
             />
           </TabsContent>
         )}

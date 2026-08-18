@@ -373,13 +373,14 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
-	if service.ShouldDisableChannel(err) && channelError.AutoBan {
+	clientGone := isClientGoneChannelError(c, err)
+	if shouldAutoDisableChannelForRequest(c, err) && channelError.AutoBan {
 		gopool.Go(func() {
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
 	}
 
-	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
+	if types.IsRecordErrorLog(err) {
 		// 保存错误日志到mysql中
 		userId := c.GetInt("id")
 		tokenName := c.GetString("token_name")
@@ -397,6 +398,10 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_id"] = channelId
 		other["channel_name"] = c.GetString("channel_name")
 		other["channel_type"] = c.GetInt("channel_type")
+		requestPath := ""
+		if c.Request != nil && c.Request.URL != nil {
+			requestPath = c.Request.URL.Path
+		}
 		signature := channelErrorSignature{
 			ErrorType:   string(err.GetErrorType()),
 			ErrorCode:   string(err.GetErrorCode()),
@@ -405,11 +410,30 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			Model:       modelName,
 			IsStream:    common.GetContextKeyBool(c, constant.ContextKeyIsStream),
 		}
-		if c.Request != nil && c.Request.URL != nil {
-			signature.RequestPath = c.Request.URL.Path
-		}
-		other["error_fingerprint"] = fingerprintChannelError(signature)
+		signature.RequestPath = requestPath
+		fingerprint := fingerprintChannelError(signature)
+		other["error_fingerprint"] = fingerprint
 		other["error_signature"] = signature
+		if !clientGone && shouldAggregateChannelError(err) {
+			incident, incidentErr := model.UpsertErrorIncident(model.ErrorIncidentOccurrence{
+				Fingerprint: fingerprint,
+				RequestId:   c.GetString(common.RequestIdKey),
+				StatusCode:  err.StatusCode,
+				ErrorType:   string(err.GetErrorType()),
+				ErrorCode:   string(err.GetErrorCode()),
+				ChannelType: c.GetInt("channel_type"),
+				Model:       modelName,
+				Path:        requestPath,
+			})
+			if incidentErr != nil {
+				logger.LogError(c, "failed to aggregate channel error incident: "+incidentErr.Error())
+			} else {
+				other["error_incident_count"] = incident.Count
+			}
+		}
+		if !constant.ErrorLogEnabled {
+			return
+		}
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)

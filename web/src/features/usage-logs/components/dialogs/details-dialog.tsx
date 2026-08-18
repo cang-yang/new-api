@@ -64,6 +64,7 @@ import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
+import { getErrorIncidentSummary } from '../../lib/error-incident'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
@@ -484,6 +485,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const details = props.log.content ?? ''
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
+  const errorIncident =
+    props.isAdmin && props.log.type === 5
+      ? getErrorIncidentSummary(other)
+      : null
 
   const isViolation = isViolationFeeLog(other)
   const isRefund = props.log.type === 6
@@ -659,6 +664,22 @@ export function DetailsDialog(props: DetailsDialogProps) {
               value={props.log.upstream_request_id}
               mono
             />
+          )}
+
+          {errorIncident && (
+            <>
+              <DetailRow
+                label={t('Error fingerprint')}
+                value={errorIncident.fingerprint}
+                mono
+              />
+              <DetailRow
+                label={t('Repeated errors')}
+                value={t('{{count}} occurrences', {
+                  count: errorIncident.count,
+                })}
+              />
+            </>
           )}
 
           {props.isAdmin && props.log.channel > 0 && (
