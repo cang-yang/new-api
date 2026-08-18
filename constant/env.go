@@ -12,6 +12,10 @@ var UpdateTask bool
 var MaxRequestBodyMB int
 var AnonymousRequestBodyLimitKB int
 
+// MaxPreConsumeQuotaPerRequest limits the estimated quota reserved by one
+// request. A value of 0 disables the guard.
+var MaxPreConsumeQuotaPerRequest int
+
 // Body audit captures the final upstream request and raw upstream response for
 // administrator-only inspection from the usage log details dialog.
 var BodyAuditEnabled bool

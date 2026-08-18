@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 
@@ -108,6 +109,40 @@ func TestPreConsumeBillingRejectsNegativeQuotaBeforeDeduction(t *testing.T) {
 
 	require.NotNil(t, apiErr)
 	require.Equal(t, types.ErrorCodeModelPriceError, apiErr.GetErrorCode())
+	require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+	require.Nil(t, info.Billing)
+}
+
+func TestValidateRequestSpendLimit(t *testing.T) {
+	original := constant.MaxPreConsumeQuotaPerRequest
+	t.Cleanup(func() { constant.MaxPreConsumeQuotaPerRequest = original })
+
+	constant.MaxPreConsumeQuotaPerRequest = 0
+	require.Nil(t, validateRequestSpendLimit(1001), "zero disables the guard")
+
+	constant.MaxPreConsumeQuotaPerRequest = 1000
+	require.Nil(t, validateRequestSpendLimit(1000), "the configured boundary is allowed")
+
+	apiErr := validateRequestSpendLimit(1001)
+	require.NotNil(t, apiErr)
+	require.Equal(t, types.ErrorCodeModelPriceError, apiErr.GetErrorCode())
+	require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+	require.Contains(t, apiErr.Error(), "1001")
+	require.Contains(t, apiErr.Error(), "1000")
+}
+
+func TestPreConsumeBillingRejectsRequestAboveSpendLimitBeforeDeduction(t *testing.T) {
+	original := constant.MaxPreConsumeQuotaPerRequest
+	t.Cleanup(func() { constant.MaxPreConsumeQuotaPerRequest = original })
+	constant.MaxPreConsumeQuotaPerRequest = 1000
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	info := &relaycommon.RelayInfo{}
+
+	apiErr := PreConsumeBilling(c, 1001, info)
+
+	require.NotNil(t, apiErr)
 	require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
 	require.Nil(t, info.Billing)
 }

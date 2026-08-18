@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -34,12 +35,29 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
+	if apiErr := validateRequestSpendLimit(preConsumedQuota); apiErr != nil {
+		return apiErr
+	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {
 		return apiErr
 	}
 	relayInfo.Billing = session
 	return nil
+}
+
+func validateRequestSpendLimit(preConsumedQuota int) *types.NewAPIError {
+	limit := constant.MaxPreConsumeQuotaPerRequest
+	if limit <= 0 || preConsumedQuota <= limit {
+		return nil
+	}
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("estimated request quota %d exceeds the configured per-request limit %d", preConsumedQuota, limit),
+		types.ErrorCodeModelPriceError,
+		http.StatusBadRequest,
+		types.ErrOptionWithSkipRetry(),
+		types.ErrOptionWithNoRecordErrorLog(),
+	)
 }
 
 // ---------------------------------------------------------------------------

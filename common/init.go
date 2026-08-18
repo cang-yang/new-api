@@ -181,6 +181,11 @@ func initConstantEnv() {
 	// MaxRequestBodyMB 请求体最大大小（解压后），用于防止超大请求/zip bomb导致内存暴涨
 	constant.MaxRequestBodyMB = GetEnvOrDefault("MAX_REQUEST_BODY_MB", 128)
 	constant.AnonymousRequestBodyLimitKB = GetEnvOrDefault("ANONYMOUS_REQUEST_BODY_LIMIT_KB", 512)
+	constant.MaxPreConsumeQuotaPerRequest = GetEnvOrDefault("MAX_PRE_CONSUME_QUOTA_PER_REQUEST", 0)
+	if constant.MaxPreConsumeQuotaPerRequest < 0 {
+		SysError("MAX_PRE_CONSUME_QUOTA_PER_REQUEST cannot be negative; disabling the per-request quota guard")
+		constant.MaxPreConsumeQuotaPerRequest = 0
+	}
 	constant.BodyAuditEnabled = GetEnvOrDefaultBool("BODY_AUDIT_ENABLED", false)
 	constant.BodyAuditMaxBodyMB = GetEnvOrDefault("BODY_AUDIT_MAX_BODY_MB", 32)
 	if constant.BodyAuditMaxBodyMB <= 0 {
