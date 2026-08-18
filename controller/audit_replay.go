@@ -169,11 +169,17 @@ func isReplayableAIPath(method, requestPath string) bool {
 		return false
 	}
 	cleaned := strings.TrimSuffix(requestPath, "/")
-	switch cleaned {
-	case "/v1/chat/completions", "/chat/completions", "/v1/completions",
-		"/v1/responses", "/v1/responses/compact", "/v1/messages",
-		"/v1/embeddings", "/v1/rerank", "/rerank", "/v1/images/generations":
-		return true
+	if cleaned == "" || !strings.HasPrefix(cleaned, "/") || path.Clean(cleaned) != cleaned {
+		return false
+	}
+	standardEndpointSuffixes := []string{
+		"/chat/completions", "/v1/completions", "/v1/responses", "/v1/responses/compact",
+		"/v1/messages", "/v1/embeddings", "/v1/rerank", "/rerank", "/v1/images/generations",
+	}
+	for _, suffix := range standardEndpointSuffixes {
+		if strings.HasSuffix(cleaned, suffix) && isSafeReplayPathPrefix(strings.TrimSuffix(cleaned, suffix)) {
+			return true
+		}
 	}
 	if strings.HasPrefix(cleaned, "/v1beta/models/") || strings.HasPrefix(cleaned, "/v1/models/") {
 		separator := strings.LastIndex(cleaned, ":")
@@ -186,6 +192,18 @@ func isReplayableAIPath(method, requestPath string) bool {
 		}
 	}
 	return false
+}
+
+func isSafeReplayPathPrefix(prefix string) bool {
+	for _, segment := range strings.Split(strings.Trim(prefix, "/"), "/") {
+		normalized := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(segment))
+		switch normalized {
+		case "admin", "admins", "administration", "manage", "management", "console",
+			"control", "controlplane", "billing", "delete", "deletion", "destroy", "revoke":
+			return false
+		}
+	}
+	return true
 }
 
 func redactReplayPreviewValue(value any) any {

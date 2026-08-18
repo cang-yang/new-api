@@ -115,6 +115,29 @@ func TestClientLevelReplayReentersLoopbackWithCurrentTokenAndIsIdempotent(t *tes
 	assert.Equal(t, "replay_client_level", generated.Source)
 }
 
+func TestReplayableAIPathAllowsProviderPrefixesWithoutBroadeningToLookalikes(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		method string
+		path   string
+		allow  bool
+	}{
+		{name: "baidu qianfan prefixed chat completions", method: http.MethodPost, path: "/v2/tokenplan/personal/chat/completions", allow: true},
+		{name: "prefixed responses", method: http.MethodPost, path: "/gateway/provider/v1/responses", allow: true},
+		{name: "prefixed messages", method: http.MethodPost, path: "/gateway/provider/v1/messages", allow: true},
+		{name: "lookalike endpoint", method: http.MethodPost, path: "/v2/tokenplan/personal/chat/completions-export", allow: false},
+		{name: "suffix followed by side effect", method: http.MethodPost, path: "/v2/tokenplan/personal/chat/completions/delete", allow: false},
+		{name: "management prefix", method: http.MethodPost, path: "/admin/chat/completions", allow: false},
+		{name: "path traversal", method: http.MethodPost, path: "/admin/../chat/completions", allow: false},
+		{name: "non inference path", method: http.MethodPost, path: "/v2/tokenplan/personal/keys/delete", allow: false},
+		{name: "non post", method: http.MethodDelete, path: "/v2/tokenplan/personal/chat/completions", allow: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			assert.Equal(t, testCase.allow, isReplayableAIPath(testCase.method, testCase.path))
+		})
+	}
+}
+
 func TestAuditReplayLoopbackClientIgnoresProxyAndBlocksNonLoopbackDial(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
@@ -232,9 +255,11 @@ func TestExactUpstreamReplayUsesCurrentChannelCredentialAndIsIdempotent(t *testi
 	var callCount int
 	var receivedAuthorization string
 	var receivedBody string
+	var receivedRequestURI string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		receivedAuthorization = r.Header.Get("Authorization")
+		receivedRequestURI = r.URL.RequestURI()
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		receivedBody = string(body)
@@ -260,7 +285,7 @@ func TestExactUpstreamReplayUsesCurrentChannelCredentialAndIsIdempotent(t *testi
 	attempt := &model.AuditAttempt{
 		TraceId: trace.Id, AttemptNo: 0, ChannelId: channel.Id,
 		ChannelType: channel.Type, UpstreamModel: "demo", Method: http.MethodPost,
-		Target:               "https://old-provider.invalid/v1/chat/completions?api_key=HISTORICAL",
+		Target:               "https://qianfan.baidubce.com/v2/tokenplan/personal/chat/completions?api_key=HISTORICAL&alt=sse",
 		RequestBlobId:        requestBlob.Id,
 		State:                "succeeded",
 		SanitizedHeadersJson: []byte(`{"Authorization":"Bearer HISTORICAL-KEY"}`),
@@ -286,6 +311,7 @@ func TestExactUpstreamReplayUsesCurrentChannelCredentialAndIsIdempotent(t *testi
 
 	assert.Equal(t, 1, callCount, "reusing a confirmation must not send a second request")
 	assert.Equal(t, "Bearer CURRENT-CHANNEL-KEY", receivedAuthorization)
+	assert.Equal(t, "/v2/tokenplan/personal/chat/completions?alt=sse", receivedRequestURI)
 	assert.Equal(t, string(requestBlob.Body), receivedBody)
 	assert.Equal(t, float64(http.StatusOK), first["response_status"])
 	assert.Equal(t, first["replay_trace_id"], second["replay_trace_id"])
