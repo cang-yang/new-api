@@ -34,6 +34,17 @@ func (r *StreamResult) Stop(err error) {
 	r.stopped = true
 }
 
+// Fail marks a terminal failure explicitly reported by the upstream protocol.
+func (r *StreamResult) Fail(err error) {
+	if err != nil {
+		r.status.MarkProtocolFailure(err.Error())
+	} else {
+		r.status.MarkProtocolFailure("")
+	}
+	r.status.SetEndReason(relaycommon.StreamEndReasonUpstreamFailed, err)
+	r.stopped = true
+}
+
 // Done signals that the handler has finished processing normally
 // (e.g., Dify "message_end"). The stream stops after this chunk.
 func (r *StreamResult) Done() {

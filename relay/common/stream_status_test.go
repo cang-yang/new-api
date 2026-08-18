@@ -168,6 +168,15 @@ func TestStreamStatusOutcomeRequiresCleanProtocolTerminal(t *testing.T) {
 	assert.Equal(t, ResponseOutcomeParseError, s.Outcome(1))
 }
 
+func TestStreamStatusProtocolFailureOverridesRacingDoneMarker(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonDone, nil)
+	s.MarkProtocolFailure("response.failed")
+	assert.Equal(t, ResponseOutcomeUpstreamFailed, s.Outcome(2))
+	assert.False(t, s.IsNormalEnd())
+}
+
 func TestStreamStatus_IsNormalEnd_NilSafe(t *testing.T) {
 	t.Parallel()
 	var s *StreamStatus

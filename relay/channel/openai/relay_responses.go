@@ -33,6 +33,9 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	if oaiError := responsesResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
+	if len(responsesResponse.Output) == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned an empty responses result"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -84,6 +87,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
+	hasMeaningfulOutput := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
@@ -98,6 +102,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
 			if streamResponse.Response != nil {
+				if len(streamResponse.Response.Output) > 0 {
+					hasMeaningfulOutput = true
+				}
 				if streamResponse.Response.Usage != nil {
 					if streamResponse.Response.Usage.InputTokens != 0 {
 						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
@@ -131,17 +138,23 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				imageCounter.Commit(info)
 				imageCommitted = true
 			}
-		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			sr.Done()
+		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled", "error", "response.error":
 			if !imageCommitted {
 				imageCounter.Reset()
 				imageCounter.Commit(info)
 				imageCommitted = true
 			}
+			sr.Fail(fmt.Errorf("upstream responses stream reported terminal event %s", streamResponse.Type))
 		case "response.output_text.delta":
 			// 处理输出文本
 			responseTextBuilder.WriteString(streamResponse.Delta)
+			if streamResponse.Delta != "" {
+				hasMeaningfulOutput = true
+			}
 		case dto.ResponsesOutputTypeItemDone:
 			if streamResponse.Item != nil {
+				hasMeaningfulOutput = true
 				switch streamResponse.Item.Type {
 				case dto.BuildInCallWebSearchCall:
 					info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
@@ -157,6 +170,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 		}
 	})
+	streamOutcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
+	if streamOutcome != relaycommon.ResponseOutcomeComplete {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream responses stream ended with outcome %s", streamOutcome), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if !hasMeaningfulOutput {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned an empty responses stream"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量

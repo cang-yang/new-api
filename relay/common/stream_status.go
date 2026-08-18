@@ -22,15 +22,16 @@ const (
 )
 
 const (
-	StreamEndReasonNone        StreamEndReason = ""
-	StreamEndReasonDone        StreamEndReason = "done"
-	StreamEndReasonTimeout     StreamEndReason = "timeout"
-	StreamEndReasonClientGone  StreamEndReason = "client_gone"
-	StreamEndReasonScannerErr  StreamEndReason = "scanner_error"
-	StreamEndReasonHandlerStop StreamEndReason = "handler_stop"
-	StreamEndReasonEOF         StreamEndReason = "eof"
-	StreamEndReasonPanic       StreamEndReason = "panic"
-	StreamEndReasonPingFail    StreamEndReason = "ping_fail"
+	StreamEndReasonNone           StreamEndReason = ""
+	StreamEndReasonDone           StreamEndReason = "done"
+	StreamEndReasonTimeout        StreamEndReason = "timeout"
+	StreamEndReasonClientGone     StreamEndReason = "client_gone"
+	StreamEndReasonScannerErr     StreamEndReason = "scanner_error"
+	StreamEndReasonHandlerStop    StreamEndReason = "handler_stop"
+	StreamEndReasonEOF            StreamEndReason = "eof"
+	StreamEndReasonPanic          StreamEndReason = "panic"
+	StreamEndReasonPingFail       StreamEndReason = "ping_fail"
+	StreamEndReasonUpstreamFailed StreamEndReason = "upstream_failed"
 )
 
 const maxStreamErrorEntries = 20
@@ -45,9 +46,10 @@ type StreamStatus struct {
 	EndError  error
 	endOnce   sync.Once
 
-	mu         sync.Mutex
-	Errors     []StreamErrorEntry
-	ErrorCount int
+	mu              sync.Mutex
+	Errors          []StreamErrorEntry
+	ErrorCount      int
+	protocolFailure bool
 }
 
 func NewStreamStatus() *StreamStatus {
@@ -88,6 +90,18 @@ func (s *StreamStatus) HasErrors() bool {
 	return s.ErrorCount > 0
 }
 
+func (s *StreamStatus) MarkProtocolFailure(msg string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.protocolFailure = true
+	s.mu.Unlock()
+	if msg != "" {
+		s.RecordError(msg)
+	}
+}
+
 func (s *StreamStatus) TotalErrorCount() int {
 	if s == nil {
 		return 0
@@ -108,6 +122,12 @@ func (s *StreamStatus) Outcome(receivedEventCount int) ResponseOutcome {
 	if s == nil {
 		return ResponseOutcomeComplete
 	}
+	s.mu.Lock()
+	protocolFailure := s.protocolFailure
+	s.mu.Unlock()
+	if protocolFailure {
+		return ResponseOutcomeUpstreamFailed
+	}
 	switch s.EndReason {
 	case StreamEndReasonDone:
 		if s.HasErrors() {
@@ -123,7 +143,7 @@ func (s *StreamStatus) Outcome(receivedEventCount int) ResponseOutcome {
 		return ResponseOutcomeClientGone
 	case StreamEndReasonTimeout:
 		return ResponseOutcomeTimeout
-	case StreamEndReasonScannerErr, StreamEndReasonPanic, StreamEndReasonPingFail:
+	case StreamEndReasonScannerErr, StreamEndReasonPanic, StreamEndReasonPingFail, StreamEndReasonUpstreamFailed:
 		return ResponseOutcomeUpstreamFailed
 	case StreamEndReasonHandlerStop:
 		return ResponseOutcomeParseError

@@ -146,6 +146,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})
+	streamOutcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
+	if streamOutcome != relaycommon.ResponseOutcomeComplete {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream stream ended with outcome %s", streamOutcome), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if info.ReceivedResponseCount == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned an empty chat stream"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
 	if isAudioModel && secondLastStreamData != "" {
@@ -251,6 +258,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+	if len(simpleResponse.Choices) == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned an empty chat completion"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 
 	for _, choice := range simpleResponse.Choices {
