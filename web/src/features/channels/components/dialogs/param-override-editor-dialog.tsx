@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  FlaskConical,
   GripVertical,
   Plus,
   Search,
@@ -58,6 +59,8 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+
+import { ParamOverrideSimulatorDialog } from './param-override-simulator-dialog'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1135,6 +1138,8 @@ export function ParamOverrideEditorDialog(
   )
   const [templatePresetKey, setTemplatePresetKey] =
     useState('operations_default')
+  const [simulatorOpen, setSimulatorOpen] = useState(false)
+  const [simulatorParamOverride, setSimulatorParamOverride] = useState('{}')
 
   // Initialize state when dialog opens
   useEffect(() => {
@@ -1152,6 +1157,7 @@ export function ParamOverrideEditorDialog(
     setDraggedOperationId('')
     setDragOverOperationId('')
     setDragOverPosition('before')
+    setSimulatorOpen(false)
     if (state.visualMode === 'legacy') {
       setTemplatePresetKey('legacy_default')
     } else {
@@ -1688,6 +1694,25 @@ export function ParamOverrideEditorDialog(
     }
   }, [buildVisualJson, editMode, jsonText, props, t])
 
+  const handleOpenSimulator = useCallback(() => {
+    try {
+      let currentOverride = ''
+      if (editMode === 'json') {
+        const trimmed = jsonText.trim()
+        if (trimmed && !verifyJSON(trimmed)) {
+          throw new Error(t('Parameter override must be valid JSON format'))
+        }
+        currentOverride = trimmed || '{}'
+      } else {
+        currentOverride = buildVisualJson() || '{}'
+      }
+      setSimulatorParamOverride(currentOverride)
+      setSimulatorOpen(true)
+    } catch (error) {
+      toast.error((error as Error).message)
+    }
+  }, [buildVisualJson, editMode, jsonText, t])
+
   // Expand/collapse all conditions
   const expandAllConditions = useCallback(() => {
     if (!selectedOperation) return
@@ -1722,6 +1747,14 @@ export function ParamOverrideEditorDialog(
       bodyClassName='space-y-4'
       footer={
         <>
+          <Button
+            type='button'
+            variant='secondary'
+            onClick={handleOpenSimulator}
+          >
+            <FlaskConical aria-hidden='true' />
+            {t('Simulate')}
+          </Button>
           <Button
             type='button'
             variant='outline'
@@ -2056,6 +2089,11 @@ export function ParamOverrideEditorDialog(
         )}
       </div>
       {/* Footer */}
+      <ParamOverrideSimulatorDialog
+        open={simulatorOpen}
+        paramOverride={simulatorParamOverride}
+        onOpenChange={setSimulatorOpen}
+      />
     </Dialog>
   )
 }

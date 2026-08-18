@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
 
+import type { ParamOverrideSimulationResponse } from './lib/param-override-simulator'
 import type {
   AddChannelRequest,
   BatchDeleteParams,
@@ -58,6 +59,18 @@ export type CodexUsageResponse = {
 export type CodexResetCreditsResponse = CodexUsageResponse
 
 export type CodexUsageResetResponse = CodexUsageResponse
+
+export async function simulateParamOverride(data: {
+  upstream_request: Record<string, unknown>
+  param_override: Record<string, unknown>
+  context?: Record<string, unknown>
+}): Promise<ParamOverrideSimulationResponse> {
+  const res = await api.post('/api/param-override/simulate', data, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
+  return res.data
+}
 
 export type CodexCredentialRefreshResponse = {
   success: boolean
