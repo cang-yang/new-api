@@ -135,8 +135,10 @@ func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other map[string]inter
 		status = "error"
 	}
 	streamInfo := map[string]interface{}{
-		"status":     status,
-		"end_reason": string(ss.EndReason),
+		"status":               status,
+		"outcome":              string(ss.Outcome(relayInfo.ReceivedResponseCount)),
+		"end_reason":           string(ss.EndReason),
+		"received_event_count": relayInfo.ReceivedResponseCount,
 	}
 	if ss.EndError != nil {
 		streamInfo["end_error"] = ss.EndError.Error()

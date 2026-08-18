@@ -1133,10 +1133,22 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 />
               }
             />
+            {other.stream_status.outcome && (
+              <DetailRow
+                label={t('Outcome')}
+                value={other.stream_status.outcome}
+              />
+            )}
             {other.stream_status.end_reason && (
               <DetailRow
                 label={t('End Reason')}
                 value={other.stream_status.end_reason}
+              />
+            )}
+            {other.stream_status.received_event_count != null && (
+              <DetailRow
+                label={t('Received events')}
+                value={String(other.stream_status.received_event_count)}
               />
             )}
             {(other.stream_status.error_count ?? 0) > 0 && (

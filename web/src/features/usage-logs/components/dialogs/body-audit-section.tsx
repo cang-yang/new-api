@@ -41,6 +41,7 @@ import { cn } from '@/lib/utils'
 
 import { getBodyAudit } from '../../api'
 import { parseBodyAuditResponse } from '../../lib/body-audit-response'
+import { diffJsonText } from '../../lib/json-diff'
 import type { AuditAttempt, BodyAudit } from '../../types'
 import { BodyAuditResultContent } from '../body-audit-result'
 
@@ -267,6 +268,22 @@ function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
   const selected =
     props.attempts.find((attempt) => attempt.id === selectedId) ??
     props.attempts.at(-1)
+  const previous = selected
+    ? props.attempts.find(
+        (attempt) => attempt.attempt_no === selected.attempt_no - 1
+      )
+    : undefined
+  const requestDiff = useMemo(() => {
+    if (
+      !selected ||
+      !previous ||
+      selected.request_body_encoding !== 'utf-8' ||
+      previous.request_body_encoding !== 'utf-8'
+    ) {
+      return null
+    }
+    return diffJsonText(previous.request_body, selected.request_body)
+  }, [previous, selected])
 
   if (!selected) return null
 
@@ -342,6 +359,11 @@ function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
           <TabsTrigger value='attempt-response' className='h-7 text-xs'>
             {t('Attempt response')}
           </TabsTrigger>
+          {requestDiff && (
+            <TabsTrigger value='attempt-diff' className='h-7 text-xs'>
+              {t('Changes from previous attempt')}
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value='attempt-request'>
           <PayloadPanel
@@ -363,6 +385,21 @@ function AttemptTimeline(props: { attempts: AuditAttempt[] }) {
             icon={<ArrowDownToLine className='size-3.5' aria-hidden='true' />}
           />
         </TabsContent>
+        {requestDiff && (
+          <TabsContent value='attempt-diff'>
+            <PayloadPanel
+              title={t('JSON changes from the previous attempt')}
+              body={JSON.stringify(requestDiff)}
+              encoding='utf-8'
+              size={
+                new TextEncoder().encode(JSON.stringify(requestDiff)).length
+              }
+              truncated={requestDiff.length >= 500}
+              contentType='application/json'
+              icon={<GitBranch className='size-3.5' aria-hidden='true' />}
+            />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

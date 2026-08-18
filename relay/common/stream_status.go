@@ -9,6 +9,18 @@ import (
 
 type StreamEndReason string
 
+type ResponseOutcome string
+
+const (
+	ResponseOutcomeComplete       ResponseOutcome = "complete"
+	ResponseOutcomeEmpty          ResponseOutcome = "empty"
+	ResponseOutcomeIncomplete     ResponseOutcome = "incomplete"
+	ResponseOutcomeUpstreamFailed ResponseOutcome = "upstream_failed"
+	ResponseOutcomeClientGone     ResponseOutcome = "client_gone"
+	ResponseOutcomeTimeout        ResponseOutcome = "timeout"
+	ResponseOutcomeParseError     ResponseOutcome = "parse_error"
+)
+
 const (
 	StreamEndReasonNone        StreamEndReason = ""
 	StreamEndReasonDone        StreamEndReason = "done"
@@ -89,9 +101,35 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
 	}
-	return s.EndReason == StreamEndReasonDone ||
-		s.EndReason == StreamEndReasonEOF ||
-		s.EndReason == StreamEndReasonHandlerStop
+	return s.EndReason == StreamEndReasonDone && !s.HasErrors()
+}
+
+func (s *StreamStatus) Outcome(receivedEventCount int) ResponseOutcome {
+	if s == nil {
+		return ResponseOutcomeComplete
+	}
+	switch s.EndReason {
+	case StreamEndReasonDone:
+		if s.HasErrors() {
+			return ResponseOutcomeParseError
+		}
+		return ResponseOutcomeComplete
+	case StreamEndReasonEOF:
+		if receivedEventCount == 0 {
+			return ResponseOutcomeEmpty
+		}
+		return ResponseOutcomeIncomplete
+	case StreamEndReasonClientGone:
+		return ResponseOutcomeClientGone
+	case StreamEndReasonTimeout:
+		return ResponseOutcomeTimeout
+	case StreamEndReasonScannerErr, StreamEndReasonPanic, StreamEndReasonPingFail:
+		return ResponseOutcomeUpstreamFailed
+	case StreamEndReasonHandlerStop:
+		return ResponseOutcomeParseError
+	default:
+		return ResponseOutcomeIncomplete
+	}
 }
 
 func (s *StreamStatus) Summary() string {

@@ -135,8 +135,8 @@ func TestStreamStatus_IsNormalEnd(t *testing.T) {
 		normal bool
 	}{
 		{StreamEndReasonDone, true},
-		{StreamEndReasonEOF, true},
-		{StreamEndReasonHandlerStop, true},
+		{StreamEndReasonEOF, false},
+		{StreamEndReasonHandlerStop, false},
 		{StreamEndReasonTimeout, false},
 		{StreamEndReasonClientGone, false},
 		{StreamEndReasonScannerErr, false},
@@ -149,6 +149,23 @@ func TestStreamStatus_IsNormalEnd(t *testing.T) {
 		s.SetEndReason(tt.reason, nil)
 		assert.Equal(t, tt.normal, s.IsNormalEnd(), "reason=%s", tt.reason)
 	}
+}
+
+func TestStreamStatusOutcomeDistinguishesEmptyAndIncompleteEOF(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonEOF, nil)
+	assert.Equal(t, ResponseOutcomeEmpty, s.Outcome(0))
+	assert.Equal(t, ResponseOutcomeIncomplete, s.Outcome(2))
+}
+
+func TestStreamStatusOutcomeRequiresCleanProtocolTerminal(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonDone, nil)
+	assert.Equal(t, ResponseOutcomeComplete, s.Outcome(1))
+	s.RecordError("invalid event")
+	assert.Equal(t, ResponseOutcomeParseError, s.Outcome(1))
 }
 
 func TestStreamStatus_IsNormalEnd_NilSafe(t *testing.T) {

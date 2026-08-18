@@ -409,7 +409,8 @@ func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {
 
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
-	assert.True(t, info.StreamStatus.IsNormalEnd())
+	assert.False(t, info.StreamStatus.IsNormalEnd())
+	assert.Equal(t, relaycommon.ResponseOutcomeIncomplete, info.StreamStatus.Outcome(info.ReceivedResponseCount))
 }
 
 func TestStreamScannerHandler_StreamStatus_HandlerStop(t *testing.T) {

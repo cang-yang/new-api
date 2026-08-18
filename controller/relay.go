@@ -336,6 +336,11 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
+	// Once any response body byte has reached the client, transparently switching
+	// channels would concatenate two protocol streams into one corrupt response.
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		return false
+	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
