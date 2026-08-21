@@ -26,6 +26,7 @@ import {
   FileJson2,
   FileText,
   GitBranch,
+  MoreHorizontal,
   Radio,
   RotateCcw,
   Settings2,
@@ -35,6 +36,12 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -297,29 +304,42 @@ function AttemptTimeline(props: {
   return (
     <div className='space-y-2.5 rounded-lg border p-3'>
       <div className='flex items-center gap-2 text-xs font-semibold'>
-        <GitBranch
-          className='text-muted-foreground size-3.5'
-          aria-hidden='true'
-        />
-        <span>{t('Upstream attempt timeline')}</span>
-        <StatusBadge
-          label={t('{{count}} attempts', { count: props.attempts.length })}
-          variant={props.attempts.length > 1 ? 'orange' : 'neutral'}
-          size='sm'
-          copyable={false}
-        />
-        <Button
-          type='button'
-          variant='outline'
-          size='sm'
-          className='ml-auto h-7 gap-1.5 px-2 text-xs'
-          onClick={() => setReplayOpen(true)}
-        >
-          <RotateCcw className='size-3.5' aria-hidden='true' />
-          {t('Replay')}
-        </Button>
+        <div className='flex min-w-0 flex-1 flex-wrap items-center gap-2'>
+          <GitBranch
+            className='text-muted-foreground size-3.5 shrink-0'
+            aria-hidden='true'
+          />
+          <span>{t('Upstream attempt timeline')}</span>
+          <StatusBadge
+            label={t('{{count}} attempts', { count: props.attempts.length })}
+            variant={props.attempts.length > 1 ? 'orange' : 'neutral'}
+            size='sm'
+            copyable={false}
+          />
+        </div>
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon-sm'
+                className='shrink-0'
+                aria-label={t('More attempt actions')}
+              />
+            }
+          >
+            <MoreHorizontal className='size-4' aria-hidden='true' />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align='end' className='w-52'>
+            <DropdownMenuItem onClick={() => setReplayOpen(true)}>
+              <RotateCcw className='size-4' aria-hidden='true' />
+              {t('Replay selected attempt')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-      <div className='scrollbar-thin flex gap-2 overflow-x-auto pb-1'>
+      <div className='flex scrollbar-thin gap-2 overflow-x-auto pb-1'>
         {props.attempts.map((attempt) => {
           const succeeded = attempt.state === 'succeeded'
           const selectedAttempt = attempt.id === selected.id
@@ -327,7 +347,7 @@ function AttemptTimeline(props: {
             <div
               key={attempt.id}
               className={cn(
-                'relative min-w-44 rounded-md border transition-colors',
+                'min-w-44 rounded-md border transition-colors',
                 selectedAttempt
                   ? 'border-primary bg-primary/5'
                   : 'bg-muted/20 hover:bg-muted/45'
@@ -336,7 +356,7 @@ function AttemptTimeline(props: {
               <button
                 type='button'
                 onClick={() => setSelectedId(attempt.id)}
-                className='w-full px-3 py-2 pr-9 text-left'
+                className='w-full px-3 py-2 text-left'
                 aria-pressed={selectedAttempt}
               >
                 <div className='flex items-center justify-between gap-2'>
@@ -360,21 +380,6 @@ function AttemptTimeline(props: {
                     : ''}
                 </div>
               </button>
-              <Button
-                type='button'
-                variant='ghost'
-                size='icon-sm'
-                className='absolute right-1.5 bottom-1.5 size-6'
-                aria-label={t('Replay attempt {{number}}', {
-                  number: attempt.attempt_no + 1,
-                })}
-                onClick={() => {
-                  setSelectedId(attempt.id)
-                  setReplayOpen(true)
-                }}
-              >
-                <RotateCcw className='size-3' aria-hidden='true' />
-              </Button>
             </div>
           )
         })}
