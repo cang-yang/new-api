@@ -55,7 +55,7 @@ func TestProcessChannelErrorAggregatesWhenErrorLogsDisabled(t *testing.T) {
 	c.Set("channel_type", 1)
 	c.Set("channel_id", 7)
 	apiErr := types.NewOpenAIError(errors.New("upstream unavailable"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
-	processChannelError(c, types.ChannelError{ChannelId: 7, ChannelType: 1, AutoBan: false}, apiErr)
+	processChannelError(c, types.ChannelError{ChannelId: 7, ChannelType: 1, AutoBan: false}, apiErr, nil)
 
 	incidents, total, err := model.ListErrorIncidents(0, 20, false)
 	require.NoError(t, err)
