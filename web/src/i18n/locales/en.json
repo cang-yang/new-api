@@ -11,6 +11,8 @@
     "Attempt response": "Attempt response",
     "Changes from previous attempt": "Changes from previous attempt",
     "Execution config": "Execution config",
+    "Execution details": "Execution details",
+    "Failed to load data": "Failed to load data",
     "Exact payload sent in this attempt": "Exact payload sent in this attempt",
     "Exact upstream response for this attempt": "Exact upstream response for this attempt",
     "JSON changes from the previous attempt": "JSON changes from the previous attempt",

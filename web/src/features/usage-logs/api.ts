@@ -91,11 +91,13 @@ export const getUserLogStats = (
 ) => fetchLogStats('/api/log', params, false)
 
 export async function getBodyAudit(
-  requestId: string
+  requestId: string,
+  includeAttemptBodies = false
 ): Promise<BodyAudit | null> {
   const res = await api.get(
     `/api/log/body-audit/${encodeURIComponent(requestId)}`,
     {
+      params: { include_attempt_bodies: includeAttemptBodies },
       validateStatus: (status) => status === 200 || status === 404,
     }
   )

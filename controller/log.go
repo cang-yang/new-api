@@ -140,7 +140,22 @@ func GetBodyAudit(c *gin.Context) {
 		ClientResponseContentType:   audit.ClientResponseContentType,
 		ClientResponseComplete:      audit.ClientResponseComplete,
 	}
-	trace, attempts, blobs, traceErr := model.GetAuditTraceBundleByRequestId(audit.RequestId)
+	// Preserve the historical full response for callers that do not send the
+	// query parameter. The log UI opts out explicitly and fetches attempt
+	// payloads only when a multi-attempt trace is opened.
+	includeAttemptBodies := c.Query("include_attempt_bodies") != "false"
+	var trace *model.AuditTrace
+	var attempts []model.AuditAttempt
+	blobs := map[int64]model.AuditBlob{}
+	var traceErr error
+	if includeAttemptBodies {
+		trace, attempts, blobs, traceErr = model.GetAuditTraceBundleByRequestId(audit.RequestId)
+	} else {
+		trace, traceErr = model.GetAuditTraceByRequestId(audit.RequestId)
+		if traceErr == nil {
+			attempts, traceErr = model.ListAuditAttempts(trace.Id)
+		}
+	}
 	if traceErr == nil {
 		detail.Trace = &auditTraceDetail{
 			Id: trace.Id, Status: trace.Status, Outcome: trace.Outcome, Source: trace.Source,
@@ -159,10 +174,6 @@ func GetBodyAudit(c *gin.Context) {
 			snapshots = map[int64]model.AuditConfigSnapshot{}
 		}
 		for _, attempt := range attempts {
-			requestBlob := blobs[attempt.RequestBlobId]
-			responseBlob := blobs[attempt.ResponseBlobId]
-			attemptRequestBody, attemptRequestEncoding := bodyAuditPayload(requestBlob.Body)
-			attemptResponseBody, attemptResponseEncoding := bodyAuditPayload(responseBlob.Body)
 			attemptDetail := auditAttemptDetail{
 				Id: attempt.Id, AttemptNo: attempt.AttemptNo, RoutingRetryIndex: attempt.RoutingRetryIndex,
 				ChannelId: attempt.ChannelId, ChannelType: attempt.ChannelType, ChannelName: attempt.ChannelName,
@@ -172,10 +183,14 @@ func GetBodyAudit(c *gin.Context) {
 				HTTPStatus: attempt.HTTPStatus, ErrorCode: attempt.ErrorCode, ErrorMessage: attempt.ErrorMessage,
 				RetryAction: attempt.RetryAction, TerminalKind: attempt.TerminalKind,
 				Complete: attempt.Complete, DurationMs: attempt.DurationMs,
-				RequestBody: attemptRequestBody, RequestBodyEncoding: attemptRequestEncoding,
-				RequestBodySize: requestBlob.OriginalSize, RequestBodyTruncated: requestBlob.Truncated,
-				ResponseBody: attemptResponseBody, ResponseBodyEncoding: attemptResponseEncoding,
-				ResponseBodySize: responseBlob.OriginalSize, ResponseBodyTruncated: responseBlob.Truncated,
+			}
+			if includeAttemptBodies {
+				requestBlob := blobs[attempt.RequestBlobId]
+				responseBlob := blobs[attempt.ResponseBlobId]
+				attemptDetail.RequestBody, attemptDetail.RequestBodyEncoding = bodyAuditPayload(requestBlob.Body)
+				attemptDetail.RequestBodySize, attemptDetail.RequestBodyTruncated = requestBlob.OriginalSize, requestBlob.Truncated
+				attemptDetail.ResponseBody, attemptDetail.ResponseBodyEncoding = bodyAuditPayload(responseBlob.Body)
+				attemptDetail.ResponseBodySize, attemptDetail.ResponseBodyTruncated = responseBlob.OriginalSize, responseBlob.Truncated
 			}
 			if snapshot, exists := snapshots[attempt.ConfigSnapshotId]; exists && json.Valid(snapshot.CanonicalJson) {
 				attemptDetail.ConfigSnapshot = &auditConfigSnapshotDetail{

@@ -11,6 +11,8 @@
     "Attempt response": "本次响应",
     "Changes from previous attempt": "与上次尝试的差异",
     "Execution config": "执行配置",
+    "Execution details": "执行过程",
+    "Failed to load data": "数据加载失败",
     "Exact payload sent in this attempt": "本次尝试实际发送的请求正文",
     "Exact upstream response for this attempt": "本次尝试收到的上游原始响应",
     "JSON changes from the previous attempt": "与上次尝试相比的 JSON 变更",

@@ -116,18 +116,75 @@ describe('body audit attempt actions', () => {
   })
 
   test('renders the attempt timeline fully localized in Chinese', async () => {
+    const user = userEvent.setup()
     renderAudit()
+
+    expect(
+      await screen.findByRole('tab', { name: /^发送正文/ })
+    ).toBeInTheDocument()
+    expect(getAudit).toHaveBeenCalledWith('request-1', false)
+    expect(screen.getByRole('tab', { name: /^响应/ })).toBeInTheDocument()
+    const executionTab = screen.getByRole('tab', { name: '执行过程' })
+    expect(executionTab).toBeInTheDocument()
+    expect(screen.queryByText('上游尝试时间线')).not.toBeInTheDocument()
+
+    await user.click(executionTab)
 
     expect(await screen.findByText('上游尝试时间线')).toBeInTheDocument()
     expect(screen.getByText('共 1 次尝试')).toBeInTheDocument()
     expect(screen.getByText('第 1 次尝试')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: '本次请求' })).toBeInTheDocument()
+    expect(
+      screen.queryByRole('tab', { name: '本次请求' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('tab', { name: '本次响应' })
+    ).not.toBeInTheDocument()
+    expect(getAudit).not.toHaveBeenCalledWith('request-1', true)
+  })
+
+  test('keeps all three response views and mounts them on demand', async () => {
+    const user = userEvent.setup()
+    renderAudit()
+
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+
+    expect(screen.getByRole('tab', { name: '最终结果' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '客户端原文' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '上游返回' })).toBeInTheDocument()
+    expect(
+      screen.queryByText('New API 实际返回给客户端的原始正文')
+    ).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: '客户端原文' }))
+    expect(
+      screen.getByText('New API 实际返回给客户端的原始正文')
+    ).toBeInTheDocument()
+  })
+
+  test('retains per-attempt payload tabs when retries occurred', async () => {
+    const user = userEvent.setup()
+    const firstAttempt = audit.attempts?.[0]
+    if (!firstAttempt) throw new Error('test fixture requires an audit attempt')
+    getAudit.mockResolvedValue({
+      ...audit,
+      attempts: [firstAttempt, { ...firstAttempt, id: 8, attempt_no: 1 }],
+    })
+    renderAudit()
+
+    await user.click(await screen.findByRole('tab', { name: '执行过程' }))
+
+    expect(
+      await screen.findByRole('tab', { name: '本次请求' })
+    ).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '本次响应' })).toBeInTheDocument()
+    expect(getAudit).toHaveBeenCalledWith('request-1', true)
   })
 
   test('keeps replay in one overflow menu for the selected attempt', async () => {
     const user = userEvent.setup()
     renderAudit()
+
+    await user.click(await screen.findByRole('tab', { name: '执行过程' }))
 
     const moreActions = await screen.findByRole('button', {
       name: '更多尝试操作',

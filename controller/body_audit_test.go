@@ -88,4 +88,21 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 	canonical, ok := configSnapshot["canonical_json"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Contains(t, canonical, "overrides")
+
+	recorder = httptest.NewRecorder()
+	context, _ = gin.CreateTestContext(recorder)
+	context.Params = gin.Params{{Key: "request_id", Value: "req-controller-audit"}}
+	context.Request = httptest.NewRequest(http.MethodGet, "/?include_attempt_bodies=false", nil)
+
+	GetBodyAudit(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	attempts, ok = payload.Data["attempts"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, attempts, 1)
+	firstAttempt, ok = attempts[0].(map[string]interface{})
+	require.True(t, ok)
+	assert.Empty(t, firstAttempt["request_body"])
+	assert.Empty(t, firstAttempt["response_body"])
 }

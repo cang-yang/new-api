@@ -145,6 +145,7 @@ function PayloadPanel(props: {
 
 function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
   const { t } = useTranslation()
+  const [activeView, setActiveView] = useState('result')
   const hasClientResponse =
     props.audit.client_response_status > 0 ||
     props.audit.client_response_body_size > 0 ||
@@ -178,7 +179,7 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
   const copied = copiedText === copyText
 
   return (
-    <Tabs defaultValue='result' className='gap-2'>
+    <Tabs value={activeView} onValueChange={setActiveView} className='gap-2'>
       <div className='flex flex-wrap items-center justify-between gap-2'>
         <TabsList className='h-auto max-w-full flex-wrap'>
           <TabsTrigger value='result' className='h-7 gap-1.5 px-2.5 text-xs'>
@@ -204,44 +205,46 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
         )}
       </div>
       <TabsContent value='result'>
-        <div className='border-border bg-background overflow-hidden rounded-lg border shadow-sm'>
-          <div className='bg-muted/35 flex min-h-10 items-center justify-between gap-3 border-b px-3 py-2'>
-            <div className='flex items-center gap-2 text-xs font-medium'>
-              <FileText
-                className='text-muted-foreground size-3.5'
-                aria-hidden='true'
-              />
-              {t('Readable final response')}
+        {activeView === 'result' && (
+          <div className='border-border bg-background overflow-hidden rounded-lg border shadow-sm'>
+            <div className='bg-muted/35 flex min-h-10 items-center justify-between gap-3 border-b px-3 py-2'>
+              <div className='flex items-center gap-2 text-xs font-medium'>
+                <FileText
+                  className='text-muted-foreground size-3.5'
+                  aria-hidden='true'
+                />
+                {t('Readable final response')}
+              </div>
+              <Button
+                variant='ghost'
+                size='sm'
+                className='h-7 gap-1.5 px-2'
+                disabled={!copyText}
+                onClick={() => copyToClipboard(copyText)}
+                aria-label={t('Copy to clipboard')}
+              >
+                {copied ? (
+                  <Check className='size-3.5 text-emerald-600 dark:text-emerald-400' />
+                ) : (
+                  <Copy className='size-3.5' />
+                )}
+                <span className='text-xs'>
+                  {copied ? t('Copied') : t('Copy')}
+                </span>
+              </Button>
             </div>
-            <Button
-              variant='ghost'
-              size='sm'
-              className='h-7 gap-1.5 px-2'
-              disabled={!copyText}
-              onClick={() => copyToClipboard(copyText)}
-              aria-label={t('Copy to clipboard')}
-            >
-              {copied ? (
-                <Check className='size-3.5 text-emerald-600 dark:text-emerald-400' />
-              ) : (
-                <Copy className='size-3.5' />
-              )}
-              <span className='text-xs'>
-                {copied ? t('Copied') : t('Copy')}
-              </span>
-            </Button>
+            <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4'>
+              <BodyAuditResultContent
+                result={result}
+                emptyLabel={t('No readable text was extracted')}
+                imageAlt={t('Generated image')}
+              />
+            </div>
           </div>
-          <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4'>
-            <BodyAuditResultContent
-              result={result}
-              emptyLabel={t('No readable text was extracted')}
-              imageAlt={t('Generated image')}
-            />
-          </div>
-        </div>
+        )}
       </TabsContent>
       <TabsContent value='client'>
-        {hasClientResponse ? (
+        {activeView === 'client' && hasClientResponse && (
           <PayloadPanel
             title={t('Exact response returned by New API')}
             body={props.audit.client_response_body}
@@ -251,22 +254,25 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
             contentType={props.audit.client_response_content_type}
             icon={<FileJson2 className='size-3.5' aria-hidden='true' />}
           />
-        ) : (
+        )}
+        {activeView === 'client' && !hasClientResponse && (
           <div className='bg-muted/30 text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-xs'>
             {t('Client response was not captured for this legacy record')}
           </div>
         )}
       </TabsContent>
       <TabsContent value='upstream'>
-        <PayloadPanel
-          title={t('Raw response returned by upstream')}
-          body={props.audit.response_body}
-          encoding={props.audit.response_body_encoding}
-          size={props.audit.response_body_size}
-          truncated={props.audit.response_body_truncated}
-          contentType={props.audit.response_content_type}
-          icon={<Radio className='size-3.5' aria-hidden='true' />}
-        />
+        {activeView === 'upstream' && (
+          <PayloadPanel
+            title={t('Raw response returned by upstream')}
+            body={props.audit.response_body}
+            encoding={props.audit.response_body_encoding}
+            size={props.audit.response_body_size}
+            truncated={props.audit.response_body_truncated}
+            contentType={props.audit.response_content_type}
+            icon={<Radio className='size-3.5' aria-hidden='true' />}
+          />
+        )}
       </TabsContent>
     </Tabs>
   )
@@ -277,15 +283,21 @@ function AttemptTimeline(props: {
   requestId: string
 }) {
   const { t } = useTranslation()
+  const showAttemptPayloads = props.attempts.length > 1
+  const payloadQuery = useQuery({
+    queryKey: ['body-audit', props.requestId, 'attempt-bodies'],
+    queryFn: () => getBodyAudit(props.requestId, true),
+    enabled: showAttemptPayloads,
+    retry: false,
+  })
+  const attempts = payloadQuery.data?.attempts ?? props.attempts
   const [selectedId, setSelectedId] = useState(props.attempts.at(-1)?.id ?? 0)
   const [replayOpen, setReplayOpen] = useState(false)
+  const [activeView, setActiveView] = useState('attempt-request')
   const selected =
-    props.attempts.find((attempt) => attempt.id === selectedId) ??
-    props.attempts.at(-1)
+    attempts.find((attempt) => attempt.id === selectedId) ?? attempts.at(-1)
   const previous = selected
-    ? props.attempts.find(
-        (attempt) => attempt.attempt_no === selected.attempt_no - 1
-      )
+    ? attempts.find((attempt) => attempt.attempt_no === selected.attempt_no - 1)
     : undefined
   const requestDiff = useMemo(() => {
     if (
@@ -311,8 +323,8 @@ function AttemptTimeline(props: {
           />
           <span>{t('Upstream attempt timeline')}</span>
           <StatusBadge
-            label={t('{{count}} attempts', { count: props.attempts.length })}
-            variant={props.attempts.length > 1 ? 'orange' : 'neutral'}
+            label={t('{{count}} attempts', { count: attempts.length })}
+            variant={attempts.length > 1 ? 'orange' : 'neutral'}
             size='sm'
             copyable={false}
           />
@@ -340,7 +352,7 @@ function AttemptTimeline(props: {
         </DropdownMenu>
       </div>
       <div className='flex scrollbar-thin gap-2 overflow-x-auto pb-1'>
-        {props.attempts.map((attempt) => {
+        {attempts.map((attempt) => {
           const succeeded = attempt.state === 'succeeded'
           const selectedAttempt = attempt.id === selected.id
           return (
@@ -394,82 +406,142 @@ function AttemptTimeline(props: {
         <span className='max-w-full truncate'>{selected.target || '—'}</span>
         <span>{selected.terminal_kind || selected.state}</span>
       </div>
-      <Tabs defaultValue='attempt-request' className='gap-2'>
-        <TabsList className='h-8'>
-          <TabsTrigger value='attempt-request' className='h-7 text-xs'>
-            {t('Attempt request')}
-          </TabsTrigger>
-          <TabsTrigger value='attempt-response' className='h-7 text-xs'>
-            {t('Attempt response')}
-          </TabsTrigger>
-          {requestDiff && (
-            <TabsTrigger value='attempt-diff' className='h-7 text-xs'>
-              {t('Changes from previous attempt')}
-            </TabsTrigger>
-          )}
-          {selected.config_snapshot && (
-            <TabsTrigger value='attempt-config' className='h-7 text-xs'>
-              {t('Execution config')}
-            </TabsTrigger>
-          )}
-        </TabsList>
-        <TabsContent value='attempt-request'>
-          <PayloadPanel
-            title={t('Exact payload sent in this attempt')}
-            body={selected.request_body}
-            encoding={selected.request_body_encoding}
-            size={selected.request_body_size}
-            truncated={selected.request_body_truncated}
-            icon={<ArrowUpFromLine className='size-3.5' aria-hidden='true' />}
-          />
-        </TabsContent>
-        <TabsContent value='attempt-response'>
-          <PayloadPanel
-            title={t('Exact upstream response for this attempt')}
-            body={selected.response_body}
-            encoding={selected.response_body_encoding}
-            size={selected.response_body_size}
-            truncated={selected.response_body_truncated}
-            icon={<ArrowDownToLine className='size-3.5' aria-hidden='true' />}
-          />
-        </TabsContent>
-        {requestDiff && (
-          <TabsContent value='attempt-diff'>
-            <PayloadPanel
-              title={t('JSON changes from the previous attempt')}
-              body={JSON.stringify(requestDiff)}
-              encoding='utf-8'
-              size={
-                new TextEncoder().encode(JSON.stringify(requestDiff)).length
-              }
-              truncated={requestDiff.length >= 500}
-              contentType='application/json'
-              icon={<GitBranch className='size-3.5' aria-hidden='true' />}
-            />
-          </TabsContent>
-        )}
-        {selected.config_snapshot && (
-          <TabsContent value='attempt-config'>
-            <PayloadPanel
-              title={`${t('Immutable execution config')} · ${selected.config_snapshot.digest.slice(0, 12)}`}
-              body={JSON.stringify(
-                selected.config_snapshot.canonical_json,
-                null,
-                2
+      {showAttemptPayloads && payloadQuery.isLoading && (
+        <div className='space-y-2 rounded-lg border p-3'>
+          <Skeleton className='h-8 w-72 max-w-full' />
+          <Skeleton className='h-48 w-full' />
+        </div>
+      )}
+      {showAttemptPayloads && payloadQuery.isError && (
+        <div className='bg-muted/30 flex items-center justify-between gap-3 rounded-lg border border-dashed px-4 py-4 text-xs'>
+          <span className='text-muted-foreground'>
+            {t('Failed to load data')}
+          </span>
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => payloadQuery.refetch()}
+          >
+            {t('Retry')}
+          </Button>
+        </div>
+      )}
+      {showAttemptPayloads &&
+        !payloadQuery.isLoading &&
+        !payloadQuery.isError && (
+          <Tabs
+            value={activeView}
+            onValueChange={setActiveView}
+            className='gap-2'
+          >
+            <TabsList className='h-8'>
+              <TabsTrigger value='attempt-request' className='h-7 text-xs'>
+                {t('Attempt request')}
+              </TabsTrigger>
+              <TabsTrigger value='attempt-response' className='h-7 text-xs'>
+                {t('Attempt response')}
+              </TabsTrigger>
+              {requestDiff && (
+                <TabsTrigger value='attempt-diff' className='h-7 text-xs'>
+                  {t('Changes from previous attempt')}
+                </TabsTrigger>
               )}
-              encoding='utf-8'
-              size={
-                new TextEncoder().encode(
-                  JSON.stringify(selected.config_snapshot.canonical_json)
-                ).length
-              }
-              truncated={false}
-              contentType={`application/json · schema v${selected.config_snapshot.schema_version}`}
-              icon={<Settings2 className='size-3.5' aria-hidden='true' />}
-            />
-          </TabsContent>
+              {selected.config_snapshot && (
+                <TabsTrigger value='attempt-config' className='h-7 text-xs'>
+                  {t('Execution config')}
+                </TabsTrigger>
+              )}
+            </TabsList>
+            <TabsContent value='attempt-request'>
+              {activeView === 'attempt-request' && (
+                <PayloadPanel
+                  title={t('Exact payload sent in this attempt')}
+                  body={selected.request_body}
+                  encoding={selected.request_body_encoding}
+                  size={selected.request_body_size}
+                  truncated={selected.request_body_truncated}
+                  icon={
+                    <ArrowUpFromLine className='size-3.5' aria-hidden='true' />
+                  }
+                />
+              )}
+            </TabsContent>
+            <TabsContent value='attempt-response'>
+              {activeView === 'attempt-response' && (
+                <PayloadPanel
+                  title={t('Exact upstream response for this attempt')}
+                  body={selected.response_body}
+                  encoding={selected.response_body_encoding}
+                  size={selected.response_body_size}
+                  truncated={selected.response_body_truncated}
+                  icon={
+                    <ArrowDownToLine className='size-3.5' aria-hidden='true' />
+                  }
+                />
+              )}
+            </TabsContent>
+            {requestDiff && (
+              <TabsContent value='attempt-diff'>
+                {activeView === 'attempt-diff' && (
+                  <PayloadPanel
+                    title={t('JSON changes from the previous attempt')}
+                    body={JSON.stringify(requestDiff)}
+                    encoding='utf-8'
+                    size={
+                      new TextEncoder().encode(JSON.stringify(requestDiff))
+                        .length
+                    }
+                    truncated={requestDiff.length >= 500}
+                    contentType='application/json'
+                    icon={<GitBranch className='size-3.5' aria-hidden='true' />}
+                  />
+                )}
+              </TabsContent>
+            )}
+            {selected.config_snapshot && (
+              <TabsContent value='attempt-config'>
+                {activeView === 'attempt-config' && (
+                  <PayloadPanel
+                    title={`${t('Immutable execution config')} · ${selected.config_snapshot.digest.slice(0, 12)}`}
+                    body={JSON.stringify(
+                      selected.config_snapshot.canonical_json,
+                      null,
+                      2
+                    )}
+                    encoding='utf-8'
+                    size={
+                      new TextEncoder().encode(
+                        JSON.stringify(selected.config_snapshot.canonical_json)
+                      ).length
+                    }
+                    truncated={false}
+                    contentType={`application/json · schema v${selected.config_snapshot.schema_version}`}
+                    icon={<Settings2 className='size-3.5' aria-hidden='true' />}
+                  />
+                )}
+              </TabsContent>
+            )}
+          </Tabs>
         )}
-      </Tabs>
+      {!showAttemptPayloads && selected.config_snapshot && (
+        <PayloadPanel
+          title={`${t('Immutable execution config')} · ${selected.config_snapshot.digest.slice(0, 12)}`}
+          body={JSON.stringify(
+            selected.config_snapshot.canonical_json,
+            null,
+            2
+          )}
+          encoding='utf-8'
+          size={
+            new TextEncoder().encode(
+              JSON.stringify(selected.config_snapshot.canonical_json)
+            ).length
+          }
+          truncated={false}
+          contentType={`application/json · schema v${selected.config_snapshot.schema_version}`}
+          icon={<Settings2 className='size-3.5' aria-hidden='true' />}
+        />
+      )}
       <AuditReplayDialog
         open={replayOpen}
         onOpenChange={setReplayOpen}
@@ -482,6 +554,7 @@ function AttemptTimeline(props: {
 
 function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
   const { t } = useTranslation()
+  const [activeView, setActiveView] = useState('request')
   const responseStatusVariant =
     props.audit.response_status >= 200 && props.audit.response_status < 300
       ? 'green'
@@ -489,29 +562,33 @@ function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
 
   return (
     <div className='space-y-3'>
-      {props.audit.attempts && props.audit.attempts.length > 0 && (
-        <AttemptTimeline
-          attempts={props.audit.attempts}
-          requestId={props.audit.request_id}
-        />
-      )}
-      <Tabs defaultValue='request' className='gap-2.5'>
+      <Tabs
+        value={activeView}
+        onValueChange={setActiveView}
+        className='gap-2.5'
+      >
         <div className='flex flex-wrap items-center justify-between gap-2'>
-          <TabsList className='h-9'>
-            <TabsTrigger value='request' className='gap-1.5 px-3'>
+          <TabsList className='h-auto max-w-full flex-wrap'>
+            <TabsTrigger value='request' className='h-8 gap-1.5 px-3'>
               <ArrowUpFromLine className='size-3.5' aria-hidden='true' />
               {t('Sent Request')}
               <span className='text-muted-foreground font-mono text-[10px]'>
                 {formatBytes(props.audit.request_body_size)}
               </span>
             </TabsTrigger>
-            <TabsTrigger value='response' className='gap-1.5 px-3'>
+            <TabsTrigger value='response' className='h-8 gap-1.5 px-3'>
               <ArrowDownToLine className='size-3.5' aria-hidden='true' />
               {t('Response')}
               <span className='text-muted-foreground font-mono text-[10px]'>
                 {formatBytes(props.audit.response_body_size)}
               </span>
             </TabsTrigger>
+            {props.audit.attempts && props.audit.attempts.length > 0 && (
+              <TabsTrigger value='execution' className='h-8 gap-1.5 px-3'>
+                <Settings2 className='size-3.5' aria-hidden='true' />
+                {t('Execution details')}
+              </TabsTrigger>
+            )}
           </TabsList>
           <div className='flex items-center gap-1.5'>
             {props.audit.response_status > 0 && (
@@ -535,18 +612,35 @@ function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
           </div>
         </div>
         <TabsContent value='request'>
-          <PayloadPanel
-            title={t('Final request sent to upstream')}
-            body={props.audit.request_body}
-            encoding={props.audit.request_body_encoding}
-            size={props.audit.request_body_size}
-            truncated={props.audit.request_body_truncated}
-            icon={<ArrowUpFromLine className='size-3.5' aria-hidden='true' />}
-          />
+          {activeView === 'request' && (
+            <PayloadPanel
+              title={t('Final request sent to upstream')}
+              body={props.audit.request_body}
+              encoding={props.audit.request_body_encoding}
+              size={props.audit.request_body_size}
+              truncated={props.audit.request_body_truncated}
+              icon={<ArrowUpFromLine className='size-3.5' aria-hidden='true' />}
+            />
+          )}
         </TabsContent>
         <TabsContent value='response'>
-          <ResponsePanel audit={props.audit} requestPath={props.requestPath} />
+          {activeView === 'response' && (
+            <ResponsePanel
+              audit={props.audit}
+              requestPath={props.requestPath}
+            />
+          )}
         </TabsContent>
+        {props.audit.attempts && props.audit.attempts.length > 0 && (
+          <TabsContent value='execution'>
+            {activeView === 'execution' && (
+              <AttemptTimeline
+                attempts={props.audit.attempts}
+                requestId={props.audit.request_id}
+              />
+            )}
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )
@@ -560,7 +654,7 @@ export function BodyAuditSection(props: {
   const { t } = useTranslation()
   const query = useQuery({
     queryKey: ['body-audit', props.requestId],
-    queryFn: () => getBodyAudit(props.requestId),
+    queryFn: () => getBodyAudit(props.requestId, false),
     enabled: props.enabled && props.requestId.length > 0,
     retry: false,
   })
