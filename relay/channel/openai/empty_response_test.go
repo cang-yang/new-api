@@ -73,7 +73,7 @@ func TestOaiStreamHandlerRejectsDoneWithoutAnyEvents(t *testing.T) {
 	require.Nil(t, usage)
 	require.NotNil(t, apiErr)
 	require.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
-	require.Equal(t, relaycommon.ResponseOutcomeComplete, info.StreamStatus.Outcome(info.ReceivedResponseCount))
+	require.Equal(t, relaycommon.StreamResultComplete, info.StreamStatus.Outcome(info.ReceivedResponseCount))
 }
 
 func TestOaiStreamHandlerRejectsEOFWithoutProtocolTerminal(t *testing.T) {
@@ -93,5 +93,5 @@ func TestOaiStreamHandlerRejectsEOFWithoutProtocolTerminal(t *testing.T) {
 	require.Nil(t, usage)
 	require.NotNil(t, apiErr)
 	require.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
-	require.Equal(t, relaycommon.ResponseOutcomeIncomplete, info.StreamStatus.Outcome(info.ReceivedResponseCount))
+	require.Equal(t, relaycommon.StreamResultIncomplete, info.StreamStatus.Outcome(info.ReceivedResponseCount))
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func buildUsageFromGeminiMetadata(metadata *dto.GeminiUsageMetadata, fallbackPromptTokens int) dto.Usage {
@@ -147,7 +148,7 @@ func geminiEmptyResponseError() *types.NewAPIError {
 	return types.NewOpenAIError(errors.New("empty response from Gemini API"), types.ErrorCodeEmptyResponse, http.StatusBadGateway)
 }
 
-func geminiStreamOutcomeError(outcome relaycommon.ResponseOutcome) *types.NewAPIError {
+func geminiStreamOutcomeError(outcome relaycommon.StreamResultOutcome) *types.NewAPIError {
 	return types.NewOpenAIError(fmt.Errorf("upstream Gemini stream ended with outcome %s", outcome), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 }
 
@@ -243,7 +244,19 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 
 		if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
+			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
+		}
+		info.ObserveResponseModel(gjson.Get(data, "modelVersion").Str)
+		for _, candidate := range geminiResponse.Candidates {
+			if candidate.FinishReason == nil || *candidate.FinishReason == "" || *candidate.FinishReason == "FINISH_REASON_UNSPECIFIED" {
+				continue
+			}
+			switch *candidate.FinishReason {
+			case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION":
+				info.PerformanceBusinessRejection = true
+			}
+			info.StreamStatus.MarkCompleted()
 		}
 
 		markGeminiGoogleSearchCall(c, &geminiResponse)
@@ -291,6 +304,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			sr.Complete()
 		}
 	})
+	info.StreamStatus.RequireTerminal()
 
 	if !hasBillableUsageMetadata {
 		if info.ReceivedResponseCount > 0 {
@@ -318,7 +332,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return usage, nil
 	}
 	outcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
-	if outcome != relaycommon.ResponseOutcomeComplete {
+	if outcome != relaycommon.StreamResultComplete {
 		return usage, geminiStreamOutcomeError(outcome)
 	}
 	if !meaningful {
@@ -456,6 +470,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
 	markGeminiGoogleSearchCall(c, &geminiResponse)
 	countGeminiBillableFunctionCalls(info, &geminiResponse)
 	if len(geminiResponse.Candidates) == 0 || !geminiResponseMeaningful(&geminiResponse) || geminiResponseFailure(&geminiResponse) != nil {
@@ -463,6 +478,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 
 		var newAPIError *types.NewAPIError
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
+			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 			newAPIError = types.NewOpenAIError(
 				errors.New("request blocked by Gemini API: "+*geminiResponse.PromptFeedback.BlockReason),

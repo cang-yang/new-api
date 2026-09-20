@@ -155,17 +155,17 @@ func TestStreamStatusOutcomeDistinguishesEmptyAndIncompleteEOF(t *testing.T) {
 	t.Parallel()
 	s := NewStreamStatus()
 	s.SetEndReason(StreamEndReasonEOF, nil)
-	assert.Equal(t, ResponseOutcomeEmpty, s.Outcome(0))
-	assert.Equal(t, ResponseOutcomeIncomplete, s.Outcome(2))
+	assert.Equal(t, StreamResultEmpty, s.Outcome(0))
+	assert.Equal(t, StreamResultIncomplete, s.Outcome(2))
 }
 
 func TestStreamStatusOutcomeRequiresCleanProtocolTerminal(t *testing.T) {
 	t.Parallel()
 	s := NewStreamStatus()
 	s.SetEndReason(StreamEndReasonDone, nil)
-	assert.Equal(t, ResponseOutcomeComplete, s.Outcome(1))
+	assert.Equal(t, StreamResultComplete, s.Outcome(1))
 	s.RecordError("invalid event")
-	assert.Equal(t, ResponseOutcomeParseError, s.Outcome(1))
+	assert.Equal(t, StreamResultParseError, s.Outcome(1))
 }
 
 func TestStreamStatusProtocolFailureOverridesRacingDoneMarker(t *testing.T) {
@@ -173,7 +173,7 @@ func TestStreamStatusProtocolFailureOverridesRacingDoneMarker(t *testing.T) {
 	s := NewStreamStatus()
 	s.SetEndReason(StreamEndReasonDone, nil)
 	s.MarkProtocolFailure("response.failed")
-	assert.Equal(t, ResponseOutcomeUpstreamFailed, s.Outcome(2))
+	assert.Equal(t, StreamResultUpstreamFailed, s.Outcome(2))
 	assert.False(t, s.IsNormalEnd())
 }
 
@@ -183,11 +183,11 @@ func TestStreamStatusProtocolCompleteOverridesTransportEOF(t *testing.T) {
 	s.MarkProtocolComplete()
 	s.SetEndReason(StreamEndReasonEOF, nil)
 
-	assert.Equal(t, ResponseOutcomeComplete, s.Outcome(2))
+	assert.Equal(t, StreamResultComplete, s.Outcome(2))
 	assert.True(t, s.IsNormalEnd())
 
 	s.MarkProtocolEmpty()
-	assert.Equal(t, ResponseOutcomeEmpty, s.Outcome(2))
+	assert.Equal(t, StreamResultEmpty, s.Outcome(2))
 	assert.False(t, s.IsNormalEnd())
 }
 

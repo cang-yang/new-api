@@ -38,7 +38,7 @@ func TestClaudeStreamProtocolOutcomes(t *testing.T) {
 	tests := []struct {
 		name        string
 		lines       []string
-		wantOutcome relaycommon.ResponseOutcome
+		wantOutcome relaycommon.StreamResultOutcome
 		wantError   bool
 	}{
 		{
@@ -49,7 +49,7 @@ func TestClaudeStreamProtocolOutcomes(t *testing.T) {
 				`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
 				`{"type":"message_stop"}`,
 			},
-			wantOutcome: relaycommon.ResponseOutcomeComplete,
+			wantOutcome: relaycommon.StreamResultComplete,
 		},
 		{
 			name: "tool call is meaningful",
@@ -57,24 +57,24 @@ func TestClaudeStreamProtocolOutcomes(t *testing.T) {
 				`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"lookup","input":{}}}`,
 				`{"type":"message_stop"}`,
 			},
-			wantOutcome: relaycommon.ResponseOutcomeComplete,
+			wantOutcome: relaycommon.StreamResultComplete,
 		},
 		{
 			name:        "transport eof without message stop is incomplete",
 			lines:       []string{`{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}`},
-			wantOutcome: relaycommon.ResponseOutcomeIncomplete,
+			wantOutcome: relaycommon.StreamResultIncomplete,
 			wantError:   true,
 		},
 		{
 			name:        "terminal stream without output is empty",
 			lines:       []string{`{"type":"message_start","message":{"id":"m1","model":"claude-test"}}`, `{"type":"message_stop"}`},
-			wantOutcome: relaycommon.ResponseOutcomeEmpty,
+			wantOutcome: relaycommon.StreamResultEmpty,
 			wantError:   true,
 		},
 		{
 			name:        "upstream error event is failed",
 			lines:       []string{`{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`},
-			wantOutcome: relaycommon.ResponseOutcomeUpstreamFailed,
+			wantOutcome: relaycommon.StreamResultUpstreamFailed,
 			wantError:   true,
 		},
 		{
@@ -83,7 +83,7 @@ func TestClaudeStreamProtocolOutcomes(t *testing.T) {
 				`{"type":"content_block_delta","delta":{"type":"text_delta","text":"cannot comply"}}`,
 				`{"type":"message_delta","delta":{"stop_reason":"refusal"}}`,
 			},
-			wantOutcome: relaycommon.ResponseOutcomeUpstreamFailed,
+			wantOutcome: relaycommon.StreamResultUpstreamFailed,
 			wantError:   true,
 		},
 	}

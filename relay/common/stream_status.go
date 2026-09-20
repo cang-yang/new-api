@@ -9,16 +9,16 @@ import (
 
 type StreamEndReason string
 
-type ResponseOutcome string
+type StreamResultOutcome string
 
 const (
-	ResponseOutcomeComplete       ResponseOutcome = "complete"
-	ResponseOutcomeEmpty          ResponseOutcome = "empty"
-	ResponseOutcomeIncomplete     ResponseOutcome = "incomplete"
-	ResponseOutcomeUpstreamFailed ResponseOutcome = "upstream_failed"
-	ResponseOutcomeClientGone     ResponseOutcome = "client_gone"
-	ResponseOutcomeTimeout        ResponseOutcome = "timeout"
-	ResponseOutcomeParseError     ResponseOutcome = "parse_error"
+	StreamResultComplete       StreamResultOutcome = "complete"
+	StreamResultEmpty          StreamResultOutcome = "empty"
+	StreamResultIncomplete     StreamResultOutcome = "incomplete"
+	StreamResultUpstreamFailed StreamResultOutcome = "upstream_failed"
+	StreamResultClientGone     StreamResultOutcome = "client_gone"
+	StreamResultTimeout        StreamResultOutcome = "timeout"
+	StreamResultParseError     StreamResultOutcome = "parse_error"
 )
 
 const (
@@ -34,6 +34,18 @@ const (
 	StreamEndReasonUpstreamFailed StreamEndReason = "upstream_failed"
 )
 
+// ResponseOutcome is the protocol-level result of one response, independent of
+// how the transport ended. Adaptors mark it from the events they already parse.
+type ResponseOutcome string
+
+const (
+	ResponseOutcomeUnknown    ResponseOutcome = ""
+	ResponseOutcomeCompleted  ResponseOutcome = "completed"
+	ResponseOutcomeFailed     ResponseOutcome = "failed"
+	ResponseOutcomeIncomplete ResponseOutcome = "incomplete"
+	ResponseOutcomeCancelled  ResponseOutcome = "cancelled"
+)
+
 const maxStreamErrorEntries = 20
 
 type StreamErrorEntry struct {
@@ -46,12 +58,32 @@ type StreamStatus struct {
 	EndError  error
 	endOnce   sync.Once
 
-	mu               sync.Mutex
-	Errors           []StreamErrorEntry
-	ErrorCount       int
+	mu         sync.Mutex
+	Errors     []StreamErrorEntry
+	ErrorCount int
+
+	response         ResponseOutcome
+	errorCode        string
+	errorType        string
+	errorStatus      int
+	incompleteReason string
+	expectsTerminal  bool
 	protocolFailure  bool
 	protocolComplete bool
 	protocolEmpty    bool
+}
+
+// StreamOutcome holds classification facts only; upstream messages never
+// enter it because they may contain credentials or request content.
+type StreamOutcome struct {
+	EndReason        StreamEndReason
+	HasErrors        bool
+	ExpectsTerminal  bool
+	Response         ResponseOutcome
+	ErrorCode        string
+	ErrorType        string
+	ErrorStatus      int
+	IncompleteReason string
 }
 
 func NewStreamStatus() *StreamStatus {
@@ -80,6 +112,95 @@ func (s *StreamStatus) RecordError(msg string) {
 			Message:   msg,
 			Timestamp: time.Now(),
 		})
+	}
+}
+
+// RequireTerminal declares that the protocol always ends with an explicit
+// terminal event, so a stream that ends without one was cut short.
+func (s *StreamStatus) RequireTerminal() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expectsTerminal = true
+}
+
+// MarkCompleted, MarkIncomplete and MarkCancelled keep the first terminal seen;
+// MarkFailed always wins because an error after completion is still a failure.
+func (s *StreamStatus) MarkCompleted() {
+	s.markTerminal(ResponseOutcomeCompleted, "")
+}
+
+func (s *StreamStatus) MarkIncomplete(reason string) {
+	s.markTerminal(ResponseOutcomeIncomplete, reason)
+}
+
+func (s *StreamStatus) MarkCancelled() {
+	s.markTerminal(ResponseOutcomeCancelled, "")
+}
+
+func (s *StreamStatus) markTerminal(outcome ResponseOutcome, incompleteReason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.response != ResponseOutcomeUnknown {
+		return
+	}
+	s.response = outcome
+	s.incompleteReason = incompleteReason
+}
+
+// MarkFailed records a protocol failure. Empty details never erase details
+// recorded earlier, so a bare error envelope keeps the structured error.
+func (s *StreamStatus) MarkFailed(code, errorType string, status int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.response = ResponseOutcomeFailed
+	if code != "" {
+		s.errorCode = code
+	}
+	if errorType != "" {
+		s.errorType = errorType
+	}
+	if status != 0 {
+		s.errorStatus = status
+	}
+}
+
+func (s *StreamStatus) ResponseOutcome() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.response)
+}
+
+func (s *StreamStatus) ResponseFailed() bool {
+	return s.ResponseOutcome() == string(ResponseOutcomeFailed)
+}
+
+func (s *StreamStatus) OutcomeSnapshot() StreamOutcome {
+	if s == nil {
+		return StreamOutcome{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return StreamOutcome{
+		EndReason:        s.EndReason,
+		HasErrors:        s.ErrorCount > 0,
+		ExpectsTerminal:  s.expectsTerminal,
+		Response:         s.response,
+		ErrorCode:        s.errorCode,
+		ErrorType:        s.errorType,
+		ErrorStatus:      s.errorStatus,
+		IncompleteReason: s.incompleteReason,
 	}
 }
 
@@ -144,53 +265,61 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	protocolComplete := s.protocolComplete
 	protocolFailure := s.protocolFailure
 	protocolEmpty := s.protocolEmpty
+	response := s.response
 	s.mu.Unlock()
-	return (s.EndReason == StreamEndReasonDone || protocolComplete) &&
+	responseComplete := response == ResponseOutcomeCompleted
+	responseFailed := response == ResponseOutcomeFailed || response == ResponseOutcomeIncomplete || response == ResponseOutcomeCancelled
+	return (s.EndReason == StreamEndReasonDone || protocolComplete || responseComplete) &&
+		!responseFailed &&
 		!protocolFailure && !protocolEmpty && !s.HasErrors()
 }
 
-func (s *StreamStatus) Outcome(receivedEventCount int) ResponseOutcome {
+func (s *StreamStatus) Outcome(receivedEventCount int) StreamResultOutcome {
 	if s == nil {
-		return ResponseOutcomeComplete
+		return StreamResultComplete
 	}
 	s.mu.Lock()
 	protocolFailure := s.protocolFailure
 	protocolComplete := s.protocolComplete
 	protocolEmpty := s.protocolEmpty
+	response := s.response
 	s.mu.Unlock()
-	if protocolFailure {
-		return ResponseOutcomeUpstreamFailed
+	if protocolFailure || response == ResponseOutcomeFailed {
+		return StreamResultUpstreamFailed
 	}
 	if protocolEmpty {
-		return ResponseOutcomeEmpty
+		return StreamResultEmpty
 	}
-	if protocolComplete {
+	if response == ResponseOutcomeIncomplete || response == ResponseOutcomeCancelled {
+		return StreamResultIncomplete
+	}
+	if protocolComplete || response == ResponseOutcomeCompleted {
 		if s.HasErrors() {
-			return ResponseOutcomeParseError
+			return StreamResultParseError
 		}
-		return ResponseOutcomeComplete
+		return StreamResultComplete
 	}
 	switch s.EndReason {
 	case StreamEndReasonDone:
 		if s.HasErrors() {
-			return ResponseOutcomeParseError
+			return StreamResultParseError
 		}
-		return ResponseOutcomeComplete
+		return StreamResultComplete
 	case StreamEndReasonEOF:
 		if receivedEventCount == 0 {
-			return ResponseOutcomeEmpty
+			return StreamResultEmpty
 		}
-		return ResponseOutcomeIncomplete
+		return StreamResultIncomplete
 	case StreamEndReasonClientGone:
-		return ResponseOutcomeClientGone
+		return StreamResultClientGone
 	case StreamEndReasonTimeout:
-		return ResponseOutcomeTimeout
+		return StreamResultTimeout
 	case StreamEndReasonScannerErr, StreamEndReasonPanic, StreamEndReasonPingFail, StreamEndReasonUpstreamFailed:
-		return ResponseOutcomeUpstreamFailed
+		return StreamResultUpstreamFailed
 	case StreamEndReasonHandlerStop:
-		return ResponseOutcomeParseError
+		return StreamResultParseError
 	default:
-		return ResponseOutcomeIncomplete
+		return StreamResultIncomplete
 	}
 }
 

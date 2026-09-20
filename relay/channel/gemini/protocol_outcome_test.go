@@ -39,46 +39,46 @@ func TestGeminiStreamProtocolOutcomes(t *testing.T) {
 	tests := []struct {
 		name        string
 		lines       []string
-		wantOutcome relaycommon.ResponseOutcome
+		wantOutcome relaycommon.StreamResultOutcome
 		wantError   bool
 	}{
 		{
 			name:        "text plus finish reason is complete without done sentinel",
 			lines:       []string{`{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}`},
-			wantOutcome: relaycommon.ResponseOutcomeComplete,
+			wantOutcome: relaycommon.StreamResultComplete,
 		},
 		{
 			name:        "tool call is meaningful",
 			lines:       []string{`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`},
-			wantOutcome: relaycommon.ResponseOutcomeComplete,
+			wantOutcome: relaycommon.StreamResultComplete,
 		},
 		{
 			name:        "usage chunk after terminal remains complete",
 			lines:       []string{`{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}`, `{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}`},
-			wantOutcome: relaycommon.ResponseOutcomeComplete,
+			wantOutcome: relaycommon.StreamResultComplete,
 		},
 		{
 			name:        "transport eof without finish reason is incomplete",
 			lines:       []string{`{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}]}`},
-			wantOutcome: relaycommon.ResponseOutcomeIncomplete,
+			wantOutcome: relaycommon.StreamResultIncomplete,
 			wantError:   true,
 		},
 		{
 			name:        "terminal stream without output is empty",
 			lines:       []string{`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}`},
-			wantOutcome: relaycommon.ResponseOutcomeEmpty,
+			wantOutcome: relaycommon.StreamResultEmpty,
 			wantError:   true,
 		},
 		{
 			name:        "blocked prompt is failed",
 			lines:       []string{`{"promptFeedback":{"blockReason":"SAFETY"}}`},
-			wantOutcome: relaycommon.ResponseOutcomeUpstreamFailed,
+			wantOutcome: relaycommon.StreamResultUpstreamFailed,
 			wantError:   true,
 		},
 		{
 			name:        "failed finish reason is failed",
 			lines:       []string{`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"SAFETY"}]}`},
-			wantOutcome: relaycommon.ResponseOutcomeUpstreamFailed,
+			wantOutcome: relaycommon.StreamResultUpstreamFailed,
 			wantError:   true,
 		},
 	}

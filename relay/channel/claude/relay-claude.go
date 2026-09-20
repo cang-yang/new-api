@@ -25,11 +25,12 @@ func stopReasonClaude2OpenAI(reason string) string {
 	return relayconvert.StopReasonClaudeToOpenAI(reason)
 }
 
-func maybeMarkClaudeRefusal(c *gin.Context, stopReason string) {
+func maybeMarkClaudeRefusal(c *gin.Context, info *relaycommon.RelayInfo, stopReason string) {
 	if c == nil {
 		return
 	}
 	if strings.EqualFold(stopReason, "refusal") {
+		info.PerformanceBusinessRejection = true
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "claude_stop_reason=refusal")
 	}
 }
@@ -69,7 +70,7 @@ func claudeEmptyResponseError() *types.NewAPIError {
 	)
 }
 
-func claudeStreamOutcomeError(outcome relaycommon.ResponseOutcome) *types.NewAPIError {
+func claudeStreamOutcomeError(outcome relaycommon.StreamResultOutcome) *types.NewAPIError {
 	return types.NewErrorWithStatusCode(
 		fmt.Errorf("upstream Claude stream ended with outcome %s", outcome),
 		types.ErrorCodeBadResponseBody,
@@ -138,11 +139,17 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
+	if claudeResponse.Type == "message_start" && claudeResponse.Message != nil {
+		info.ObserveResponseModel(claudeResponse.Message.Model)
+	}
 	if claudeResponse.StopReason != "" {
-		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
+		maybeMarkClaudeRefusal(c, info, claudeResponse.StopReason)
 	}
 	if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
-		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
+		maybeMarkClaudeRefusal(c, info, *claudeResponse.Delta.StopReason)
+	}
+	if claudeResponse.Type == "message_stop" {
+		info.StreamStatus.MarkCompleted()
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
@@ -375,11 +382,12 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 			sr.Complete()
 		}
 	})
+	info.StreamStatus.RequireTerminal()
 	if err != nil {
 		return nil, err
 	}
 	outcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
-	if outcome != relaycommon.ResponseOutcomeComplete {
+	if outcome != relaycommon.StreamResultComplete {
 		return nil, claudeStreamOutcomeError(outcome)
 	}
 	if !meaningful {
@@ -400,7 +408,8 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
-	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
+	info.ObserveResponseModel(claudeResponse.Model)
+	maybeMarkClaudeRefusal(c, info, claudeResponse.StopReason)
 	if claudeInfo.Usage == nil {
 		claudeInfo.Usage = &dto.Usage{}
 	}
@@ -499,7 +508,7 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 		return nil, types.WithClaudeError(*claudeError, http.StatusBadGateway)
 	}
 	if strings.EqualFold(claudeResponse.StopReason, "refusal") {
-		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
+		maybeMarkClaudeRefusal(c, info, claudeResponse.StopReason)
 		return nil, types.NewErrorWithStatusCode(
 			errors.New("request refused by Claude upstream"),
 			types.ErrorCodePromptBlocked,
