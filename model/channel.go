@@ -1015,6 +1015,12 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelOtherSettings.ResponseTextFilter.Validate(); err != nil {
 		return err
 	}
+	if _, err := channelOtherSettings.SillyTavernPreset.ParseAndValidate(); err != nil {
+		return err
+	}
+	if channelOtherSettings.SillyTavernPreset != nil && channelParams.PassThroughBodyEnabled {
+		return fmt.Errorf("sillytavern_preset cannot be combined with pass_through_body_enabled")
+	}
 	if preset := common.GetAdvancedCustomPreset(channel.Type); preset != nil {
 		channelOtherSettings.AdvancedCustom = preset
 	}
@@ -1024,6 +1030,13 @@ func (channel *Channel) ValidateSettings() error {
 		}
 	}
 	if channelOtherSettings.AdvancedCustom != nil {
+		if channelOtherSettings.SillyTavernPreset != nil {
+			for _, route := range channelOtherSettings.AdvancedCustom.Routes {
+				if route.IncomingPath == "/v1/chat/completions" && route.PassThroughBodyEnabled {
+					return fmt.Errorf("sillytavern_preset cannot be combined with chat route pass_through_body_enabled")
+				}
+			}
+		}
 		if err := channelOtherSettings.AdvancedCustom.Validate(); err != nil {
 			return err
 		}

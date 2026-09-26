@@ -15,6 +15,7 @@ require (
 	github.com/bytedance/gopkg v0.1.3
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/dlclark/regexp2/v2 v2.2.2
 	github.com/gin-contrib/cors v1.7.2
 	github.com/gin-contrib/gzip v0.0.6
 	github.com/gin-contrib/static v0.0.1
@@ -72,7 +73,6 @@ require (
 	github.com/ClickHouse/ch-go v0.71.0 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/casbin/govaluate v1.10.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect

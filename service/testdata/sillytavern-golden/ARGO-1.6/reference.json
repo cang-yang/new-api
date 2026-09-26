@@ -1,0 +1,43 @@
+{
+  "source": "SillyTavern 1.18.0 release, commit 51ad27fb86d39a3daca3adaa970375c9670c12df",
+  "provider": "Custom OpenAI-compatible",
+  "model": "oracle-test",
+  "context": {
+    "user": "阳",
+    "char": "Assistant",
+    "current_user_message": "<reader_input>\n你好，这是一次预设差分测试。\n</reader_input>"
+  },
+  "provider_fields": {
+    "model": "oracle-test",
+    "temperature": 1,
+    "max_tokens": 10000,
+    "stream": true,
+    "presence_penalty": 0,
+    "frequency_penalty": 0,
+    "top_p": 1
+  },
+  "normalization": "Replace each 64-character uppercase hexadecimal random ID with <RANDOM> before SHA-256 of UTF-8 content",
+  "modes": {
+    "none": [
+      ["system", "ff54b98f3a88fa67bbf4364d9c704f92817ef636ff19be10603a8b9de6499e3d"],
+      ["system", "0a062b312566b83c7fd9500d87ff9b2414e99da3012f8956cf05b172df6a0a4a"],
+      ["system", "1be4a129c428c2f8d96512db90e13597d08480bb739b039200df4d2baac20bac"],
+      ["user", "4b8ac92cae7c695616549a210204043cf875081f35a2b07ea4b86346e002bfad"],
+      ["user", "508638b2dd3fe15a8b35c9e8d1128145c1f4fbb776deef59ccb6600c3d6abd33"],
+      ["user", "61f434aeb01b7eeb728b1539d9a5e14aa65c902035a10d4c0c2fae62860f3dd5"],
+      ["system", "a869c0eeeb6a7dc8d1e21a883cddd31e2a89f437d4087285ed47500572698a58"],
+      ["system", "6a98763184de5c63038124cacc18b0c86e997da891cc1f40cfeb4394c0216ad7"],
+      ["system", "87445bddd563b8759ca54da5490334e5380ffd1abdbbf98e0492b04eb80de912"],
+      ["system", "fbf4751ac144d379e3998f9be61e11f130f09f2821e95755d6e53b56417e979e"],
+      ["system", "48b848aeb3e219178ab73499c422856115ad1109089372e9083b22fca804c028"],
+      ["system", "e62deb853f17e368c3f44356e74ff401e939252527e878e36d95ea926af11b17"],
+      ["system", "1e35fa4faa5f51fcf66412c88487e68e4695d7e6a0ea58e7734d3708a936ab08"],
+      ["system", "b697da70ea041fc4ce94413a7f500047a4651a4afd7e80dd485a805f021535c1"],
+      ["system", "20938070ca7f86ebe483f0d5eb32ff3b2e4738819cb835f1cc653f5ca7527993"]
+    ],
+    "strict": [
+      ["system", "600cca1c39c8955bed9839b6521e77ab9018a0453d01155ff8ac05154a4c2c1c"],
+      ["user", "e422479aeb2f50b106d2112a3e7b61266f6c139037bb334a23a5377892e1dc02"]
+    ]
+  }
+}

@@ -47,6 +47,10 @@ import {
   CHANNEL_TYPE_SGLANG,
   CHANNEL_TYPE_VLLM,
 } from '../../constants'
+import {
+  transformChannelToFormDefaults,
+  transformFormDataToUpdatePayload,
+} from '../../lib/channel-form'
 import { channelSchema, type Channel } from '../../types'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelsProvider } from '../channels-provider'
@@ -1232,7 +1236,98 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
-test('response text filter template saves in channel settings without replacing existing settings', async () => {
+test('response text filter template saves in channel settings and disables edits while saving', async () => {
+  editingChannel.settings = JSON.stringify({
+    upstream_model_update_check_enabled: true,
+  })
+  const reply = deferredResponse<{ data: { success: boolean } }>()
+  const put = vi.spyOn(api, 'put').mockReturnValue(reply.promise)
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.click(
+    screen.getByRole('button', { name: 'Regex Extraction Template' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  expect(
+    screen.getByRole('button', { name: 'Regex Extraction Template' })
+  ).toBeDisabled()
+  const filterEditor = screen.getByRole('textbox', {
+    name: 'Response Text Filter',
+  })
+  expect(filterEditor).toBeDisabled()
+  const filterSection = filterEditor.closest('[data-slot="form-item"]')
+  expect(
+    within(filterSection as HTMLElement).getByRole('button', { name: 'Clear' })
+  ).toBeDisabled()
+  const payload = put.mock.calls[0]?.[1] as { settings: string }
+  expect(JSON.parse(payload.settings)).toMatchObject({
+    upstream_model_update_check_enabled: true,
+    response_text_filter: {
+      mode: 'regex_extract',
+      pattern: '(?s)<主体>\\s*(.*?)\\s*</主体>',
+      missing_match: 'passthrough',
+    },
+  })
+  await act(async () => {
+    reply.resolve({ data: { success: true } })
+    await reply.promise
+  })
+})
+
+test('loading and saving legacy tag extraction preserves literal delimiters and unrelated settings', () => {
+  editingChannel.settings = JSON.stringify({
+    custom_setting: { keep: true },
+    response_text_filter: {
+      mode: 'tag_extract',
+      start_tag: '[主体.*]',
+      end_tag: '[/主体+$]',
+      models: ['test-model'],
+      missing_match: 'empty',
+      custom_option: true,
+    },
+  })
+  const values = transformChannelToFormDefaults(editingChannel)
+  const expected = {
+    mode: 'regex_extract',
+    pattern: '(?s)\\[主体\\.\\*\\](.*?)\\[/主体\\+\\$\\]',
+    trim_capture: true,
+    models: ['test-model'],
+    missing_match: 'empty',
+    custom_option: true,
+  }
+  expect(JSON.parse(values.response_text_filter || '{}')).toEqual(expected)
+  const payload = transformFormDataToUpdatePayload(values, editingChannel.id)
+  expect(JSON.parse(payload.settings || '{}')).toMatchObject({
+    custom_setting: { keep: true },
+    response_text_filter: expected,
+  })
+})
+
+test.each([
+  ['identical tags', '<same>', '<same>'],
+  ['oversized Unicode tag', '体'.repeat(43), '</主体>'],
+])(
+  'loading a legacy filter with %s preserves its invalid configuration',
+  (_name, start, end) => {
+    const invalid = {
+      mode: 'tag_extract',
+      start_tag: start,
+      end_tag: end,
+    }
+    editingChannel.settings = JSON.stringify({ response_text_filter: invalid })
+    expect(
+      JSON.parse(
+        transformChannelToFormDefaults(editingChannel).response_text_filter ||
+          '{}'
+      )
+    ).toEqual(invalid)
+  }
+)
+
+test('importing a SillyTavern preset saves it with the existing channel settings', async () => {
   editingChannel.settings = JSON.stringify({
     upstream_model_update_check_enabled: true,
   })
@@ -1243,17 +1338,81 @@ test('response text filter template saves in channel settings without replacing 
   render(<ConfigurationHarness currentRow={editingChannel} />)
   await screen.findByDisplayValue('Existing channel')
   await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
-  await user.click(screen.getByRole('button', { name: 'Body Tag Template' }))
+  const preset = {
+    name: 'ARGO-like',
+    extensions: {
+      regex_scripts: [
+        {
+          id: 'receive',
+          scriptName: 'Receive',
+          placement: [2],
+          findRegex: '/x/g',
+          replaceString: '',
+        },
+      ],
+    },
+    prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+    prompt_order: [
+      { character_id: 100001, order: [{ identifier: 'main', enabled: true }] },
+    ],
+  }
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File([JSON.stringify(preset)], 'preset.json', {
+      type: 'application/json',
+    })
+  )
+  await screen.findByText(/Preset ready/)
+  await user.type(
+    screen.getByRole('textbox', { name: 'Preset user name' }),
+    '苍阳'
+  )
+  await user.type(
+    screen.getByRole('textbox', { name: 'Preset character name' }),
+    '乔治'
+  )
+  await user.type(
+    screen.getByRole('textbox', { name: 'Preset model filter' }),
+    'test-model'
+  )
+  await user.click(
+    screen.getByRole('combobox', { name: 'SillyTavern prompt post-processing' })
+  )
+  await user.click(
+    screen.getByRole('option', { name: 'Strict: force alternating roles' })
+  )
+  await user.click(
+    screen.getByRole('combobox', { name: 'SillyTavern reference source' })
+  )
+  await user.click(
+    screen.getByRole('option', { name: 'SillyTavern Custom OpenAI-compatible' })
+  )
+  await user.click(
+    screen.getByRole('button', { name: 'Remove ARGO fixed word counts' })
+  )
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() => expect(put).toHaveBeenCalled())
   const payload = put.mock.calls[0]?.[1] as { settings: string }
   expect(JSON.parse(payload.settings)).toMatchObject({
     upstream_model_update_check_enabled: true,
-    response_text_filter: {
-      mode: 'tag_extract',
-      start_tag: '<主体>',
-      end_tag: '</主体>',
-      missing_match: 'passthrough',
+    sillytavern_preset: {
+      preset,
+      enable_embedded_regex: false,
+      enable_send_regex: false,
+      parameter_policy: 'preset',
+      post_processing: 'strict',
+      reference_source: 'custom',
+      context_mode: 'compatibility',
+      user: '苍阳',
+      char: '乔治',
+      models: ['test-model'],
+      patches: [
+        {
+          identifier: 'jailbreak',
+          find: '⦿ 篇幅定额：\n思考1000字，页眉50字，主体1000字',
+          replace: '',
+        },
+      ],
     },
   })
 })

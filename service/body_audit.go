@@ -491,6 +491,9 @@ func buildAttemptConfigSnapshot(c *gin.Context, info *relaycommon.RelayInfo) ([]
 			"billing_source": info.BillingSource,
 		},
 	}
+	if info.PresetAudit != nil {
+		payload["sillytavern_preset"] = info.PresetAudit
+	}
 	return common.Marshal(payload)
 }
 

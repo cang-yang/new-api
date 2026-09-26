@@ -3,6 +3,7 @@ module github.com/QuantumNous/new-api/relaykit
 go 1.25.1
 
 require (
+	github.com/dlclark/regexp2/v2 v2.2.2
 	github.com/google/uuid v1.6.0
 	github.com/samber/lo v1.53.0
 	github.com/stretchr/testify v1.11.1

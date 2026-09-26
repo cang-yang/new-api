@@ -197,6 +197,7 @@ import {
   supportsNewAPIUpstream,
 } from '../../lib/channel-plugin-extensions'
 import { getChannelTypeConfig } from '../../lib/channel-type-config'
+import { parsePresetEditor } from '../../lib/sillytavern-editor'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
@@ -232,7 +233,9 @@ import {
   type ModelMappingDraftRequest,
 } from '../model-mapping-editor'
 import { ModelRedirectPanel } from '../model-redirect-panel'
+import { RegexRulesEditor } from '../regex-rules-editor'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
+import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 import { UpstreamModelSelection } from '../upstream-model-selection'
 import {
   ChannelConfiguration,
@@ -2771,7 +2774,7 @@ export function ChannelMutateDrawer({
                   <FormLabel>{t('Response Text Filter')}</FormLabel>
                   <FormDescription>
                     {t(
-                      'Extract assistant text from the client response. Reasoning, tool calls and usage are preserved. Streaming responses are buffered while filtering.'
+                      'Replace, delete or extract text with ordered regex rules. Receive rules preserve reasoning, tool calls and usage. Send-side processing is optional and off by default.'
                     )}
                   </FormDescription>
                 </div>
@@ -2784,9 +2787,8 @@ export function ChannelMutateDrawer({
                       field.onChange(
                         JSON.stringify(
                           {
-                            mode: 'tag_extract',
-                            start_tag: '<主体>',
-                            end_tag: '</主体>',
+                            mode: 'regex_extract',
+                            pattern: '(?s)<主体>\\s*(.*?)\\s*</主体>',
                             missing_match: 'passthrough',
                           },
                           null,
@@ -2794,19 +2796,396 @@ export function ChannelMutateDrawer({
                         )
                       )
                     }
+                    disabled={sensitiveLocked || isSubmitting}
                   >
-                    {t('Body Tag Template')}
+                    {t('Regex Extraction Template')}
                   </Button>
                   <Button
                     type='button'
                     variant='ghost'
                     size='sm'
                     onClick={() => field.onChange('')}
+                    disabled={sensitiveLocked || isSubmitting}
                   >
                     {t('Clear')}
                   </Button>
                 </div>
               </div>
+              <RegexRulesEditor
+                value={field.value || ''}
+                onChange={field.onChange}
+                disabled={sensitiveLocked || isSubmitting}
+              />
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='sillytavern_preset'
+          render={({ field }) => (
+            <FormItem className='space-y-3 border-t pt-4'>
+              <div className='flex items-start justify-between gap-3'>
+                <div className='space-y-1'>
+                  <FormLabel htmlFor='sillytavern-preset-file'>
+                    {t('SillyTavern Chat Completion Preset')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Import a preset JSON for this channel. Plain chat system messages remain generic context, not character markers. Parameter Override still runs after preset compilation.'
+                    )}
+                  </FormDescription>
+                  <FormDescription>
+                    {t(
+                      'For exact marker placement, send _sillytavern_context with user, char, markers, chat_history, dialogue_examples and variables.'
+                    )}
+                  </FormDescription>
+                </div>
+                {field.value && (
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    onClick={() => field.onChange('')}
+                    disabled={sensitiveLocked || isSubmitting}
+                  >
+                    {t('Clear')}
+                  </Button>
+                )}
+              </div>
+              <FormControl>
+                <Input
+                  id='sillytavern-preset-file'
+                  type='file'
+                  accept='.json,application/json'
+                  disabled={sensitiveLocked || isSubmitting}
+                  onBlur={field.onBlur}
+                  ref={field.ref}
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0]
+                    if (!file) return
+                    event.target.value = ''
+                    if (file.size > 6 * 1024 * 1024) {
+                      toast.error(t('Preset JSON must be smaller than 6 MB'))
+                      return
+                    }
+                    try {
+                      const preset = JSON.parse(await file.text()) as Record<
+                        string,
+                        unknown
+                      >
+                      if (
+                        !Array.isArray(preset.prompts) ||
+                        !Array.isArray(preset.prompt_order)
+                      ) {
+                        throw new Error('Invalid preset')
+                      }
+                      const config = { preset, parameter_policy: 'preset' }
+                      const parsed = parsePresetEditor(JSON.stringify(config))
+                      if (!parsed) throw new Error('Invalid preset')
+                      field.onChange(
+                        JSON.stringify({
+                          ...config,
+                          enable_embedded_regex: false,
+                          enable_send_regex: false,
+                        })
+                      )
+                      toast.success(
+                        t('Preset imported. Save the channel to apply it.')
+                      )
+                    } catch {
+                      toast.error(
+                        t('Import a valid SillyTavern Chat Completion preset')
+                      )
+                    }
+                  }}
+                />
+              </FormControl>
+              {field.value && (
+                <FormDescription>
+                  {t('Preset ready')} · {Math.ceil(field.value.length / 1024)}{' '}
+                  KB
+                </FormDescription>
+              )}
+              {field.value && (
+                <SillyTavernPresetEditor
+                  value={field.value}
+                  onChange={field.onChange}
+                  disabled={sensitiveLocked || isSubmitting}
+                />
+              )}
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <FormField
+            control={form.control}
+            name='sillytavern_user'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Preset user name')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    disabled={sensitiveLocked || isSubmitting}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='sillytavern_char'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Preset character name')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    disabled={sensitiveLocked || isSubmitting}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <FormField
+            control={form.control}
+            name='sillytavern_models'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Preset model filter')}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    disabled={sensitiveLocked || isSubmitting}
+                    placeholder={t('All models on this channel')}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Comma-separated exact model names; empty applies to all.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='sillytavern_parameter_policy'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Preset parameter priority')}</FormLabel>
+                <Select
+                  disabled={sensitiveLocked || isSubmitting}
+                  items={[
+                    { value: 'preset', label: t('Preset wins') },
+                    { value: 'client', label: t('Client wins') },
+                  ]}
+                  value={field.value || 'preset'}
+                  onValueChange={(value) =>
+                    field.onChange(value === 'client' ? 'client' : 'preset')
+                  }
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      <SelectItem value='preset'>{t('Preset wins')}</SelectItem>
+                      <SelectItem value='client'>{t('Client wins')}</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <FormField
+            control={form.control}
+            name='sillytavern_post_processing'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('SillyTavern prompt post-processing')}</FormLabel>
+                <Select
+                  disabled={sensitiveLocked || isSubmitting}
+                  items={[
+                    {
+                      value: 'none',
+                      label: t('None: preserve message boundaries'),
+                    },
+                    {
+                      value: 'strict',
+                      label: t('Strict: force alternating roles'),
+                    },
+                  ]}
+                  value={field.value || 'none'}
+                  onValueChange={(value) =>
+                    field.onChange(value === 'strict' ? 'strict' : 'none')
+                  }
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      <SelectItem value='none'>
+                        {t('None: preserve message boundaries')}
+                      </SelectItem>
+                      <SelectItem value='strict'>
+                        {t('Strict: force alternating roles')}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t(
+                    'Strict follows SillyTavern no-tools mode: it merges adjacent roles and may turn later system messages into user messages.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='sillytavern_context_mode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Preset context mode')}</FormLabel>
+                <Select
+                  disabled={sensitiveLocked || isSubmitting}
+                  items={[
+                    {
+                      value: 'compatibility',
+                      label: t('Compatibility: plain OpenAI chat'),
+                    },
+                    {
+                      value: 'exact',
+                      label: t('Exact: require explicit SillyTavern context'),
+                    },
+                  ]}
+                  value={field.value || 'compatibility'}
+                  onValueChange={(value) =>
+                    field.onChange(
+                      value === 'exact' ? 'exact' : 'compatibility'
+                    )
+                  }
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      <SelectItem value='compatibility'>
+                        {t('Compatibility: plain OpenAI chat')}
+                      </SelectItem>
+                      <SelectItem value='exact'>
+                        {t('Exact: require explicit SillyTavern context')}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='sillytavern_reference_source'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('SillyTavern reference source')}</FormLabel>
+                <Select
+                  disabled={sensitiveLocked || isSubmitting}
+                  items={[
+                    { value: 'newapi', label: t('New API native behavior') },
+                    {
+                      value: 'custom',
+                      label: t('SillyTavern Custom OpenAI-compatible'),
+                    },
+                    { value: 'openai', label: t('SillyTavern OpenAI') },
+                  ]}
+                  value={field.value || 'newapi'}
+                  onValueChange={(value) => field.onChange(value || 'newapi')}
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent alignItemWithTrigger={false}>
+                    <SelectGroup>
+                      <SelectItem value='newapi'>
+                        {t('New API native behavior')}
+                      </SelectItem>
+                      <SelectItem value='custom'>
+                        {t('SillyTavern Custom OpenAI-compatible')}
+                      </SelectItem>
+                      <SelectItem value='openai'>
+                        {t('SillyTavern OpenAI')}
+                      </SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <FormField
+          control={form.control}
+          name='sillytavern_preset_patches'
+          render={({ field }) => (
+            <FormItem className='space-y-2'>
+              <div className='flex items-center justify-between gap-2'>
+                <FormLabel>{t('Preset text patches')}</FormLabel>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={sensitiveLocked || isSubmitting}
+                  onClick={() =>
+                    field.onChange(
+                      JSON.stringify(
+                        [
+                          {
+                            identifier: 'jailbreak',
+                            find: '⦿ 篇幅定额：\n思考1000字，页眉50字，主体1000字',
+                            replace: '',
+                          },
+                        ],
+                        null,
+                        2
+                      )
+                    )
+                  }
+                >
+                  {t('Remove ARGO fixed word counts')}
+                </Button>
+              </div>
+              <FormDescription>
+                {t(
+                  'Optional literal replacements in preset prompts; leave empty to keep the imported preset unchanged.'
+                )}
+              </FormDescription>
               <FormControl>
                 <JsonCodeEditor
                   value={field.value || ''}
@@ -2815,10 +3194,8 @@ export function ChannelMutateDrawer({
                   onBlur={field.onBlur}
                   textareaRef={field.ref}
                   disabled={sensitiveLocked || isSubmitting}
-                  placeholder={t(
-                    'Use tag_extract or regex_extract with a capture group'
-                  )}
-                  heightClassName='h-40 min-h-40 max-h-40'
+                  placeholder='[{"identifier":"jailbreak","find":"old text","replace":"new text"}]'
+                  heightClassName='h-28 min-h-28 max-h-28'
                 />
               </FormControl>
               <FormMessage />

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -22,8 +23,10 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -127,6 +130,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	originalRequest := request
+	initialChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	initialOtherSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	request, err = applySelectedRequestTextRegex(c, request, relayInfo.OriginModelName)
+	if err != nil {
+		newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		return
+	}
+	sendRegexApplied := request != originalRequest
+	originalRequest = request
+	relayInfo.Request = request
+	if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions {
+		compiled, trace, compileErr := compileSelectedSillyTavernPreset(c, originalRequest)
+		if compileErr != nil {
+			newAPIError = types.NewErrorWithStatusCode(compileErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		relayInfo.Request = compiled
+		relayInfo.PresetAudit = trace
+		if chat, ok := compiled.(*kitdto.GeneralOpenAIRequest); ok && chat.ReasoningEffort != "" {
+			relayInfo.ReasoningEffort = chat.ReasoningEffort
+		}
+	}
+	initialCompiledRequest := relayInfo.Request
+	initialPresetAudit := relayInfo.PresetAudit
 
 	defer func() {
 		recovered := recover()
@@ -171,6 +199,30 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		service.AppendUsedChannel(c, channel.Id)
+		if sendRegexApplied && selectedChannelUsesBodyPassthrough(c, relayInfo.OriginModelName) {
+			newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot use body passthrough after send-side regex"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+			break
+		}
+		if channel.Id != initialChannelID {
+			selected := channel.GetOtherSettings()
+			if (sendRegexApplied || selected.ResponseTextFilter != nil && selected.ResponseTextFilter.EnableSend || selected.SillyTavernPreset != nil && selected.SillyTavernPreset.EnableSendRegex) && (!reflect.DeepEqual(sendRegexRetrySettings(initialOtherSettings.ResponseTextFilter), sendRegexRetrySettings(selected.ResponseTextFilter)) || !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset), presetRequestRetrySettings(selected.SillyTavernPreset))) {
+				newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry across channels with different send-side regex settings"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+				break
+			}
+		}
+		if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions {
+			if channel.Id == initialChannelID {
+				relayInfo.Request = initialCompiledRequest
+			} else {
+				selectedSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+				if !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset), presetRequestRetrySettings(selectedSettings.SillyTavernPreset)) {
+					newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry a chat request across channels with different SillyTavern presets"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+					break
+				}
+				relayInfo.Request = initialCompiledRequest
+			}
+			relayInfo.PresetAudit = initialPresetAudit
+		}
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
@@ -190,11 +242,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		var textFilter *service.ResponseTextFilterWriter
 		if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions ||
 			relayInfo.RelayMode == relayconstant.RelayModeResponses ||
+			relayFormat == types.RelayFormatClaude ||
 			(relayInfo.RelayMode == relayconstant.RelayModeGemini &&
 				(strings.Contains(c.Request.URL.Path, "generateContent") || strings.Contains(c.Request.URL.Path, "streamGenerateContent"))) ||
 			relayInfo.RelayMode == relayconstant.RelayModeCompletions {
 			settings := channel.GetOtherSettings()
-			textFilter = service.BeginResponseTextFilter(c, settings.ResponseTextFilter, relayInfo.OriginModelName)
+			textFilter = service.BeginResponseTextFilterWithPreset(c, settings.ResponseTextFilter, settings.SillyTavernPreset, relayInfo.OriginModelName)
 		}
 
 		switch relayFormat {
@@ -209,7 +262,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if textFilter != nil {
 			if filterErr := textFilter.Finish(c, newAPIError == nil); filterErr != nil {
-				newAPIError = types.NewError(filterErr, types.ErrorCodeBadResponse)
+				newAPIError = types.NewError(filterErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
 		}
 
@@ -236,6 +289,113 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
 	}
+}
+
+// Receive-only settings do not change the already prepared outbound request.
+func sendRegexRetrySettings(config *kitdto.ResponseTextFilter) *kitdto.ResponseTextFilter {
+	if config == nil || config.Mode != "rules" || !config.EnableSend {
+		return nil
+	}
+	copy := *config
+	copy.Rules = nil
+	for _, rule := range config.Rules {
+		if !rule.Disabled && rule.Stage == "send" {
+			copy.Rules = append(copy.Rules, rule)
+		}
+	}
+	if len(copy.Rules) == 0 {
+		return nil
+	}
+	copy.Pattern, copy.StartTag, copy.EndTag, copy.MissingMatch = "", "", "", ""
+	copy.TrimCapture = false
+	return &copy
+}
+
+func presetRequestRetrySettings(config *kitdto.SillyTavernPresetConfig) *kitdto.SillyTavernPresetConfig {
+	if config == nil {
+		return nil
+	}
+	copy := *config
+	copy.EnableEmbeddedRegex = false
+	if !copy.EnableSendRegex {
+		copy.RegexOverrides = nil
+		copy.RegexFailurePolicy = ""
+	}
+	return &copy
+}
+
+func applySelectedRequestTextRegex(c *gin.Context, request kitdto.Request, modelName string) (kitdto.Request, error) {
+	settings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	compiled, err := service.ApplyRequestTextRegex(settings.ResponseTextFilter, settings.SillyTavernPreset, request, modelName)
+	if err != nil || compiled == request {
+		return compiled, err
+	}
+	if selectedChannelUsesBodyPassthrough(c, modelName) {
+		return nil, fmt.Errorf("send-side regex requires request conversion; disable body passthrough")
+	}
+	return compiled, nil
+}
+
+func selectedChannelUsesBodyPassthrough(c *gin.Context, modelName string) bool {
+	settings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	channelSetting, _ := common.GetContextKeyType[kitdto.ChannelSettings](c, constant.ContextKeyChannelSetting)
+	passThrough := channelSetting.PassThroughBodyEnabled || model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	if common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeAdvancedCustom && c.Request != nil && c.Request.URL != nil {
+		if route, matched := settings.AdvancedCustom.MatchPathForModel(c.Request.URL.Path, modelName); matched && route.PassThroughBodyEnabled {
+			passThrough = true
+		}
+	}
+	return passThrough
+}
+
+func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request) (kitdto.Request, any, error) {
+	settings, ok := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	if !ok || settings.SillyTavernPreset == nil {
+		return request, nil, nil
+	}
+	chatRequest, ok := request.(*kitdto.GeneralOpenAIRequest)
+	if !ok {
+		return request, nil, nil
+	}
+	channelSetting, _ := common.GetContextKeyType[kitdto.ChannelSettings](c, constant.ContextKeyChannelSetting)
+	if common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeAdvancedCustom && c.Request != nil && c.Request.URL != nil {
+		route, matched := settings.AdvancedCustom.MatchPathForModel(c.Request.URL.Path, chatRequest.Model)
+		if matched && route.PassThroughBodyEnabled {
+			channelSetting.PassThroughBodyEnabled = true
+		}
+	}
+	if channelSetting.PassThroughBodyEnabled || model_setting.GetGlobalSettings().PassThroughRequestEnabled {
+		return nil, nil, fmt.Errorf("SillyTavern preset requires request conversion; disable body passthrough")
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
+		return nil, nil, err
+	}
+	context, err := service.DecodeSillyTavernContext(storage)
+	if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+		return nil, nil, seekErr
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid _sillytavern_context: %w", err)
+	}
+	// Explicit history replaces request.messages in exact/compatibility context.
+	// Process that source independently so it cannot bypass enabled send rules.
+	if context.ChatHistory != nil {
+		historyRequest := &kitdto.GeneralOpenAIRequest{Model: chatRequest.Model, Messages: context.ChatHistory}
+		filtered, filterErr := applySelectedRequestTextRegex(c, historyRequest, chatRequest.Model)
+		if filterErr != nil {
+			return nil, nil, filterErr
+		}
+		context.ChatHistory = filtered.(*kitdto.GeneralOpenAIRequest).Messages
+	}
+	compiled, trace, err := service.CompileSillyTavernPreset(settings.SillyTavernPreset, chatRequest, context)
+	if err != nil || compiled == chatRequest {
+		return compiled, nil, err
+	}
+	return compiled, trace, nil
 }
 
 // CountClaudeTokens implements Anthropic's token-counting utility endpoint.

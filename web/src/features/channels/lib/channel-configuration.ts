@@ -57,6 +57,15 @@ const CONFIGURATION_BLOCKS = {
       'param_override',
       'header_override',
       'response_text_filter',
+      'sillytavern_preset',
+      'sillytavern_preset_patches',
+      'sillytavern_user',
+      'sillytavern_char',
+      'sillytavern_models',
+      'sillytavern_parameter_policy',
+      'sillytavern_post_processing',
+      'sillytavern_reference_source',
+      'sillytavern_context_mode',
     ],
   },
   requestProcessing: {
@@ -154,7 +163,8 @@ export function getChannelConfigurationState(
       hasConfiguredJson(values.status_code_mapping) ||
       hasConfiguredJson(values.param_override) ||
       hasConfiguredJson(values.header_override) ||
-      hasConfiguredJson(values.response_text_filter),
+      hasConfiguredJson(values.response_text_filter) ||
+      hasConfiguredJson(values.sillytavern_preset),
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||

@@ -1,0 +1,24 @@
+{
+  "reference": "SillyTavern 1.18.0 release, commit 51ad27fb86d39a3daca3adaa970375c9670c12df",
+  "provider": "Custom OpenAI-compatible",
+  "model": "oracle-test",
+  "post_processing": "strict",
+  "input": "你好，这是一次预设差分测试。",
+  "chat": "new Assistant chat for each preset",
+  "preset_regex_import": "declined; existing global SillyTavern extensions were not disabled",
+  "comparison": "real provider-bound JSON after New API relay adaptation versus real SillyTavern provider-bound JSON; 64-character uppercase hexadecimal random IDs normalized",
+  "result": "PARTIAL — all six new presets still differ in at least one message content field",
+  "presets": [
+    { "name": "RONG × Rhea｜R寶 V10-2(831) (1).json", "messages_a": 2, "messages_b": 2, "roles_match": true, "matching_content_messages": 0, "provider_fields_match": true },
+    { "name": "Kemini_Dramatron_v3.1.json", "messages_a": 3, "messages_b": 3, "roles_match": true, "matching_content_messages": 1, "provider_fields_match": true },
+    { "name": "8.14【可待-从头越】 直出版.json", "messages_a": 3, "messages_b": 3, "roles_match": true, "matching_content_messages": 1, "provider_fields_match": true },
+    { "name": "[主预设] V19.2 狐神抚 · 毓忻.json", "messages_a": 3, "messages_b": 3, "roles_match": true, "matching_content_messages": 1, "provider_fields_match": true },
+    { "name": "[主预设] V19.3 狐神抚 · 毓忻.json", "messages_a": 3, "messages_b": 3, "roles_match": true, "matching_content_messages": 1, "provider_fields_match": true },
+    { "name": "万象谱v1.0-1.json", "messages_a": 2, "messages_b": 2, "roles_match": true, "matching_content_messages": 0, "provider_fields_match": true }
+  ],
+  "known_causes": [
+    "Some imported presets use additional SillyTavern macros and local chat state not yet fully reproduced by New API.",
+    "Several messages have whitespace and newline differences after SillyTavern macro/prompt processing.",
+    "The first V19.2 capture contained a previous temporary chat reply and was excluded; the clean capture is reported here."
+  ]
+}

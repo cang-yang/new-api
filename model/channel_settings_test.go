@@ -50,6 +50,23 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestChannelValidateSettingsRejectsPresetWithBodyPassthrough(t *testing.T) {
+	channel := &Channel{}
+	channel.SetSetting(dto.ChannelSettings{PassThroughBodyEnabled: true})
+	channel.SetOtherSettings(dto.ChannelOtherSettings{SillyTavernPreset: &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"main","role":"system","content":"Hi"}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}]}`)}})
+	err := channel.ValidateSettings()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass_through_body_enabled")
+	channel.Type = constant.ChannelTypeAdvancedCustom
+	channel.SetSetting(dto.ChannelSettings{})
+	settings := channel.GetOtherSettings()
+	settings.AdvancedCustom = &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{{IncomingPath: "/v1/chat/completions", UpstreamPath: "/v1/chat/completions", Converter: "none", PassThroughBodyEnabled: true}}}
+	channel.SetOtherSettings(settings)
+	err = channel.ValidateSettings()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass_through_body_enabled")
+}
+
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {
 	inferenceRoute := dto.AdvancedCustomRoute{
 		IncomingPath: "/v1/chat/completions",

@@ -43,6 +43,21 @@ func Unmarshal(data []byte, v any) error {
 	return kitutil.Unmarshal(data, v)
 }
 
+// UnmarshalPreservingNumbers is for lossless protocol edits to untyped objects.
+// Numeric metadata must not round-trip through float64 (notably IDs > 2^53).
+func UnmarshalPreservingNumbers(data []byte, v any) error {
+	return (hostJSONCodec{}).unmarshalPreservingNumbers(data, v)
+}
+
+func (hostJSONCodec) unmarshalPreservingNumbers(data []byte, v any) error {
+	if !json.Valid(data) {
+		return &json.SyntaxError{}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	return decoder.Decode(v)
+}
+
 func UnmarshalJsonStr(data string, v any) error {
 	return kitutil.UnmarshalJsonStr(data, v)
 }

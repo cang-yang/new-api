@@ -100,26 +100,27 @@ const (
 )
 
 type ChannelOtherSettings struct {
-	ResponseTextFilter                    *ResponseTextFilter   `json:"response_text_filter,omitempty"`
-	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
-	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
-	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
-	ClaudeBetaQuery                       bool                  `json:"claude_beta_query,omitempty"`          // Claude 渠道是否强制追加 ?beta=true
-	AllowServiceTier                      bool                  `json:"allow_service_tier,omitempty"`         // 是否允许 service_tier 透传（默认过滤以避免额外计费）
-	AllowInferenceGeo                     bool                  `json:"allow_inference_geo,omitempty"`        // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
-	AllowSpeed                            bool                  `json:"allow_speed,omitempty"`                // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
-	AllowSafetyIdentifier                 bool                  `json:"allow_safety_identifier,omitempty"`    // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
-	DisableStore                          bool                  `json:"disable_store,omitempty"`              // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
-	AllowIncludeObfuscation               bool                  `json:"allow_include_obfuscation,omitempty"`  // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
-	DisableTaskPollingSleep               bool                  `json:"disable_task_polling_sleep,omitempty"` // 是否跳过异步任务轮询间隔
-	AwsKeyType                            AwsKeyType            `json:"aws_key_type,omitempty"`
-	UpstreamModelUpdateCheckEnabled       bool                  `json:"upstream_model_update_check_enabled,omitempty"`        // 是否检测上游模型更新
-	UpstreamModelUpdateAutoSyncEnabled    bool                  `json:"upstream_model_update_auto_sync_enabled,omitempty"`    // 是否自动同步上游模型更新
-	UpstreamModelUpdateLastCheckTime      int64                 `json:"upstream_model_update_last_check_time,omitempty"`      // 上次检测时间
-	UpstreamModelUpdateLastDetectedModels []string              `json:"upstream_model_update_last_detected_models,omitempty"` // 上次检测到的可加入模型
-	UpstreamModelUpdateLastRemovedModels  []string              `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
-	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
-	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
+	ResponseTextFilter                    *ResponseTextFilter      `json:"response_text_filter,omitempty"`
+	SillyTavernPreset                     *SillyTavernPresetConfig `json:"sillytavern_preset,omitempty"`
+	AzureResponsesVersion                 string                   `json:"azure_responses_version,omitempty"`
+	VertexKeyType                         VertexKeyType            `json:"vertex_key_type,omitempty"` // "json" or "api_key"
+	OpenRouterEnterprise                  *bool                    `json:"openrouter_enterprise,omitempty"`
+	ClaudeBetaQuery                       bool                     `json:"claude_beta_query,omitempty"`          // Claude 渠道是否强制追加 ?beta=true
+	AllowServiceTier                      bool                     `json:"allow_service_tier,omitempty"`         // 是否允许 service_tier 透传（默认过滤以避免额外计费）
+	AllowInferenceGeo                     bool                     `json:"allow_inference_geo,omitempty"`        // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
+	AllowSpeed                            bool                     `json:"allow_speed,omitempty"`                // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
+	AllowSafetyIdentifier                 bool                     `json:"allow_safety_identifier,omitempty"`    // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
+	DisableStore                          bool                     `json:"disable_store,omitempty"`              // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
+	AllowIncludeObfuscation               bool                     `json:"allow_include_obfuscation,omitempty"`  // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
+	DisableTaskPollingSleep               bool                     `json:"disable_task_polling_sleep,omitempty"` // 是否跳过异步任务轮询间隔
+	AwsKeyType                            AwsKeyType               `json:"aws_key_type,omitempty"`
+	UpstreamModelUpdateCheckEnabled       bool                     `json:"upstream_model_update_check_enabled,omitempty"`        // 是否检测上游模型更新
+	UpstreamModelUpdateAutoSyncEnabled    bool                     `json:"upstream_model_update_auto_sync_enabled,omitempty"`    // 是否自动同步上游模型更新
+	UpstreamModelUpdateLastCheckTime      int64                    `json:"upstream_model_update_last_check_time,omitempty"`      // 上次检测时间
+	UpstreamModelUpdateLastDetectedModels []string                 `json:"upstream_model_update_last_detected_models,omitempty"` // 上次检测到的可加入模型
+	UpstreamModelUpdateLastRemovedModels  []string                 `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
+	UpstreamModelUpdateIgnoredModels      []string                 `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
+	AdvancedCustom                        *AdvancedCustomConfig    `json:"advanced_custom,omitempty"`
 	// OllamaOpenAIChat routes Ollama chat completions to the OpenAI-compatible
 	// /v1/chat/completions endpoint. When unset, chat completions keep using
 	// the native /api/chat protocol.
@@ -133,19 +134,60 @@ type ChannelOtherSettings struct {
 // ResponseTextFilter extracts text from assistant output after protocol conversion.
 // It never changes reasoning, tool calls, usage, or the upstream response used for billing.
 type ResponseTextFilter struct {
-	Mode         string   `json:"mode,omitempty"` // tag_extract or regex_extract
-	StartTag     string   `json:"start_tag,omitempty"`
-	EndTag       string   `json:"end_tag,omitempty"`
-	Pattern      string   `json:"pattern,omitempty"`
-	Models       []string `json:"models,omitempty"`
-	MissingMatch string   `json:"missing_match,omitempty"` // passthrough (default) or empty
+	FailurePolicy string          `json:"failure_policy,omitempty"`
+	Mode          string          `json:"mode,omitempty"` // regex_extract; tag_extract accepted only for legacy settings
+	StartTag      string          `json:"start_tag,omitempty"`
+	EndTag        string          `json:"end_tag,omitempty"`
+	Pattern       string          `json:"pattern,omitempty"`
+	TrimCapture   bool            `json:"trim_capture,omitempty"` // preserves legacy tag extraction's Unicode whitespace trimming
+	Models        []string        `json:"models,omitempty"`
+	MissingMatch  string          `json:"missing_match,omitempty"` // passthrough (default) or empty
+	EnableSend    bool            `json:"enable_send,omitempty"`
+	Rules         []TextRegexRule `json:"rules,omitempty"`
+}
+
+// Normalized returns a private regex-only configuration. Legacy stored tag
+// settings remain readable without mutating shared channel-cache objects.
+func (f *ResponseTextFilter) Normalized() (*ResponseTextFilter, error) {
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	if f == nil {
+		return nil, nil
+	}
+	normalized := *f
+	if f.Mode == "tag_extract" {
+		normalized.Mode = "regex_extract"
+		normalized.Pattern = "(?s)" + regexp.QuoteMeta(f.StartTag) + "(.*?)" + regexp.QuoteMeta(f.EndTag)
+		normalized.TrimCapture = true
+	}
+	normalized.StartTag = ""
+	normalized.EndTag = ""
+	return &normalized, nil
 }
 
 func (f *ResponseTextFilter) Validate() error {
 	if f == nil {
 		return nil
 	}
+	if f.FailurePolicy != "" && f.FailurePolicy != "passthrough" && f.FailurePolicy != "error" {
+		return fmt.Errorf("text regex failure_policy must be passthrough or error")
+	}
 	switch f.Mode {
+	case "rules":
+		if len(f.Rules) > 100 {
+			return fmt.Errorf("text regex supports at most 100 rules")
+		}
+		ids := map[string]bool{}
+		for _, rule := range f.Rules {
+			if ids[rule.ID] {
+				return fmt.Errorf("text regex rule IDs must be unique")
+			}
+			ids[rule.ID] = true
+			if err := rule.Validate(); err != nil {
+				return err
+			}
+		}
 	case "tag_extract":
 		if f.StartTag == "" || f.EndTag == "" || f.StartTag == f.EndTag || len(f.StartTag) > 128 || len(f.EndTag) > 128 {
 			return fmt.Errorf("response_text_filter requires distinct start_tag and end_tag of at most 128 bytes")

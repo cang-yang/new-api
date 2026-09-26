@@ -164,6 +164,7 @@ type RelayInfo struct {
 	RuntimeHeadersOverride                map[string]any
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
+	PresetAudit                           any // request-local, secret-free message provenance
 
 	PriceData hosttypes.PriceData
 

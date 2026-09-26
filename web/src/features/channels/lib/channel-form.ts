@@ -41,6 +41,7 @@ import {
   validateAdvancedCustomConfig,
 } from './advanced-custom'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
+import { regexRulesSchema } from './regex-rules'
 
 // ============================================================================
 // Form Validation Schema
@@ -116,6 +117,34 @@ function parseOptionalJson(value: string | undefined): unknown {
 
 function isJsonObjectValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function normalizeResponseTextFilter(config: unknown): unknown {
+  if (
+    !isJsonObjectValue(config) ||
+    config.mode !== 'tag_extract' ||
+    typeof config.start_tag !== 'string' ||
+    !config.start_tag ||
+    typeof config.end_tag !== 'string' ||
+    !config.end_tag ||
+    config.start_tag === config.end_tag ||
+    new TextEncoder().encode(config.start_tag).length > 128 ||
+    new TextEncoder().encode(config.end_tag).length > 128
+  ) {
+    return config
+  }
+  // Match Go regexp.QuoteMeta; trim after capture to preserve legacy Unicode whitespace.
+  const start = config.start_tag.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const end = config.end_tag.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const normalized: Record<string, unknown> = {
+    ...config,
+    mode: 'regex_extract',
+    pattern: `(?s)${start}(.*?)${end}`,
+    trim_capture: true,
+  }
+  delete normalized.start_tag
+  delete normalized.end_tag
+  return normalized
 }
 
 function isOptionalJsonObject(value: string | undefined): boolean {
@@ -259,6 +288,9 @@ export const channelFormSchema = z
         if (!value?.trim()) return true
         try {
           const config = JSON.parse(value) as Record<string, unknown>
+          if (config?.mode === 'rules') {
+            return regexRulesSchema.safeParse(config).success
+          }
           if (config.mode === 'tag_extract') {
             return (
               typeof config.start_tag === 'string' &&
@@ -277,6 +309,54 @@ export const channelFormSchema = z
           return false
         }
       }, 'Enter a valid response text filter'),
+    sillytavern_preset: z
+      .string()
+      .optional()
+      .refine((value) => {
+        if (!value?.trim()) return true
+        try {
+          const config = JSON.parse(value) as Record<string, unknown>
+          const preset = config.preset as Record<string, unknown> | undefined
+          return (
+            typeof preset === 'object' &&
+            preset !== null &&
+            Array.isArray(preset.prompts) &&
+            Array.isArray(preset.prompt_order)
+          )
+        } catch {
+          return false
+        }
+      }, 'Import a valid SillyTavern Chat Completion preset'),
+    sillytavern_preset_patches: z
+      .string()
+      .optional()
+      .refine((value) => {
+        if (!value?.trim()) return true
+        try {
+          const patches = JSON.parse(value) as unknown
+          return (
+            Array.isArray(patches) &&
+            patches.every(
+              (patch) =>
+                isJsonObjectValue(patch) &&
+                typeof patch.find === 'string' &&
+                patch.find.length > 0 &&
+                typeof patch.replace === 'string'
+            )
+          )
+        } catch {
+          return false
+        }
+      }, 'Enter a valid preset patch list'),
+    sillytavern_user: z.string().optional(),
+    sillytavern_char: z.string().optional(),
+    sillytavern_models: z.string().optional(),
+    sillytavern_parameter_policy: z.enum(['preset', 'client']).optional(),
+    sillytavern_post_processing: z.enum(['none', 'strict']).optional(),
+    sillytavern_reference_source: z
+      .enum(['newapi', 'custom', 'openai'])
+      .optional(),
+    sillytavern_context_mode: z.enum(['compatibility', 'exact']).optional(),
     advanced_custom: z.string().optional(),
     other: z.string().optional(),
     // Multi-key options (not sent to backend directly)
@@ -474,6 +554,15 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   header_override: '',
   settings: '{}',
   response_text_filter: '',
+  sillytavern_preset: '',
+  sillytavern_preset_patches: '',
+  sillytavern_user: '',
+  sillytavern_char: '',
+  sillytavern_models: '',
+  sillytavern_parameter_policy: 'preset',
+  sillytavern_post_processing: 'none',
+  sillytavern_reference_source: 'newapi',
+  sillytavern_context_mode: 'compatibility',
   other: '',
   multi_key_mode: 'single',
   multi_key_type: 'random',
@@ -581,6 +670,15 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
   let responseTextFilter = ''
+  let sillytavernPreset = ''
+  let sillytavernPresetPatches = ''
+  let sillytavernUser = ''
+  let sillytavernChar = ''
+  let sillytavernModels = ''
+  let sillytavernParameterPolicy: 'preset' | 'client' = 'preset'
+  let sillytavernPostProcessing: 'none' | 'strict' = 'none'
+  let sillytavernReferenceSource: 'newapi' | 'custom' | 'openai' = 'newapi'
+  let sillytavernContextMode: 'compatibility' | 'exact' = 'compatibility'
 
   if (channel.settings) {
     try {
@@ -612,10 +710,42 @@ export function transformChannelToFormDefaults(
       }
       if (parsed.response_text_filter) {
         responseTextFilter = JSON.stringify(
-          parsed.response_text_filter,
+          normalizeResponseTextFilter(parsed.response_text_filter),
           null,
           2
         )
+      }
+      if (parsed.sillytavern_preset) {
+        sillytavernPreset = JSON.stringify(parsed.sillytavern_preset)
+        sillytavernUser = parsed.sillytavern_preset.user || ''
+        sillytavernChar = parsed.sillytavern_preset.char || ''
+        sillytavernModels = Array.isArray(parsed.sillytavern_preset.models)
+          ? parsed.sillytavern_preset.models.join(', ')
+          : ''
+        sillytavernParameterPolicy =
+          parsed.sillytavern_preset.parameter_policy === 'client'
+            ? 'client'
+            : 'preset'
+        sillytavernPostProcessing =
+          parsed.sillytavern_preset.post_processing === 'strict'
+            ? 'strict'
+            : 'none'
+        sillytavernReferenceSource =
+          parsed.sillytavern_preset.reference_source === 'custom' ||
+          parsed.sillytavern_preset.reference_source === 'openai'
+            ? parsed.sillytavern_preset.reference_source
+            : 'newapi'
+        sillytavernContextMode =
+          parsed.sillytavern_preset.context_mode === 'exact'
+            ? 'exact'
+            : 'compatibility'
+        if (parsed.sillytavern_preset.patches) {
+          sillytavernPresetPatches = JSON.stringify(
+            parsed.sillytavern_preset.patches,
+            null,
+            2
+          )
+        }
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -645,6 +775,15 @@ export function transformChannelToFormDefaults(
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
     response_text_filter: responseTextFilter,
+    sillytavern_preset: sillytavernPreset,
+    sillytavern_preset_patches: sillytavernPresetPatches,
+    sillytavern_user: sillytavernUser,
+    sillytavern_char: sillytavernChar,
+    sillytavern_models: sillytavernModels,
+    sillytavern_parameter_policy: sillytavernParameterPolicy,
+    sillytavern_post_processing: sillytavernPostProcessing,
+    sillytavern_reference_source: sillytavernReferenceSource,
+    sillytavern_context_mode: sillytavernContextMode,
     other: channel.other || '',
     multi_key_mode: 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
@@ -733,9 +872,37 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   }
 
   if (formData.response_text_filter?.trim()) {
-    settingsObj.response_text_filter = JSON.parse(formData.response_text_filter)
+    settingsObj.response_text_filter = normalizeResponseTextFilter(
+      JSON.parse(formData.response_text_filter)
+    )
   } else {
     delete settingsObj.response_text_filter
+  }
+
+  if (formData.sillytavern_preset?.trim()) {
+    const config = JSON.parse(formData.sillytavern_preset) as Record<
+      string,
+      unknown
+    >
+    config.user = formData.sillytavern_user?.trim() || ''
+    config.char = formData.sillytavern_char?.trim() || ''
+    config.models =
+      formData.sillytavern_models
+        ?.split(',')
+        .map((model) => model.trim())
+        .filter(Boolean) || []
+    config.parameter_policy = formData.sillytavern_parameter_policy || 'preset'
+    config.post_processing = formData.sillytavern_post_processing || 'none'
+    config.reference_source = formData.sillytavern_reference_source || 'newapi'
+    config.context_mode = formData.sillytavern_context_mode || 'compatibility'
+    if (formData.sillytavern_preset_patches?.trim()) {
+      config.patches = JSON.parse(formData.sillytavern_preset_patches)
+    } else {
+      delete config.patches
+    }
+    settingsObj.sillytavern_preset = config
+  } else {
+    delete settingsObj.sillytavern_preset
   }
 
   // Add vertex_key_type for Vertex AI channels (type 41)

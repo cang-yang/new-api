@@ -244,6 +244,32 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 
 	info.IsChannelTest = true
 	info.InitChannelMeta(c)
+	request, err = applySelectedRequestTextRegex(c, request, info.OriginModelName)
+	if err != nil {
+		return testResult{context: c, localErr: err, newAPIError: types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())}
+	}
+	info.Request = request
+	if info.RelayMode == relayconstant.RelayModeChatCompletions {
+		if chat, ok := request.(*dto.GeneralOpenAIRequest); ok {
+			if preset := channel.GetOtherSettings().SillyTavernPreset; preset != nil {
+				compiled, trace, compileErr := service.CompileSillyTavernPreset(preset, chat, service.SillyTavernContext{})
+				if compileErr != nil {
+					return testResult{
+						context:     c,
+						localErr:    compileErr,
+						newAPIError: types.NewErrorWithStatusCode(compileErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry()),
+					}
+				}
+				// A channel test must remain inexpensive even when the preset
+				// asks for a large generation budget.
+				compiled.MaxTokens = chat.MaxTokens
+				compiled.MaxCompletionTokens = chat.MaxCompletionTokens
+				request = compiled
+				info.Request = compiled
+				info.PresetAudit = trace
+			}
+		}
+	}
 
 	err = attachTestBillingRequestInput(info, request)
 	if err != nil {
@@ -474,7 +500,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		relayFormat == types.RelayFormatClaude ||
 		relayFormat == types.RelayFormatGemini {
 		settings := channel.GetOtherSettings()
-		textFilter = service.BeginResponseTextFilter(c, settings.ResponseTextFilter, info.OriginModelName)
+		textFilter = service.BeginResponseTextFilterWithPreset(c, settings.ResponseTextFilter, settings.SillyTavernPreset, info.OriginModelName)
 	}
 	usageA, respErr := adaptor.DoResponse(c, httpResp, info)
 	if textFilter != nil {
