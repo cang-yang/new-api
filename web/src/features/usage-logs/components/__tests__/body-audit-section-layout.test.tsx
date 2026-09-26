@@ -161,6 +161,27 @@ describe('body audit attempt actions', () => {
     ).toBeInTheDocument()
   })
 
+  test('labels reasoning-only streams without showing raw SSE as the final result', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      response_body:
+        'data: {"choices":[{"delta":{"reasoning":"分析中"}}]}\n\ndata: [DONE]\n\n',
+      response_content_type: 'text/event-stream',
+      client_response_body: '',
+      client_response_body_size: 0,
+      client_response_status: 0,
+      client_response_complete: false,
+    })
+    renderAudit()
+
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+
+    expect(screen.getByText('分析中')).toBeInTheDocument()
+    expect(screen.getByText('推理')).toBeInTheDocument()
+    expect(screen.queryByText(/data: \{"choices"/)).not.toBeInTheDocument()
+  })
+
   test('retains per-attempt payload tabs when retries occurred', async () => {
     const user = userEvent.setup()
     const firstAttempt = audit.attempts?.[0]

@@ -195,9 +195,17 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
             {t('Upstream Response')}
           </TabsTrigger>
         </TabsList>
-        {result.isStream && (
+        {result.isStream && result.kind === 'text' && (
           <StatusBadge
             label={t('Stream merged')}
+            variant='blue'
+            size='sm'
+            copyable={false}
+          />
+        )}
+        {result.reasoningOnly && (
+          <StatusBadge
+            label={t('Reasoning')}
             variant='blue'
             size='sm'
             copyable={false}

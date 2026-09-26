@@ -30,13 +30,16 @@ func TestChannelTestStoresBodyAuditUnderConsumeLogRequestID(t *testing.T) {
 
 	previousAuditEnabled := constant.BodyAuditEnabled
 	previousAuditLimit := constant.BodyAuditMaxBodyMB
+	previousStreamingTimeout := constant.StreamingTimeout
 	previousConsumeLogEnabled := common.LogConsumeEnabled
 	constant.BodyAuditEnabled = true
 	constant.BodyAuditMaxBodyMB = 1
+	constant.StreamingTimeout = 30
 	common.LogConsumeEnabled = true
 	t.Cleanup(func() {
 		constant.BodyAuditEnabled = previousAuditEnabled
 		constant.BodyAuditMaxBodyMB = previousAuditLimit
+		constant.StreamingTimeout = previousStreamingTimeout
 		common.LogConsumeEnabled = previousConsumeLogEnabled
 	})
 
@@ -86,6 +89,33 @@ func TestChannelTestStoresBodyAuditUnderConsumeLogRequestID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Positive(t, audit.RequestBodySize)
 	assert.Positive(t, audit.ResponseBodySize)
+	assert.Equal(t, http.StatusOK, audit.ClientResponseStatus)
+	assert.True(t, audit.ClientResponseComplete)
+	assert.Contains(t, string(audit.ClientResponseBody), `"content":"ok"`)
+
+	streamUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-channel-test","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"stream ok"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-channel-test","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`))
+	}))
+	t.Cleanup(streamUpstream.Close)
+	channel.BaseURL = common.GetPointer(streamUpstream.URL)
+
+	streamResult := testChannel(context.Background(), channel, user.Id, "gpt-4o-mini", string(constant.EndpointTypeOpenAI), true)
+	require.NoError(t, streamResult.localErr)
+	require.Nil(t, streamResult.newAPIError)
+	consumeLog = model.Log{}
+	require.NoError(t, db.Where("token_name = ?", "模型测试").Order("id desc").First(&consumeLog).Error)
+	streamAudit, err := model.GetBodyAuditByRequestId(consumeLog.RequestId)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, streamAudit.ClientResponseStatus)
+	assert.True(t, streamAudit.ClientResponseComplete)
+	assert.Contains(t, string(streamAudit.ClientResponseBody), `"content":"stream ok"`)
 }
 
 func TestGetChannelDefaultBaseURLsUsesBuiltInDefaults(t *testing.T) {

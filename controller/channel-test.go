@@ -436,6 +436,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 
 	requestBody := bytes.NewBuffer(jsonData)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
+	service.BeginBodyAuditClientResponse(c)
+	defer service.FinalizeBodyAuditClientResponse(c)
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return testResult{

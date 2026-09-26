@@ -214,4 +214,48 @@ describe('body audit readable response parsing', () => {
     expect(result.kind).toBe('structured')
     expect(result.structured).toEqual(body)
   })
+
+  test('shows reasoning-only chat streams once instead of raw SSE', () => {
+    const body = [
+      'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+      '',
+      'data: {"choices":[{"delta":{"reasoning":"我需要","reasoning_details":[{"type":"reasoning.text","text":"我需要"}]}}]}',
+      '',
+      'data: {"choices":[{"delta":{"reasoning":"先分析"}}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+
+    const result = parseBodyAuditResponse({
+      body,
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+
+    expect(result.kind).toBe('text')
+    expect(result.text).toBe('我需要先分析')
+    expect(result.reasoningOnly).toBe(true)
+  })
+
+  test('prefers final content over reasoning in a mixed chat stream', () => {
+    const body = [
+      'data: {"choices":[{"delta":{"reasoning_content":"思考"}}]}',
+      '',
+      'data: {"choices":[{"delta":{"content":"最终答复"}}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+
+    const result = parseBodyAuditResponse({
+      body,
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+
+    expect(result.kind).toBe('text')
+    expect(result.text).toBe('最终答复')
+    expect(result.reasoningOnly).toBe(false)
+  })
 })

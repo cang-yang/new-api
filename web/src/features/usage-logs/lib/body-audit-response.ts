@@ -29,6 +29,7 @@ export interface ParsedBodyAuditResponse {
   media: BodyAuditMediaItem[]
   structured: unknown | null
   isStream: boolean
+  reasoningOnly?: boolean
 }
 
 interface ParseBodyAuditResponseInput {
@@ -114,6 +115,41 @@ function extractResponseText(value: unknown, depth = 0): string {
   return ''
 }
 
+function extractReasoningText(value: unknown, depth = 0): string {
+  if (!value || typeof value !== 'object' || depth > 12) return ''
+  const data = value as Record<string, unknown>
+
+  if (typeof data.reasoning_content === 'string' && data.reasoning_content) {
+    return data.reasoning_content
+  }
+  if (typeof data.reasoning === 'string' && data.reasoning) {
+    return data.reasoning
+  }
+  if (Array.isArray(data.reasoning_details)) {
+    const details = data.reasoning_details
+      .map((item) => {
+        if (!item || typeof item !== 'object') return ''
+        return stringContent((item as Record<string, unknown>).text)
+      })
+      .join('')
+    if (details) return details
+  }
+
+  if (Array.isArray(data.choices)) {
+    return data.choices
+      .map((choice) => extractReasoningText(choice, depth + 1))
+      .join('')
+  }
+  for (const key of ['delta', 'message', 'data', 'response']) {
+    const nested = data[key]
+    if (nested && typeof nested === 'object') {
+      const text = extractReasoningText(nested, depth + 1)
+      if (text) return text
+    }
+  }
+  return ''
+}
+
 function streamEventText(value: unknown): string {
   if (!value || typeof value !== 'object') return ''
   const data = value as Record<string, unknown>
@@ -137,6 +173,7 @@ function parsedResult(
     media: options?.media ?? [],
     structured: options?.structured ?? null,
     isStream: options?.isStream ?? false,
+    reasoningOnly: options?.reasoningOnly ?? false,
   }
 }
 
@@ -237,14 +274,24 @@ export function parseBodyAuditResponse(
 
   if (isStream) {
     let text = ''
+    let reasoning = ''
     for (const line of dataLines) {
       try {
-        text += streamEventText(JSON.parse(line))
+        const event: unknown = JSON.parse(line)
+        text += streamEventText(event)
+        reasoning += extractReasoningText(event)
       } catch {
         // Malformed events remain available in the raw response tabs.
       }
     }
     if (text) return parsedResult('text', { text, isStream: true })
+    if (reasoning) {
+      return parsedResult('text', {
+        text: reasoning,
+        isStream: true,
+        reasoningOnly: true,
+      })
+    }
     return parsedResult('structured', {
       structured: input.body,
       isStream: true,
@@ -263,6 +310,14 @@ export function parseBodyAuditResponse(
     }
     const text = extractResponseText(structured)
     if (text) return parsedResult('text', { text, structured })
+    const reasoning = extractReasoningText(structured)
+    if (reasoning) {
+      return parsedResult('text', {
+        text: reasoning,
+        structured,
+        reasoningOnly: true,
+      })
+    }
     return parsedResult('structured', { structured })
   } catch {
     return parsedResult('text', { text: input.body })
