@@ -6878,6 +6878,10 @@
     "Zhipu": "智谱",
     "Zhipu GLM": "智谱GLM",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Response Text Filter": "响应正文提取",
+    "Extract assistant text from the client response. Reasoning, tool calls and usage are preserved. Streaming responses are buffered while filtering.": "从返回给客户端的响应中提取助手正文。保留独立的思考、工具调用和用量信息；开启后流式响应会缓冲至完成再返回。",
+    "Body Tag Template": "主体标签模板",
+    "Use tag_extract or regex_extract with a capture group": "使用 tag_extract，或使用带捕获组的 regex_extract"
   }
 }

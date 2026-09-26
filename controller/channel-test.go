@@ -468,7 +468,24 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			}
 		}
 	}
+	var textFilter *service.ResponseTextFilterWriter
+	if relayFormat == types.RelayFormatOpenAI ||
+		relayFormat == types.RelayFormatOpenAIResponses ||
+		relayFormat == types.RelayFormatClaude ||
+		relayFormat == types.RelayFormatGemini {
+		settings := channel.GetOtherSettings()
+		textFilter = service.BeginResponseTextFilter(c, settings.ResponseTextFilter, info.OriginModelName)
+	}
 	usageA, respErr := adaptor.DoResponse(c, httpResp, info)
+	if textFilter != nil {
+		if filterErr := textFilter.Finish(c, respErr == nil); filterErr != nil {
+			return testResult{
+				context:     c,
+				localErr:    filterErr,
+				newAPIError: types.NewOpenAIError(filterErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
+			}
+		}
+	}
 	if respErr != nil {
 		return testResult{
 			context:     c,

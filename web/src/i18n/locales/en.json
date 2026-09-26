@@ -6878,6 +6878,10 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Response Text Filter": "Response Text Filter",
+    "Extract assistant text from the client response. Reasoning, tool calls and usage are preserved. Streaming responses are buffered while filtering.": "Extract assistant text from the client response. Reasoning, tool calls and usage are preserved. Streaming responses are buffered while filtering.",
+    "Body Tag Template": "Body Tag Template",
+    "Use tag_extract or regex_extract with a capture group": "Use tag_extract or regex_extract with a capture group"
   }
 }

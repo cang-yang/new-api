@@ -187,6 +187,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		var textFilter *service.ResponseTextFilterWriter
+		if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions ||
+			relayInfo.RelayMode == relayconstant.RelayModeResponses ||
+			(relayInfo.RelayMode == relayconstant.RelayModeGemini &&
+				(strings.Contains(c.Request.URL.Path, "generateContent") || strings.Contains(c.Request.URL.Path, "streamGenerateContent"))) ||
+			relayInfo.RelayMode == relayconstant.RelayModeCompletions {
+			settings := channel.GetOtherSettings()
+			textFilter = service.BeginResponseTextFilter(c, settings.ResponseTextFilter, relayInfo.OriginModelName)
+		}
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -197,6 +206,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = geminiRelayHandler(c, relayInfo)
 		default:
 			newAPIError = relayHandler(c, relayInfo)
+		}
+		if textFilter != nil {
+			if filterErr := textFilter.Finish(c, newAPIError == nil); filterErr != nil {
+				newAPIError = types.NewError(filterErr, types.ErrorCodeBadResponse)
+			}
 		}
 
 		if newAPIError == nil {

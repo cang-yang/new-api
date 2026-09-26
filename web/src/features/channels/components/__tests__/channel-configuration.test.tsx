@@ -1232,6 +1232,32 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
+test('response text filter template saves in channel settings without replacing existing settings', async () => {
+  editingChannel.settings = JSON.stringify({
+    upstream_model_update_check_enabled: true,
+  })
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.click(screen.getByRole('button', { name: 'Body Tag Template' }))
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as { settings: string }
+  expect(JSON.parse(payload.settings)).toMatchObject({
+    upstream_model_update_check_enabled: true,
+    response_text_filter: {
+      mode: 'tag_extract',
+      start_tag: '<主体>',
+      end_tag: '</主体>',
+      missing_match: 'passthrough',
+    },
+  })
+})
+
 test('quick options show only applicable shortcuts when the provider changes', async () => {
   const user = userEvent.setup()
   render(<ConfigurationHarness />)

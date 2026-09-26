@@ -252,6 +252,31 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
+    response_text_filter: z
+      .string()
+      .optional()
+      .refine((value) => {
+        if (!value?.trim()) return true
+        try {
+          const config = JSON.parse(value) as Record<string, unknown>
+          if (config.mode === 'tag_extract') {
+            return (
+              typeof config.start_tag === 'string' &&
+              config.start_tag.length > 0 &&
+              typeof config.end_tag === 'string' &&
+              config.end_tag.length > 0 &&
+              config.start_tag !== config.end_tag
+            )
+          }
+          return (
+            config.mode === 'regex_extract' &&
+            typeof config.pattern === 'string' &&
+            config.pattern.length > 0
+          )
+        } catch {
+          return false
+        }
+      }, 'Enter a valid response text filter'),
     advanced_custom: z.string().optional(),
     other: z.string().optional(),
     // Multi-key options (not sent to backend directly)
@@ -448,6 +473,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   param_override: '',
   header_override: '',
   settings: '{}',
+  response_text_filter: '',
   other: '',
   multi_key_mode: 'single',
   multi_key_type: 'random',
@@ -554,6 +580,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let responseTextFilter = ''
 
   if (channel.settings) {
     try {
@@ -583,6 +610,13 @@ export function transformChannelToFormDefaults(
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
       }
+      if (parsed.response_text_filter) {
+        responseTextFilter = JSON.stringify(
+          parsed.response_text_filter,
+          null,
+          2
+        )
+      }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('Failed to parse channel settings:', error)
@@ -610,6 +644,7 @@ export function transformChannelToFormDefaults(
     param_override: channel.param_override || '',
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
+    response_text_filter: responseTextFilter,
     other: channel.other || '',
     multi_key_mode: 'single',
     multi_key_type: channel.channel_info.multi_key_mode || 'random',
@@ -695,6 +730,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       // eslint-disable-next-line no-console
       console.error('Failed to parse existing settings:', error)
     }
+  }
+
+  if (formData.response_text_filter?.trim()) {
+    settingsObj.response_text_filter = JSON.parse(formData.response_text_filter)
+  } else {
+    delete settingsObj.response_text_filter
   }
 
   // Add vertex_key_type for Vertex AI channels (type 41)

@@ -52,7 +52,12 @@ const CONFIGURATION_BLOCKS = {
   },
   overrideRules: {
     section: 'request',
-    fields: ['status_code_mapping', 'param_override', 'header_override'],
+    fields: [
+      'status_code_mapping',
+      'param_override',
+      'header_override',
+      'response_text_filter',
+    ],
   },
   requestProcessing: {
     section: 'request',
@@ -148,7 +153,8 @@ export function getChannelConfigurationState(
     overrideRules:
       hasConfiguredJson(values.status_code_mapping) ||
       hasConfiguredJson(values.param_override) ||
-      hasConfiguredJson(values.header_override),
+      hasConfiguredJson(values.header_override) ||
+      hasConfiguredJson(values.response_text_filter),
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||

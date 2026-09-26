@@ -100,6 +100,7 @@ const (
 )
 
 type ChannelOtherSettings struct {
+	ResponseTextFilter                    *ResponseTextFilter   `json:"response_text_filter,omitempty"`
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
 	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
@@ -127,6 +128,43 @@ type ChannelOtherSettings struct {
 	// rejection. Empty follows the default allow policy. Accepted values:
 	// "", "allow", "safe", "strict".
 	ToolLossPolicy string `json:"tool_loss_policy,omitempty"`
+}
+
+// ResponseTextFilter extracts text from assistant output after protocol conversion.
+// It never changes reasoning, tool calls, usage, or the upstream response used for billing.
+type ResponseTextFilter struct {
+	Mode         string   `json:"mode,omitempty"` // tag_extract or regex_extract
+	StartTag     string   `json:"start_tag,omitempty"`
+	EndTag       string   `json:"end_tag,omitempty"`
+	Pattern      string   `json:"pattern,omitempty"`
+	Models       []string `json:"models,omitempty"`
+	MissingMatch string   `json:"missing_match,omitempty"` // passthrough (default) or empty
+}
+
+func (f *ResponseTextFilter) Validate() error {
+	if f == nil {
+		return nil
+	}
+	switch f.Mode {
+	case "tag_extract":
+		if f.StartTag == "" || f.EndTag == "" || f.StartTag == f.EndTag || len(f.StartTag) > 128 || len(f.EndTag) > 128 {
+			return fmt.Errorf("response_text_filter requires distinct start_tag and end_tag of at most 128 bytes")
+		}
+	case "regex_extract":
+		if f.Pattern == "" || len(f.Pattern) > 1024 {
+			return fmt.Errorf("response_text_filter pattern must be 1-1024 bytes")
+		}
+		re, err := regexp.Compile(f.Pattern)
+		if err != nil || re.NumSubexp() < 1 {
+			return fmt.Errorf("response_text_filter pattern requires a valid capture group")
+		}
+	default:
+		return fmt.Errorf("response_text_filter mode must be tag_extract or regex_extract")
+	}
+	if f.MissingMatch != "" && f.MissingMatch != "passthrough" && f.MissingMatch != "empty" {
+		return fmt.Errorf("response_text_filter missing_match must be passthrough or empty")
+	}
+	return nil
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

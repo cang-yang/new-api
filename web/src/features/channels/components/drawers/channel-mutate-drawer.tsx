@@ -2763,6 +2763,71 @@ export function ChannelMutateDrawer({
 
         <FormField
           control={form.control}
+          name='response_text_filter'
+          render={({ field }) => (
+            <FormItem className='space-y-3 border-t pt-4'>
+              <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
+                <div className='space-y-1'>
+                  <FormLabel>{t('Response Text Filter')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Extract assistant text from the client response. Reasoning, tool calls and usage are preserved. Streaming responses are buffered while filtering.'
+                    )}
+                  </FormDescription>
+                </div>
+                <div className='flex flex-wrap gap-2'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() =>
+                      field.onChange(
+                        JSON.stringify(
+                          {
+                            mode: 'tag_extract',
+                            start_tag: '<主体>',
+                            end_tag: '</主体>',
+                            missing_match: 'passthrough',
+                          },
+                          null,
+                          2
+                        )
+                      )
+                    }
+                  >
+                    {t('Body Tag Template')}
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    onClick={() => field.onChange('')}
+                  >
+                    {t('Clear')}
+                  </Button>
+                </div>
+              </div>
+              <FormControl>
+                <JsonCodeEditor
+                  value={field.value || ''}
+                  onChange={field.onChange}
+                  name={field.name}
+                  onBlur={field.onBlur}
+                  textareaRef={field.ref}
+                  disabled={sensitiveLocked || isSubmitting}
+                  placeholder={t(
+                    'Use tag_extract or regex_extract with a capture group'
+                  )}
+                  heightClassName='h-40 min-h-40 max-h-40'
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
           name='header_override'
           render={({ field }) => (
             <FormItem className='space-y-3 border-t pt-4'>
