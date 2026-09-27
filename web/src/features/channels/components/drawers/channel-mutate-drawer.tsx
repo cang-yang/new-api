@@ -463,6 +463,7 @@ export function ChannelMutateDrawer({
     presetValue: string
     scripts: unknown[]
   } | null>(null)
+  const [presetDragActive, setPresetDragActive] = useState(false)
   useEffect(() => {
     if (!open) setPendingPresetRegex(null)
   }, [open])
@@ -585,6 +586,55 @@ export function ChannelMutateDrawer({
     resolver: zodResolver(channelFormSchema),
     defaultValues: CHANNEL_FORM_DEFAULT_VALUES,
   })
+
+  const importPresetFile = async (
+    file: File,
+    onChange: (value: string) => void
+  ) => {
+    if (
+      !file.name.toLowerCase().endsWith('.json') &&
+      file.type !== 'application/json'
+    ) {
+      toast.error(t('Choose a JSON preset file'))
+      return
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      toast.error(t('Preset JSON must be smaller than 6 MB'))
+      return
+    }
+    try {
+      const preset = JSON.parse(await file.text()) as Record<string, unknown>
+      if (
+        !Array.isArray(preset.prompts) ||
+        !Array.isArray(preset.prompt_order)
+      ) {
+        throw new Error('Invalid preset')
+      }
+      const config = {
+        preset,
+        parameter_policy: 'preset',
+        source_file_name: file.name,
+      }
+      if (!parsePresetEditor(config)) throw new Error('Invalid preset')
+      const presetValue = JSON.stringify({
+        ...config,
+        enable_embedded_regex: false,
+        enable_send_regex: false,
+      })
+      onChange(presetValue)
+      const scripts = (
+        preset.extensions as { regex_scripts?: unknown[] } | undefined
+      )?.regex_scripts
+      setPendingPresetRegex(
+        Array.isArray(scripts) && scripts.length > 0
+          ? { presetValue, scripts }
+          : null
+      )
+      toast.success(t('Preset imported. Save the channel to apply it.'))
+    } catch {
+      toast.error(t('Import a valid SillyTavern Chat Completion preset'))
+    }
+  }
 
   // Watch values once for conditional fields and configuration indicators.
   const formValues = form.watch()
@@ -2853,18 +2903,50 @@ export function ChannelMutateDrawer({
                   </FormDescription>
                 </div>
                 <div className='flex shrink-0 items-center gap-2'>
-                  <Button
-                    type='button'
-                    variant={field.value ? 'outline' : 'default'}
-                    size='sm'
-                    disabled={sensitiveLocked || isSubmitting}
-                    onClick={() => presetFileInputRef.current?.click()}
+                  <div
+                    className={cn(
+                      'flex flex-col items-center gap-1 rounded-lg border border-dashed px-2 py-1.5 transition-colors',
+                      presetDragActive
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border bg-muted/20'
+                    )}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      if (!sensitiveLocked && !isSubmitting) {
+                        setPresetDragActive(true)
+                      }
+                    }}
+                    onDragLeave={() => setPresetDragActive(false)}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      setPresetDragActive(false)
+                      if (sensitiveLocked || isSubmitting) return
+                      if (event.dataTransfer.files.length !== 1) {
+                        toast.error(t('Choose one JSON preset file'))
+                        return
+                      }
+                      void importPresetFile(
+                        event.dataTransfer.files[0],
+                        field.onChange
+                      )
+                    }}
                   >
-                    <FileText aria-hidden='true' />
-                    {field.value
-                      ? t('Replace preset JSON')
-                      : t('Import preset JSON')}
-                  </Button>
+                    <Button
+                      type='button'
+                      variant={field.value ? 'outline' : 'default'}
+                      size='sm'
+                      disabled={sensitiveLocked || isSubmitting}
+                      onClick={() => presetFileInputRef.current?.click()}
+                    >
+                      <FileText aria-hidden='true' />
+                      {field.value
+                        ? t('Replace preset JSON')
+                        : t('Import preset JSON')}
+                    </Button>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('Or drop a JSON file here')}
+                    </span>
+                  </div>
                   {field.value && (
                     <Button
                       type='button'
@@ -2891,56 +2973,11 @@ export function ChannelMutateDrawer({
                     field.ref(node)
                     presetFileInputRef.current = node
                   }}
-                  onChange={async (event) => {
+                  onChange={(event) => {
                     const file = event.target.files?.[0]
                     if (!file) return
                     event.target.value = ''
-                    if (file.size > 6 * 1024 * 1024) {
-                      toast.error(t('Preset JSON must be smaller than 6 MB'))
-                      return
-                    }
-                    try {
-                      const preset = JSON.parse(await file.text()) as Record<
-                        string,
-                        unknown
-                      >
-                      if (
-                        !Array.isArray(preset.prompts) ||
-                        !Array.isArray(preset.prompt_order)
-                      ) {
-                        throw new Error('Invalid preset')
-                      }
-                      const config = {
-                        preset,
-                        parameter_policy: 'preset',
-                        source_file_name: file.name,
-                      }
-                      const parsed = parsePresetEditor(JSON.stringify(config))
-                      if (!parsed) throw new Error('Invalid preset')
-                      const presetValue = JSON.stringify({
-                        ...config,
-                        enable_embedded_regex: false,
-                        enable_send_regex: false,
-                      })
-                      field.onChange(presetValue)
-                      const scripts = (
-                        preset.extensions as
-                          | { regex_scripts?: unknown[] }
-                          | undefined
-                      )?.regex_scripts
-                      setPendingPresetRegex(
-                        Array.isArray(scripts) && scripts.length > 0
-                          ? { presetValue, scripts }
-                          : null
-                      )
-                      toast.success(
-                        t('Preset imported. Save the channel to apply it.')
-                      )
-                    } catch {
-                      toast.error(
-                        t('Import a valid SillyTavern Chat Completion preset')
-                      )
-                    }
+                    void importPresetFile(file, field.onChange)
                   }}
                 />
               </FormControl>

@@ -1555,6 +1555,67 @@ test('unnamed imported preset uses its filename and keeps that identity when sav
   expect(settings.sillytavern_preset.source_file_name).toBe('silver-moon.json')
 })
 
+test('dropping a preset JSON onto the visible import button imports it', async () => {
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const button = screen.getByRole('button', { name: 'Import preset JSON' })
+  const file = new File(
+    [
+      JSON.stringify({
+        name: 'Dropped preset',
+        prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+        prompt_order: [
+          {
+            character_id: 100001,
+            order: [{ identifier: 'main', enabled: true }],
+          },
+        ],
+      }),
+    ],
+    'dropped.json',
+    { type: 'application/json' }
+  )
+  fireEvent.dragOver(button, { dataTransfer: { files: [file] } })
+  fireEvent.drop(button, { dataTransfer: { files: [file] } })
+  expect(await screen.findByText('Dropped preset')).toBeVisible()
+  expect(screen.getByText('dropped.json')).toBeVisible()
+})
+
+test('dropping a non-JSON file does not replace the current preset', async () => {
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File(
+      [
+        JSON.stringify({
+          name: 'Keep this preset',
+          prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+          prompt_order: [
+            {
+              character_id: 100001,
+              order: [{ identifier: 'main', enabled: true }],
+            },
+          ],
+        }),
+      ],
+      'keep.json',
+      { type: 'application/json' }
+    )
+  )
+  expect(await screen.findByText('Keep this preset')).toBeVisible()
+  const invalid = new File(['not JSON'], 'notes.txt', { type: 'text/plain' })
+  fireEvent.drop(screen.getByRole('button', { name: 'Replace preset JSON' }), {
+    dataTransfer: { files: [invalid] },
+  })
+  expect(screen.getByText('Keep this preset')).toBeVisible()
+  expect(screen.getByText('keep.json')).toBeVisible()
+})
+
 test('preset regex import separates send-side choice and carries the HTML warning', async () => {
   const put = vi
     .spyOn(api, 'put')
