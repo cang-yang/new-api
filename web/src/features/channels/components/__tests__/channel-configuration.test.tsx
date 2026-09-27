@@ -160,7 +160,7 @@ beforeEach(() => {
     },
   })
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
-    if (url === '/api/channel/42') {
+    if (url === `/api/channel/${editingChannel.id}`) {
       return { data: { success: true, data: editingChannel } }
     }
     if (url === '/api/channel/fetch_models/42') {
@@ -1236,7 +1236,7 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
-test('response text filter template saves in channel settings and disables edits while saving', async () => {
+test('channel regex rules save without an extraction template and disable editing while saving', async () => {
   editingChannel.settings = JSON.stringify({
     upstream_model_update_check_enabled: true,
   })
@@ -1246,17 +1246,22 @@ test('response text filter template saves in channel settings and disables edits
   render(<ConfigurationHarness currentRow={editingChannel} />)
   await screen.findByDisplayValue('Existing channel')
   await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
-  await user.click(
-    screen.getByRole('button', { name: 'Regex Extraction Template' })
-  )
+  expect(
+    screen.queryByRole('button', { name: 'Regex Extraction Template' })
+  ).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Add regex rule' }))
+  await user.type(screen.getByLabelText('Find pattern'), 'secret')
+  await user.click(screen.getByRole('button', { name: 'Advanced regex JSON' }))
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() => expect(put).toHaveBeenCalled())
-  expect(
-    screen.getByRole('button', { name: 'Regex Extraction Template' })
-  ).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Add regex rule' })).toBeDisabled()
   const filterEditor = screen.getByRole('textbox', {
     name: 'Response Text Filter',
   })
+  expect(filterEditor.closest('[role="tabpanel"]')).toHaveClass(
+    'min-w-0',
+    'overflow-x-hidden'
+  )
   expect(filterEditor).toBeDisabled()
   const filterSection = filterEditor.closest('[data-slot="form-item"]')
   expect(
@@ -1266,9 +1271,8 @@ test('response text filter template saves in channel settings and disables edits
   expect(JSON.parse(payload.settings)).toMatchObject({
     upstream_model_update_check_enabled: true,
     response_text_filter: {
-      mode: 'regex_extract',
-      pattern: '(?s)<主体>\\s*(.*?)\\s*</主体>',
-      missing_match: 'passthrough',
+      mode: 'rules',
+      rules: [{ pattern: 'secret', replacement: '', stage: 'receive' }],
     },
   })
   await act(async () => {
@@ -1425,6 +1429,47 @@ test('importing a SillyTavern preset saves it with the existing channel settings
       models: ['test-model'],
     },
   })
+})
+
+test('switching channels while reading a preset file never imports it into the new channel', async () => {
+  const user = userEvent.setup()
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const reply = deferredResponse<string>()
+  const view = render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const file = new File(['{}'], 'first-channel.json', {
+    type: 'application/json',
+  })
+  Object.defineProperty(file, 'text', { value: () => reply.promise })
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    file
+  )
+  editingChannel = { ...editingChannel, id: 43, name: 'Second channel' }
+  view.rerender(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Second channel')
+  await act(async () => {
+    reply.resolve(
+      JSON.stringify({
+        prompts: [],
+        prompt_order: [],
+        extensions: {
+          regex_scripts: [{ findRegex: 'first-channel-only', placement: [2] }],
+        },
+      })
+    )
+    await reply.promise
+  })
+  expect(screen.queryByText('Import embedded regex scripts?')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  expect(
+    JSON.parse((put.mock.calls[0][1] as { settings: string }).settings)
+      .sillytavern_preset
+  ).toBeUndefined()
 })
 
 test('confirming embedded regex import adds receive rules without enabling send processing', async () => {
@@ -1677,7 +1722,7 @@ test('preset regex import separates send-side choice and carries the HTML warnin
     (put.mock.calls[0][1] as { settings: string }).settings
   )
   expect(settings.response_text_filter.rules).toMatchObject([{ stage: 'send' }])
-  expect(settings.response_text_filter.enable_send).toBe(false)
+  expect(settings.response_text_filter.enable_send).toBe(true)
 })
 
 test('quick options show only applicable shortcuts when the provider changes', async () => {

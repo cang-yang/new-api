@@ -68,6 +68,59 @@ func TestTextRegexActionsAndOrder(t *testing.T) {
 	}
 }
 
+func TestPreviewTextRegexMatchesChannelScopeAndRuleOrder(t *testing.T) {
+	first := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "first", Name: "first", Stage: "receive", Action: "replace", Pattern: `/secret/g`, Replacement: "clean"}, {ID: "second", Name: "second", Stage: "receive", Action: "replace", Pattern: `/clean/g`, Replacement: "ready"}}}
+	second := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "other", Name: "other", Stage: "receive", Action: "replace", Pattern: `/secret/g`, Replacement: "hidden"}}}
+	got, err := PreviewTextRegex(first, nil, "m", "receive", "assistant", 0, "secret")
+	require.NoError(t, err)
+	assert.Equal(t, "ready", got.Output)
+	require.Len(t, got.Steps, 2)
+	assert.Equal(t, "first", got.Steps[0].Name)
+	assert.Equal(t, "clean", got.Steps[0].After)
+	other, err := PreviewTextRegex(second, nil, "m", "receive", "assistant", 0, "secret")
+	require.NoError(t, err)
+	assert.Equal(t, "hidden", other.Output)
+	require.Len(t, other.Steps, 1)
+	assert.Equal(t, "other", other.Steps[0].Name)
+}
+
+func TestPreviewTextRegexRespectsSendGateRoleAndDepth(t *testing.T) {
+	depth := 0
+	config := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "send", Name: "send", Stage: "send", Action: "replace", Pattern: `/secret/g`, Replacement: "clean", Roles: []string{"user"}, MaxDepth: &depth}}}
+	for _, tc := range []struct {
+		role  string
+		depth int
+		want  string
+	}{{"user", 0, "secret"}, {"assistant", 0, "secret"}, {"user", 1, "secret"}} {
+		got, err := PreviewTextRegex(config, nil, "m", "send", tc.role, tc.depth, "secret")
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, got.Output)
+	}
+	config.EnableSend = true
+	got, err := PreviewTextRegex(config, nil, "m", "send", "user", 0, "secret")
+	require.NoError(t, err)
+	assert.Equal(t, "clean", got.Output)
+	require.Len(t, got.Steps, 1)
+}
+
+func TestPreviewTextRegexIncludesEnabledPresetScripts(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"strip","scriptName":"strip thinking","placement":[2],"markdownOnly":true,"findRegex":"/<thinking>[\\s\\S]*?<\\/thinking>/g","replaceString":""}]}}`)}
+	got, err := PreviewTextRegex(nil, preset, "m", "receive", "assistant", 0, "<thinking>hidden</thinking>story")
+	require.NoError(t, err)
+	assert.Equal(t, "story", got.Output)
+	require.Len(t, got.Steps, 1)
+	assert.Equal(t, "strip thinking", got.Steps[0].Name)
+}
+
+func TestPreviewTextRegexIgnoresImportedScriptArchive(t *testing.T) {
+	var config dto.ResponseTextFilter
+	require.NoError(t, common.Unmarshal([]byte(`{"mode":"rules","rules":[],"imported_scripts":[{"scriptName":"other channel","findRegex":"/secret/g","replaceString":"hidden"}]}`), &config))
+	got, err := PreviewTextRegex(&config, nil, "m", "receive", "assistant", 0, "secret")
+	require.NoError(t, err)
+	assert.Equal(t, "secret", got.Output)
+	assert.Empty(t, got.Steps)
+}
+
 func TestSendTextRegexOptInScopesAndMetadata(t *testing.T) {
 	config := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
 		{ID: "one", Stage: "send", Action: "replace", Pattern: `/secret/g`, Replacement: "clean", Roles: []string{"user"}},

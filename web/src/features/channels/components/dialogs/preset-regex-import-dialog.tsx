@@ -112,7 +112,7 @@ export function PresetRegexImportDialog({
             </div>
             <p className='text-muted-foreground text-xs'>
               {t(
-                'Processes outgoing messages. Imported send rules remain inactive until you enable send-side regex in the external editor.'
+                'Processes outgoing messages. Each imported send rule can be enabled or disabled individually in the channel editor.'
               )}
             </p>
           </div>

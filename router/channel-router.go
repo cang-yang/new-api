@@ -19,6 +19,7 @@ type permissionRoute struct {
 func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	channelRoute := apiRouter.Group("/channel")
 	channelRoute.Use(middleware.AdminAuth())
+	channelRoute.POST("/regex/preview", middleware.RequirePermission(authz.ChannelWrite), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewChannelRegex)
 
 	channelRoute.POST("/:id/key",
 		middleware.RootAuth(),

@@ -192,7 +192,7 @@ function Editor(props: { initialValue?: string }) {
     </>
   )
 }
-test('new rules allow deletion by empty replacement and sending stays off until explicitly enabled', async () => {
+test('new send rules use their individual switch without a global send control', async () => {
   const user = userEvent.setup()
   render(<Editor />)
   await user.click(screen.getByRole('button', { name: 'Add regex rule' }))
@@ -205,16 +205,17 @@ test('new rules allow deletion by empty replacement and sending stays off until 
   ).toMatchObject({
     mode: 'rules',
     failure_policy: 'passthrough',
-    enable_send: false,
+    enable_send: true,
     rules: [{ pattern: 'secret', replacement: '', stage: 'receive' }],
   })
   await user.selectOptions(screen.getByLabelText('Direction'), 'send')
   expect(
     screen.queryByText('Applicable receive rules buffer streaming responses.')
   ).toBeNull()
-  await user.click(
-    screen.getByRole('switch', { name: 'Enable send-side regex' })
-  )
+  expect(
+    screen.queryByRole('switch', { name: 'Enable send-side regex' })
+  ).toBeNull()
+  expect(screen.getByRole('switch', { name: 'Enable rule' })).toBeChecked()
   expect(
     JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
       .enable_send
@@ -240,7 +241,7 @@ test('legacy extraction remains intact until explicit conversion preserves trim 
     JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
   ).toMatchObject({
     mode: 'rules',
-    enable_send: false,
+    enable_send: true,
     models: ['test'],
     rules: [
       {
@@ -253,6 +254,92 @@ test('legacy extraction remains intact until explicit conversion preserves trim 
       },
     ],
   })
+})
+
+test('legacy send master disabled materializes disabled rules before enabling one rule', async () => {
+  const user = userEvent.setup()
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        mode: 'rules',
+        enable_send: false,
+        rules: [
+          {
+            id: 'a',
+            stage: 'send',
+            action: 'replace',
+            pattern: 'x',
+            replacement: 'a',
+          },
+          {
+            id: 'b',
+            stage: 'send',
+            action: 'replace',
+            pattern: 'x',
+            replacement: 'b',
+          },
+        ],
+      })}
+    />
+  )
+  const switches = screen.getAllByRole('switch', { name: 'Enable rule' })
+  expect(switches[0]).not.toBeChecked()
+  expect(switches[1]).not.toBeChecked()
+  await user.click(switches[0])
+  expect(
+    JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
+  ).toMatchObject({
+    enable_send: true,
+    rules: [{ disabled: false }, { disabled: true }],
+  })
+})
+
+test('switching channels with identical empty drafts cancels a pending file import', async () => {
+  const user = userEvent.setup()
+  let finish: (value: string) => void = () => {}
+  const pending = new Promise<string>((resolve) => {
+    finish = resolve
+  })
+  const onChange = vi.fn()
+  const view = render(
+    <RegexRulesEditor scopeKey='channel-a' value='' onChange={onChange} />
+  )
+  const file = new File(['{}'], 'regex.json', { type: 'application/json' })
+  Object.defineProperty(file, 'text', { value: () => pending })
+  await user.upload(
+    screen.getByLabelText('Import SillyTavern regex JSON'),
+    file
+  )
+  view.rerender(
+    <RegexRulesEditor scopeKey='channel-b' value='' onChange={onChange} />
+  )
+  await act(async () => {
+    finish(JSON.stringify({ findRegex: '/x/g', placement: [2] }))
+    await pending
+  })
+  expect(onChange).not.toHaveBeenCalled()
+  expect(
+    screen.getByRole('button', { name: 'Add regex rule' })
+  ).not.toBeDisabled()
+})
+
+test('advanced JSON with long imported script text is contained within the channel editor', async () => {
+  const user = userEvent.setup()
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        mode: 'rules',
+        rules: [],
+        imported_scripts: [{ replaceString: 'x'.repeat(20000) }],
+      })}
+    />
+  )
+  await user.click(screen.getByRole('button', { name: 'Advanced regex JSON' }))
+  const editor = screen.getByRole('region', { name: 'Regex rules' })
+  expect(editor).toHaveClass('min-w-0', 'max-w-full')
+  expect(
+    screen.getByLabelText('Response Text Filter').closest('[data-regex-json]')
+  ).toHaveClass('min-w-0', 'max-w-full', 'overflow-hidden')
 })
 test('ordered rules can move, disable and remove without discarding the other rule', async () => {
   const user = userEvent.setup()

@@ -37,6 +37,7 @@ import { normalizeResponseTextFilter } from '../lib/channel-form'
 import {
   editableRegexRulesSchema,
   importRegexScripts,
+  materializeRegexRuleSwitches,
   regexReplacementGeneratesHtml,
   type RegexRule,
   type RegexRulesConfig,
@@ -44,11 +45,18 @@ import {
 import { RegexFailurePolicy } from './regex-failure-policy'
 import { RegexRuleFields } from './regex-rule-fields'
 
-export function RegexRulesEditor(props: {
+type RegexRulesEditorProps = {
   value: string
   onChange: (value: string) => void
   disabled?: boolean
-}) {
+  scopeKey?: string | number
+}
+
+export function RegexRulesEditor(props: RegexRulesEditorProps) {
+  return <ScopedRegexRulesEditor key={props.scopeKey} {...props} />
+}
+
+function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
   const { t } = useTranslation()
   const id = useId()
   const [warning, setWarning] = useState('')
@@ -77,11 +85,13 @@ export function RegexRulesEditor(props: {
   if (!props.value.trim()) {
     config = {
       mode: 'rules',
-      enable_send: false,
+      enable_send: true,
       failure_policy: 'passthrough',
       rules: [],
     }
-  } else if (result.success) config = result.data
+  } else if (result.success) {
+    config = materializeRegexRuleSwitches(result.data)
+  }
   const save = (next: RegexRulesConfig) =>
     props.onChange(JSON.stringify(next, null, 2))
   const update = (index: number, rule: RegexRule) => {
@@ -93,7 +103,10 @@ export function RegexRulesEditor(props: {
     }
   }
   return (
-    <div className='space-y-4'>
+    <section
+      aria-label={t('Regex rules')}
+      className='flex max-w-full min-w-0 flex-col gap-4'
+    >
       {(config || parsed) && (
         <RegexFailurePolicy
           value={(config || parsed)?.failure_policy}
@@ -108,19 +121,6 @@ export function RegexRulesEditor(props: {
       )}
       {config ? (
         <>
-          <Field orientation='horizontal'>
-            <Switch
-              id={`${id}-send`}
-              disabled={disabled}
-              checked={config.enable_send === true}
-              onCheckedChange={(checked) =>
-                save({ ...config, enable_send: checked })
-              }
-            />
-            <FieldLabel htmlFor={`${id}-send`}>
-              {t('Enable send-side regex')}
-            </FieldLabel>
-          </Field>
           <p className='text-muted-foreground text-xs'>
             {t(
               'Rules run from top to bottom. Send rules change outgoing message text and do not buffer responses.'
@@ -185,11 +185,11 @@ export function RegexRulesEditor(props: {
           {config.rules.map((rule, index) => (
             <section
               key={rule.id}
-              className='space-y-3 rounded-xl border p-4'
+              className='flex max-w-full min-w-0 flex-col gap-3 rounded-xl border p-4'
               aria-label={t('Regex rule {{number}}', { number: index + 1 })}
             >
               <div className='flex flex-wrap items-center gap-2'>
-                <span className='mr-auto text-sm font-semibold'>
+                <span className='mr-auto min-w-0 text-sm font-semibold break-all'>
                   {index + 1}. {rule.name || t('Regex rule')}
                 </span>
                 <Switch
@@ -363,7 +363,7 @@ export function RegexRulesEditor(props: {
               >
               save({
                 mode: 'rules',
-                enable_send: false,
+                enable_send: true,
                 ...(legacy.failure_policy === 'error' ||
                 legacy.failure_policy === 'passthrough'
                   ? { failure_policy: legacy.failure_policy }
@@ -392,22 +392,32 @@ export function RegexRulesEditor(props: {
           </Button>
         )}
       <Accordion
+        className='max-w-full min-w-0'
         key={config ? 'rules' : 'advanced'}
         defaultValue={config ? [] : ['advanced']}
       >
-        <AccordionItem value='advanced'>
+        <AccordionItem
+          value='advanced'
+          className='max-w-full min-w-0 overflow-hidden'
+        >
           <AccordionTrigger>{t('Advanced regex JSON')}</AccordionTrigger>
-          <AccordionContent>
+          <AccordionContent className='max-w-full min-w-0'>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Imported script originals are retained as reference only. Only enabled rules and enabled embedded preset scripts are executed.'
+              )}
+            </p>
             <JsonCodeEditor
               value={props.value}
               onChange={props.onChange}
               disabled={disabled}
               ariaLabel={t('Response Text Filter')}
-              className='mt-3'
+              data-regex-json
+              className='mt-3 max-w-full min-w-0 overflow-hidden [&>div:first-child]:h-auto [&>div:first-child]:min-h-8 [&>div:first-child]:flex-wrap [&>div:first-child]:gap-2 [&>div:first-child]:py-1'
             />
           </AccordionContent>
         </AccordionItem>
       </Accordion>
-    </div>
+    </section>
   )
 }

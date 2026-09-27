@@ -114,7 +114,7 @@ export function ChannelConfiguration(props: ChannelConfigurationProps) {
       onValueChange={(value) =>
         props.onSectionChange(value as ChannelConfigurationSection)
       }
-      className='min-h-0 flex-1 gap-5'
+      className='min-h-0 min-w-0 flex-1 gap-5'
     >
       <div className='-mt-1 shrink-0 overflow-x-auto py-1'>
         <TabsList
@@ -177,7 +177,7 @@ export function ChannelConfiguration(props: ChannelConfigurationProps) {
       <TabsContent
         value='request'
         keepMounted
-        className='-m-1 min-h-0 space-y-5 overflow-y-auto overscroll-contain p-1'
+        className='-m-1 min-h-0 min-w-0 space-y-5 overflow-x-hidden overflow-y-auto overscroll-contain p-1'
       >
         {(props.section === 'request' || visited.has('request')) &&
           props.request}

@@ -17,7 +17,8 @@ on:
 
 concurrency:
   group: personal-request-lab-image
-  cancel-in-progress: true
+  # Interrupting a rollout can leave Compose half-updated. Queue pushes.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -27,6 +28,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -42,7 +45,7 @@ jobs:
         run: |
           go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident' -count=1
           go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay|ErrorIncident' -count=1
-          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter' -count=1
+          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex' -count=1
           go test ./relay/common -run 'TestApplyParamOverride|TestCompileParamOverride|TestSimulateParamOverride|TestStreamStatus' -count=1
           go test ./relay/helper -run 'TestStreamScannerHandler' -count=1
           go test ./relay/channel/openai -run 'Empty|OaiStreamHandler|OaiResponsesStreamHandler' -count=1
@@ -73,6 +76,9 @@ jobs:
           src/features/channels/components/dialogs/__tests__/param-override-editor-simulator-entry.test.tsx
           src/features/channels/components/__tests__/sillytavern-preset-editor.test.tsx
           src/features/channels/components/__tests__/channel-configuration.test.tsx
+          src/features/channels/components/__tests__/regex-rules-editor.test.tsx
+          src/features/channels/components/__tests__/regex-playground.test.tsx
+          src/features/channels/lib/__tests__/regex-rules.test.ts
           src/features/channels/lib/__tests__/preset-editing.test.ts
           src/features/channels/lib/__tests__/sillytavern-configuration.test.ts
 
@@ -129,3 +135,32 @@ jobs:
             echo '${{ steps.build.outputs.digest }}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy tested image to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: personal-lab-vps
+    permissions:
+      contents: read
+    steps:
+      - name: Deploy exact image digest
+        env:
+          DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
+          VPS_HOST_KEY: ${{ vars.VPS_SSH_HOST_KEY }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ -n "$DEPLOY_KEY" && -n "$VPS_HOST_KEY" ]]
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh -p 22222 -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            root@23.238.7.190 "deploy $IMAGE_DIGEST"

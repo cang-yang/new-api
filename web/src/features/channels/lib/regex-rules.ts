@@ -67,6 +67,20 @@ export const regexRulesSchema = editableRegexRulesSchema.refine(
 export type RegexRule = z.infer<typeof regexRuleSchema>
 export type RegexRulesConfig = z.infer<typeof regexRulesSchema>
 
+export function materializeRegexRuleSwitches(
+  config: RegexRulesConfig
+): RegexRulesConfig {
+  return {
+    ...config,
+    enable_send: true,
+    rules: config.rules.map((rule) =>
+      rule.stage === 'send' && config.enable_send !== true
+        ? { ...rule, disabled: true }
+        : rule
+    ),
+  }
+}
+
 export function regexReplacementGeneratesHtml(value: string): boolean {
   return /<!doctype\s+html|<\/?(?:html|head|body|script|style|div|span|iframe|svg|table|details|button|input|img|a|p|link|meta|section|article|canvas|video|audio)(?:\s|\/?>)/i.test(
     value
@@ -182,6 +196,9 @@ export function mergePresetRegexScripts(
     known.add(key)
     return true
   })
+  if (addedRules.some((rule) => rule.stage === 'send')) {
+    current = materializeRegexRuleSwitches(current)
+  }
   const next = { ...current, rules: [...current.rules, ...addedRules] }
   if (!editableRegexRulesSchema.safeParse(next).success) {
     throw new Error('Regex import exceeds rule count or text size limits.')

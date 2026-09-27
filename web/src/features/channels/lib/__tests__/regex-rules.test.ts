@@ -59,13 +59,41 @@ test('preset regex merge keeps existing rules and selects receive and send indep
   ).toBe(0)
   const send = mergePresetRegexScripts(receive.value, scripts, ['send'])
   expect(send.added).toBe(1)
-  expect(JSON.parse(send.value)).toMatchObject({ enable_send: false })
+  expect(JSON.parse(send.value)).toMatchObject({ enable_send: true })
   expect(
     JSON.parse(send.value).rules.map((rule: { stage: string }) => rule.stage)
   ).toEqual(['receive', 'receive', 'send'])
   expect(() =>
     mergePresetRegexScripts('{"mode":"advanced"}', scripts, ['receive'])
   ).toThrow()
+})
+
+test('importing send rules preserves legacy disabled sending for existing rules', () => {
+  const existing = JSON.stringify({
+    mode: 'rules',
+    enable_send: false,
+    rules: [
+      {
+        id: 'old-send',
+        stage: 'send',
+        action: 'replace',
+        pattern: 'old',
+        replacement: '',
+      },
+    ],
+  })
+  const merged = mergePresetRegexScripts(
+    existing,
+    [{ findRegex: 'new', placement: [1], promptOnly: true }],
+    ['send']
+  )
+  expect(JSON.parse(merged.value)).toMatchObject({
+    enable_send: true,
+    rules: [
+      { id: 'old-send', disabled: true },
+      { pattern: 'new', stage: 'send', disabled: false },
+    ],
+  })
 })
 
 test.each(['/x/v', '/x/y', '/x/gg'])(

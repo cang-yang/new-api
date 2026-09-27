@@ -45,6 +45,7 @@ import {
   type ComponentProps,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useState,
   useMemo,
   useCallback,
@@ -235,6 +236,7 @@ import {
   type ModelMappingDraftRequest,
 } from '../model-mapping-editor'
 import { ModelRedirectPanel } from '../model-redirect-panel'
+import { RegexPlayground } from '../regex-playground'
 import { RegexRulesEditor } from '../regex-rules-editor'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
@@ -464,9 +466,6 @@ export function ChannelMutateDrawer({
     scripts: unknown[]
   } | null>(null)
   const [presetDragActive, setPresetDragActive] = useState(false)
-  useEffect(() => {
-    if (!open) setPendingPresetRegex(null)
-  }, [open])
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
     useState<ChannelConnectionInfo | null>(null)
 
@@ -479,6 +478,15 @@ export function ChannelMutateDrawer({
     setDrawerSide(requestedSide)
   }
   const channelId = currentRow?.id ?? null
+  const presetScope = useMemo(() => ({ channelId, open }), [channelId, open])
+  const presetImportScope = useRef<typeof presetScope | null>(null)
+  useLayoutEffect(() => {
+    presetImportScope.current = presetScope
+    setPendingPresetRegex(null)
+    return () => {
+      presetImportScope.current = null
+    }
+  }, [presetScope])
   const sensitiveLocked = isEditing && !canEditSensitive
   const [providerTarget, setProviderTarget] =
     useState<ChannelProviderTarget | null>(null)
@@ -591,6 +599,7 @@ export function ChannelMutateDrawer({
     file: File,
     onChange: (value: string) => void
   ) => {
+    const importScope = presetScope
     if (
       !file.name.toLowerCase().endsWith('.json') &&
       file.type !== 'application/json'
@@ -604,6 +613,7 @@ export function ChannelMutateDrawer({
     }
     try {
       const preset = JSON.parse(await file.text()) as Record<string, unknown>
+      if (presetImportScope.current !== importScope || !importScope.open) return
       if (
         !Array.isArray(preset.prompts) ||
         !Array.isArray(preset.prompt_order)
@@ -632,6 +642,7 @@ export function ChannelMutateDrawer({
       )
       toast.success(t('Preset imported. Save the channel to apply it.'))
     } catch {
+      if (presetImportScope.current !== importScope || !importScope.open) return
       toast.error(t('Import a valid SillyTavern Chat Completion preset'))
     }
   }
@@ -2743,9 +2754,9 @@ export function ChannelMutateDrawer({
           control={form.control}
           name='param_override'
           render={({ field }) => (
-            <FormItem className='space-y-3 border-t pt-4'>
+            <FormItem className='max-w-full min-w-0 space-y-3 border-t pt-4'>
               <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
-                <div className='space-y-1'>
+                <div className='min-w-0 space-y-1'>
                   <FormLabel>{t('Parameter Override')}</FormLabel>
                   <FormDescription>
                     {t(
@@ -2834,32 +2845,11 @@ export function ChannelMutateDrawer({
                   <FormLabel>{t('Response Text Filter')}</FormLabel>
                   <FormDescription>
                     {t(
-                      'Replace, delete or extract text with ordered regex rules. Receive rules preserve reasoning, tool calls and usage. Send-side processing is optional and off by default.'
+                      'Replace, delete or extract text with ordered regex rules. Enable each send or receive rule individually. Receive rules preserve reasoning, tool calls and usage.'
                     )}
                   </FormDescription>
                 </div>
                 <div className='flex flex-wrap gap-2'>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={() =>
-                      field.onChange(
-                        JSON.stringify(
-                          {
-                            mode: 'regex_extract',
-                            pattern: '(?s)<主体>\\s*(.*?)\\s*</主体>',
-                            missing_match: 'passthrough',
-                          },
-                          null,
-                          2
-                        )
-                      )
-                    }
-                    disabled={sensitiveLocked || isSubmitting}
-                  >
-                    {t('Regex Extraction Template')}
-                  </Button>
                   <Button
                     type='button'
                     variant='ghost'
@@ -2872,8 +2862,16 @@ export function ChannelMutateDrawer({
                 </div>
               </div>
               <RegexRulesEditor
+                scopeKey={channelId ?? 'new'}
                 value={field.value || ''}
                 onChange={field.onChange}
+                disabled={sensitiveLocked || isSubmitting}
+              />
+              <RegexPlayground
+                scopeKey={channelId ?? 'new'}
+                value={field.value || ''}
+                presetValue={formValues.sillytavern_preset}
+                presetModels={formValues.sillytavern_models}
                 disabled={sensitiveLocked || isSubmitting}
               />
               <FormMessage />
