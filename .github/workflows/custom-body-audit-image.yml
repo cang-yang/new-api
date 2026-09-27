@@ -71,6 +71,10 @@ jobs:
           src/features/channels/lib/__tests__/param-override-simulator.test.ts
           src/features/channels/components/dialogs/__tests__/param-override-simulator-dialog.test.tsx
           src/features/channels/components/dialogs/__tests__/param-override-editor-simulator-entry.test.tsx
+          src/features/channels/components/__tests__/sillytavern-preset-editor.test.tsx
+          src/features/channels/components/__tests__/channel-configuration.test.tsx
+          src/features/channels/lib/__tests__/preset-editing.test.ts
+          src/features/channels/lib/__tests__/sillytavern-configuration.test.ts
 
       - name: Typecheck frontend
         working-directory: web

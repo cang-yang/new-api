@@ -60,6 +60,7 @@ function SheetContent({
   children,
   side = 'right',
   showCloseButton = true,
+  onKeyDown,
   ...props
 }: SheetPrimitive.Popup.Props & {
   side?: 'top' | 'right' | 'bottom' | 'left'
@@ -76,6 +77,14 @@ function SheetContent({
       <SheetPrimitive.Popup
         data-slot='sheet-content'
         data-side={side}
+        onKeyDown={(event) => {
+          // React portals bubble through this sheet even when their DOM is outside it.
+          // Let nested dialogs own their keys, including document-level DnD sensors.
+          if (!event.currentTarget.contains(event.target as Node)) {
+            event.preventBaseUIHandler()
+          }
+          onKeyDown?.(event)
+        }}
         className={cn(
           'bg-background text-foreground fixed z-50 flex flex-col gap-4 overflow-hidden bg-clip-padding text-sm shadow-none transition duration-200 ease-in-out data-ending-style:opacity-0 data-starting-style:opacity-0',
           side === 'right' &&

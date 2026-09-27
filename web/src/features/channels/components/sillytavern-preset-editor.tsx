@@ -16,30 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { Dialog } from '@/components/dialog'
 import { EmptyState } from '@/components/empty-state'
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { cn } from '@/lib/utils'
 
 import {
-  parsePresetEditor,
-  updatePresetEntries,
-  movePresetEntry,
+  editPresetConfigEntry,
   migratePresetPatches,
+  parsePresetEditor,
+  reorderPresetEntries,
 } from '../lib/sillytavern-editor'
 import { PresetEntryFields } from './preset-entry-fields'
-import { RegexFailurePolicy } from './regex-failure-policy'
+import { PresetEntryList } from './preset-entry-list'
+import { PresetRegexSettings } from './preset-regex-settings'
 import { SillyTavernMacroEditor } from './sillytavern-macro-editor'
 
 type Props = {
@@ -50,374 +46,360 @@ type Props = {
 
 export function SillyTavernPresetEditor(props: Props) {
   const { t } = useTranslation()
-  const [search, setSearch] = useState('')
-  const [migrationError, setMigrationError] = useState('')
   const parsed = useMemo(() => parsePresetEditor(props.value), [props.value])
-  if (!parsed) return null
-  const query = search.trim().toLocaleLowerCase()
-  const entries = parsed.entries.filter((entry) =>
-    `${entry.name} ${entry.identifier}`.toLocaleLowerCase().includes(query)
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
+  const [baseline, setBaseline] = useState('')
+  const [baselineConfig, setBaselineConfig] = useState('')
+  const [discard, setDiscard] = useState(false)
+  const [selected, setSelected] = useState('')
+  const [search, setSearch] = useState('')
+  const [tab, setTab] = useState('entries')
+  const [focusWriting, setFocusWriting] = useState(false)
+  const [mobileEditing, setMobileEditing] = useState(false)
+  const [migrationError, setMigrationError] = useState('')
+  const dragging = useRef(false)
+  const editorHeading = useRef<HTMLHeadingElement>(null)
+  const listPanel = useRef<HTMLDivElement>(null)
+  const draftParsed = useMemo(
+    () => (draft ? parsePresetEditor(draft) : null),
+    [draft]
   )
-  const enabledCount = parsed.entries.filter((entry) => entry.enabled).length
-
+  const entry = draftParsed?.entries.find(
+    (item) => item.identifier === selected
+  )
+  const conflict = open && props.value !== baseline
+  const locked = props.disabled || conflict
+  const legacy = Array.isArray(draft?.patches) && draft.patches.length > 0
+  if (!parsed && !open) return null
+  const close = () => {
+    if (draft && JSON.stringify(draft) !== baselineConfig) setDiscard(true)
+    else setOpen(false)
+  }
+  const enabledCount =
+    parsed?.entries.filter((item) => item.enabled).length ?? 0
   return (
-    <div className='space-y-4'>
-      {Array.isArray(parsed.config.patches) &&
-        parsed.config.patches.length > 0 && (
-          <Alert>
-            <AlertTitle>{t('Legacy preset changes')}</AlertTitle>
-            <AlertDescription>
-              {t(
-                'Convert saved text patches into editable prompt content before editing entries. Save the channel to persist the conversion.'
-              )}
-              <Button
-                type='button'
-                variant='outline'
-                disabled={props.disabled}
-                onClick={() => {
-                  const result = migratePresetPatches(props.value)
-                  setMigrationError(result.error || '')
-                  if (!result.error) props.onChange(result.value)
-                }}
-              >
-                {t('Convert to editable entries')}
-              </Button>
-              {migrationError && <p role='status'>{t(migrationError)}</p>}
-            </AlertDescription>
-          </Alert>
-        )}
-      <section
-        className='bg-card overflow-hidden rounded-xl border'
-        aria-label={t('Preset entries')}
-      >
-        <div className='bg-muted/30 space-y-3 border-b p-4'>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <div className='flex items-center gap-2'>
-              <h4 className='text-sm font-semibold'>{t('Preset entries')}</h4>
-              <Badge variant='secondary'>
-                {enabledCount} / {parsed.entries.length}
-              </Badge>
-            </div>
-            <Button
-              type='button'
-              variant='ghost'
-              size='sm'
-              disabled={props.disabled || !parsed.config.entry_overrides}
-              onClick={() => {
-                const config = { ...parsed.config }
-                delete config.entry_overrides
-                props.onChange(JSON.stringify(config))
-              }}
-            >
-              {t('Restore entry switches')}
-            </Button>
-          </div>
-          <p className='text-muted-foreground text-xs leading-relaxed'>
-            {t(
-              'Edit prompt content, roles and order for this channel. Save the channel to apply changes; closing without saving discards them.'
-            )}
+    <>
+      <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4'>
+        <div className='flex min-w-0 flex-col gap-1'>
+          <p className='text-sm font-medium'>{t('Preset entries')}</p>
+          <p className='text-muted-foreground text-xs'>
+            {t('{{enabled}} of {{total}} entries enabled', {
+              enabled: enabledCount,
+              total: parsed?.entries.length ?? 0,
+            })}
           </p>
-          <Input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            aria-label={t('Search preset entries')}
-            placeholder={t('Search preset entries')}
-          />
-          <div className='flex flex-wrap gap-2'>
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              disabled={props.disabled || entries.length === 0}
-              onClick={() =>
-                props.onChange(
-                  updatePresetEntries(
-                    props.value,
-                    entries.map((entry) => entry.identifier),
-                    true
-                  )
-                )
-              }
-            >
-              {t('Enable visible entries')}
-            </Button>
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              disabled={props.disabled || entries.length === 0}
-              onClick={() =>
-                props.onChange(
-                  updatePresetEntries(
-                    props.value,
-                    entries.map((entry) => entry.identifier),
-                    false
-                  )
-                )
-              }
-            >
-              {t('Disable visible entries')}
-            </Button>
-          </div>
         </div>
-        <div className='max-h-[28rem] overflow-y-auto overscroll-contain'>
-          {entries.length === 0 ? (
-            <EmptyState
-              className='min-h-36'
-              title={t('No matching preset entries')}
-            />
-          ) : (
-            <Accordion multiple>
-              {entries.map((entry) => (
-                <AccordionItem
-                  key={entry.identifier}
-                  value={entry.identifier}
-                  className='px-4'
-                >
-                  <div className='flex items-center gap-3'>
-                    <span className='text-muted-foreground w-5 shrink-0 text-right font-mono text-xs'>
-                      {parsed.entries.indexOf(entry) + 1}
-                    </span>
-                    <AccordionTrigger className='min-w-0 flex-1 py-3'>
-                      <span className='min-w-0 space-y-1'>
-                        <span className='block break-words'>{entry.name}</span>
-                        <span className='text-muted-foreground flex flex-wrap gap-1.5 text-xs font-normal'>
-                          <span>{entry.role}</span>
-                          {entry.marker && <span>· {t('Context marker')}</span>}
-                          {entry.enabled !== entry.originalEnabled && (
-                            <span className='text-primary'>
-                              · {t('Modified')}
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                    </AccordionTrigger>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='ghost'
-                      aria-label={t('Move {{name}} up', { name: entry.name })}
-                      disabled={
-                        props.disabled ||
-                        !!query ||
-                        parsed.entries.indexOf(entry) === 0
-                      }
-                      onClick={() =>
-                        props.onChange(
-                          movePresetEntry(props.value, entry.identifier, -1)
-                        )
-                      }
-                    >
-                      ↑
-                    </Button>
-                    <Button
-                      type='button'
-                      size='sm'
-                      variant='ghost'
-                      aria-label={t('Move {{name}} down', { name: entry.name })}
-                      disabled={
-                        props.disabled ||
-                        !!query ||
-                        parsed.entries.indexOf(entry) ===
-                          parsed.entries.length - 1
-                      }
-                      onClick={() =>
-                        props.onChange(
-                          movePresetEntry(props.value, entry.identifier, 1)
-                        )
-                      }
-                    >
-                      ↓
-                    </Button>
-                    <Switch
-                      checked={entry.enabled}
-                      disabled={props.disabled}
-                      aria-label={t('Enable preset entry {{name}}', {
-                        name: entry.name,
-                      })}
-                      onCheckedChange={(checked) =>
-                        props.onChange(
-                          updatePresetEntries(
-                            props.value,
-                            [entry.identifier],
-                            checked
-                          )
-                        )
-                      }
-                    />
-                  </div>
-                  <AccordionContent>
-                    <div className='space-y-2 pb-3 pl-8'>
-                      <code className='text-muted-foreground text-xs break-all'>
-                        {entry.identifier}
-                      </code>
-                      <PresetEntryFields
-                        entry={entry}
-                        value={props.value}
-                        onChange={props.onChange}
-                        disabled={
-                          props.disabled ||
-                          (Array.isArray(parsed.config.patches) &&
-                            parsed.config.patches.length > 0)
-                        }
-                      />
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              ))}
-            </Accordion>
-          )}
-        </div>
-      </section>
-      {parsed.regexScripts.length > 0 && (
-        <section
-          className='bg-card overflow-hidden rounded-xl border'
-          aria-label={t('Embedded regex scripts')}
+        <Button
+          type='button'
+          variant='outline'
+          disabled={props.disabled || !parsed}
+          onClick={() => {
+            if (!parsed) return
+            setDraft(parsed.config)
+            setBaseline(props.value)
+            setBaselineConfig(JSON.stringify(parsed.config))
+            setSelected(parsed.entries[0]?.identifier ?? '')
+            setSearch('')
+            setTab('entries')
+            setFocusWriting(false)
+            setMobileEditing(false)
+            setMigrationError('')
+            setDiscard(false)
+            setOpen(true)
+          }}
         >
-          <div className='bg-muted/30 space-y-2 border-b p-4'>
-            <div className='flex items-center justify-between gap-3'>
-              <div className='flex items-center gap-2'>
-                <h4 className='text-sm font-semibold'>
-                  {t('Embedded regex scripts')}
-                </h4>
-                <Badge variant='secondary'>{parsed.regexScripts.length}</Badge>
-              </div>
-              <Switch
-                checked={parsed.config.enable_embedded_regex === true}
-                disabled={props.disabled}
-                aria-label={t('Enable embedded regex scripts')}
-                onCheckedChange={(checked) =>
-                  props.onChange(
-                    JSON.stringify({
-                      ...parsed.config,
-                      enable_embedded_regex: checked,
-                    })
-                  )
-                }
-              />
-            </div>
-            <div className='flex items-center justify-between gap-3'>
-              <span className='text-sm'>
-                {t('Enable embedded send-side regex')}
-              </span>
-              <Switch
-                checked={parsed.config.enable_send_regex === true}
-                disabled={props.disabled}
-                aria-label={t('Enable embedded send-side regex')}
-                onCheckedChange={(checked) =>
-                  props.onChange(
-                    JSON.stringify({
-                      ...parsed.config,
-                      enable_send_regex: checked,
-                    })
-                  )
-                }
-              />
-            </div>
-            <p className='text-muted-foreground text-xs leading-relaxed'>
-              {t(
-                'Receive scripts process upstream content before it reaches the client. Only applicable enabled receive scripts buffer streaming responses. Send scripts are off by default and do not buffer responses.'
-              )}
+          {t('Edit preset')}
+        </Button>
+      </div>
+      <Dialog
+        open={open}
+        onOpenChange={(next, details) => {
+          if (!next) {
+            if (details.reason === 'escape-key' && dragging.current) {
+              details.cancel()
+              details.allowPropagation()
+              return
+            }
+            close()
+          }
+        }}
+        title={t('Edit preset')}
+        description={t(
+          'Edit the channel preset. Apply your draft, then save the channel.'
+        )}
+        onContentKeyDown={(event) => {
+          // Let the sortable sensor receive navigation keys normally contained by Base UI.
+          if (
+            dragging.current &&
+            ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(
+              event.key
+            )
+          ) {
+            event.preventBaseUIHandler()
+          }
+        }}
+        contentHeight='100%'
+        contentClassName='h-[85dvh] max-h-[calc(100dvh-1rem)] gap-0 overflow-hidden p-0 sm:max-w-[1160px] sm:p-0'
+        headerClassName='border-b px-5 py-4 pr-12'
+        bodyClassName='h-full min-h-0 py-0'
+        footerClassName='mx-0 mb-0 flex-row flex-wrap items-center justify-end px-5 py-3 sm:mx-0 sm:mb-0 sm:p-4'
+        footer={
+          <>
+            <p className='text-muted-foreground mr-auto text-xs'>
+              {t('Save the channel to make these changes take effect.')}
             </p>
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Imported scripts are available but both receive and send processing require explicit enablement.'
-              )}
-            </p>
-            <RegexFailurePolicy
-              embedded
-              value={parsed.config.regex_failure_policy}
-              disabled={props.disabled}
-              onChange={(policy) => {
-                const next = { ...parsed.config }
-                if (policy === undefined) delete next.regex_failure_policy
-                else next.regex_failure_policy = policy
-                props.onChange(JSON.stringify(next))
+            <Button type='button' variant='outline' onClick={close}>
+              {t('Cancel')}
+            </Button>
+            <Button
+              type='button'
+              disabled={locked || !draft}
+              onClick={() => {
+                if (!draft || locked || props.value !== baseline) return
+                props.onChange(JSON.stringify(draft))
+                setOpen(false)
               }}
-            />
-            {parsed.regexScripts.some(
-              (script) => script.responseSide && script.generatesHtml
-            ) && (
-              <Alert className='border-amber-500/40 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100'>
+            >
+              {t('Apply to channel')}
+            </Button>
+          </>
+        }
+      >
+        {draft && draftParsed && (
+          <div className='flex h-full min-h-0 flex-col'>
+            {conflict && (
+              <Alert className='shrink-0 rounded-none border-x-0 border-t-0'>
                 <AlertTitle>
-                  {t('Some response rules generate HTML')}
+                  {t('The channel preset changed while this editor was open.')}
                 </AlertTitle>
-                <AlertDescription className='text-amber-900 dark:text-amber-200'>
+                <AlertDescription>
                   {t(
-                    'Enabling these rules can replace the reply with HTML, CSS or JavaScript text in the API content. New API does not render it. Disable the marked rules if your client expects plain text.'
+                    'Your draft is still here. Close and reopen the editor to load the latest preset before applying changes.'
                   )}
                 </AlertDescription>
               </Alert>
             )}
-          </div>
-          <div className='max-h-80 divide-y overflow-y-auto'>
-            {parsed.regexScripts.map((script) => (
-              <div
-                key={script.id || script.name}
-                className='flex items-center gap-3 px-4 py-3'
-              >
-                <div className='min-w-0 flex-1 space-y-1'>
-                  <p className='text-sm font-medium break-words'>
-                    {script.name}
-                  </p>
-                  {script.responseSide && script.generatesHtml && (
-                    <Badge
-                      variant='outline'
-                      className='border-amber-500/40 text-amber-800 dark:text-amber-200'
-                    >
-                      {t('May generate HTML')}
-                    </Badge>
+            {legacy && (
+              <Alert className='shrink-0 rounded-none border-x-0 border-t-0'>
+                <AlertTitle>{t('Legacy preset changes')}</AlertTitle>
+                <AlertDescription>
+                  {t(
+                    'Convert saved text patches into editable prompt content before editing entries. Save the channel to persist the conversion.'
                   )}
-                  <p className='text-muted-foreground text-xs'>
-                    {script.sendSide && <span>{t('Send-side')} · </span>}
-                    {script.responseSide
-                      ? t(
-                          'Response-side · incompatible syntax is skipped with a warning'
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={locked}
+                    onClick={() => {
+                      const result = migratePresetPatches(JSON.stringify(draft))
+                      setMigrationError(result.error || '')
+                      if (!result.error) {
+                        setDraft(
+                          JSON.parse(result.value) as Record<string, unknown>
                         )
-                      : !script.sendSide &&
-                        t('Unsupported placement · preserved only')}
-                  </p>
-                </div>
-                <Switch
-                  checked={script.enabled}
-                  disabled={
-                    props.disabled ||
-                    !(
-                      (parsed.config.enable_embedded_regex &&
-                        script.responseSide) ||
-                      (parsed.config.enable_send_regex && script.sendSide)
-                    ) ||
-                    !script.id ||
-                    !(script.responseSide || script.sendSide)
-                  }
-                  aria-label={t('Enable regex script {{name}}', {
-                    name: script.name,
-                  })}
-                  onCheckedChange={(checked) =>
-                    props.onChange(
-                      JSON.stringify({
-                        ...parsed.config,
-                        regex_overrides: {
-                          ...((parsed.config.regex_overrides || {}) as Record<
-                            string,
-                            boolean
-                          >),
-                          [script.id]: checked,
-                        },
-                      })
-                    )
-                  }
-                />
+                      }
+                    }}
+                  >
+                    {t('Convert to editable entries')}
+                  </Button>
+                  {migrationError && <p role='status'>{t(migrationError)}</p>}
+                </AlertDescription>
+              </Alert>
+            )}
+            <Tabs
+              value={tab}
+              onValueChange={(value) => setTab(String(value))}
+              className='min-h-0 flex-1 gap-0'
+            >
+              <div className='shrink-0 overflow-x-auto border-b px-4 py-2'>
+                <TabsList variant='line' aria-label={t('Preset settings')}>
+                  <TabsTrigger value='entries'>
+                    {t('Preset entries')}
+                  </TabsTrigger>
+                  <TabsTrigger value='regex'>
+                    {t('Embedded regex scripts')}
+                  </TabsTrigger>
+                  <TabsTrigger value='macros'>
+                    {t('Macro values and time')}
+                  </TabsTrigger>
+                </TabsList>
               </div>
-            ))}
+              <TabsContent
+                value='entries'
+                keepMounted
+                className='min-h-0 overflow-hidden'
+              >
+                <div className='flex h-full min-h-0'>
+                  {!focusWriting && (
+                    <div
+                      ref={listPanel}
+                      className={cn(
+                        'w-full shrink-0 border-r md:block md:w-[300px]',
+                        mobileEditing && 'hidden'
+                      )}
+                    >
+                      <PresetEntryList
+                        entries={draftParsed.entries}
+                        selected={selected}
+                        search={search}
+                        onSearch={setSearch}
+                        disabled={locked}
+                        canRestore={!!draft.entry_overrides}
+                        onSelect={(identifier) => {
+                          setSelected(identifier)
+                          setMobileEditing(true)
+                          requestAnimationFrame(() =>
+                            editorHeading.current?.focus()
+                          )
+                        }}
+                        onToggle={(identifiers, enabled) => {
+                          const overrides = {
+                            ...((draft.entry_overrides || {}) as Record<
+                              string,
+                              boolean
+                            >),
+                          }
+                          for (const identifier of identifiers) {
+                            overrides[identifier] = enabled
+                          }
+                          setDraft({ ...draft, entry_overrides: overrides })
+                        }}
+                        onRestore={() => {
+                          const next = { ...draft }
+                          delete next.entry_overrides
+                          setDraft(next)
+                        }}
+                        onReorder={(identifier, target) =>
+                          setDraft(
+                            reorderPresetEntries(draft, identifier, target)
+                          )
+                        }
+                        onDragging={(active) => {
+                          dragging.current = active
+                        }}
+                      />
+                    </div>
+                  )}
+                  <section
+                    aria-label={t('Entry editor')}
+                    className={cn(
+                      'min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain p-4 md:block md:p-5',
+                      !mobileEditing && !focusWriting && 'hidden'
+                    )}
+                  >
+                    {entry ? (
+                      <div className='flex h-full min-h-0 flex-col gap-4'>
+                        <div className='flex shrink-0 flex-wrap items-start justify-between gap-2'>
+                          <div className='flex min-w-0 flex-1 flex-col gap-1'>
+                            <Button
+                              type='button'
+                              variant='ghost'
+                              size='sm'
+                              className='mb-1 w-fit md:hidden'
+                              onClick={() => {
+                                setMobileEditing(false)
+                                setFocusWriting(false)
+                                requestAnimationFrame(() =>
+                                  listPanel.current
+                                    ?.querySelector<HTMLButtonElement>(
+                                      '[aria-pressed="true"]'
+                                    )
+                                    ?.focus()
+                                )
+                              }}
+                            >
+                              {t('Back to entries')}
+                            </Button>
+                            <h3
+                              ref={editorHeading}
+                              tabIndex={-1}
+                              className='text-sm font-semibold [overflow-wrap:anywhere] break-words outline-none'
+                            >
+                              {entry.name}
+                            </h3>
+                            <p className='text-muted-foreground text-xs break-all'>
+                              {t('Identifier')}: <code>{entry.identifier}</code>
+                            </p>
+                          </div>
+                          {!entry.marker && (
+                            <Button
+                              type='button'
+                              size='sm'
+                              variant='ghost'
+                              aria-pressed={focusWriting}
+                              onClick={() => setFocusWriting(!focusWriting)}
+                            >
+                              {focusWriting
+                                ? t('Show entry list')
+                                : t('Focus writing')}
+                            </Button>
+                          )}
+                        </div>
+                        <PresetEntryFields
+                          entry={entry}
+                          onChange={(changes) =>
+                            setDraft(
+                              editPresetConfigEntry(
+                                draft,
+                                entry.identifier,
+                                changes
+                              )
+                            )
+                          }
+                          disabled={locked || legacy}
+                        />
+                      </div>
+                    ) : (
+                      <EmptyState title={t('Select an entry to edit')} />
+                    )}
+                  </section>
+                </div>
+              </TabsContent>
+              <TabsContent
+                value='regex'
+                keepMounted
+                className='min-h-0 overflow-y-auto overscroll-contain p-5'
+              >
+                <PresetRegexSettings
+                  config={draft}
+                  onChange={(value) =>
+                    setDraft(JSON.parse(value) as Record<string, unknown>)
+                  }
+                  disabled={locked}
+                />
+              </TabsContent>
+              <TabsContent
+                value='macros'
+                keepMounted
+                className='min-h-0 overflow-y-auto overscroll-contain p-5'
+              >
+                <SillyTavernMacroEditor
+                  config={draft}
+                  onChange={setDraft}
+                  disabled={locked}
+                />
+              </TabsContent>
+            </Tabs>
           </div>
-        </section>
-      )}
-      <SillyTavernMacroEditor
-        config={parsed.config}
-        onChange={props.onChange}
-        disabled={props.disabled}
-      />
-    </div>
+        )}
+        <ConfirmDialog
+          open={discard}
+          onOpenChange={setDiscard}
+          title={t('Discard preset changes?')}
+          desc={t(
+            'Your changes in this editor have not been applied to the channel.'
+          )}
+          cancelBtnText={t('Keep editing')}
+          confirmText={t('Discard changes')}
+          destructive
+          handleConfirm={() => {
+            setDiscard(false)
+            setOpen(false)
+          }}
+        />
+      </Dialog>
+    </>
   )
 }

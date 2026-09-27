@@ -25,7 +25,7 @@ import { Textarea } from '@/components/ui/textarea'
 
 type Props = {
   config: Record<string, unknown>
-  onChange: (value: string) => void
+  onChange: (value: Record<string, unknown>) => void
   disabled?: boolean
 }
 
@@ -41,7 +41,7 @@ export function SillyTavernMacroEditor(props: Props) {
 
   return (
     <section
-      className='bg-card space-y-4 rounded-xl border p-4'
+      className='flex flex-col gap-4'
       aria-label={t('Macro values and time')}
     >
       <div className='space-y-1'>
@@ -63,9 +63,7 @@ export function SillyTavernMacroEditor(props: Props) {
           }
           disabled={props.disabled}
           onChange={(event) =>
-            props.onChange(
-              JSON.stringify({ ...props.config, time_zone: event.target.value })
-            )
+            props.onChange({ ...props.config, time_zone: event.target.value })
           }
         />
       </label>
@@ -82,9 +80,7 @@ export function SillyTavernMacroEditor(props: Props) {
               onClick={() => {
                 const next = { ...values }
                 delete next[key]
-                props.onChange(
-                  JSON.stringify({ ...props.config, macro_values: next })
-                )
+                props.onChange({ ...props.config, macro_values: next })
               }}
             >
               {t('Remove')}
@@ -96,12 +92,10 @@ export function SillyTavernMacroEditor(props: Props) {
             disabled={props.disabled}
             className='min-h-20'
             onChange={(event) =>
-              props.onChange(
-                JSON.stringify({
-                  ...props.config,
-                  macro_values: { ...values, [key]: event.target.value },
-                })
-              )
+              props.onChange({
+                ...props.config,
+                macro_values: { ...values, [key]: event.target.value },
+              })
             }
           />
         </div>
@@ -120,12 +114,10 @@ export function SillyTavernMacroEditor(props: Props) {
           variant='outline'
           disabled={props.disabled || !normalizedName || nameExists}
           onClick={() => {
-            props.onChange(
-              JSON.stringify({
-                ...props.config,
-                macro_values: { ...values, [normalizedName]: '' },
-              })
-            )
+            props.onChange({
+              ...props.config,
+              macro_values: { ...values, [normalizedName]: '' },
+            })
             setName('')
           }}
         >

@@ -27,6 +27,7 @@ import {
   migratePresetPatches,
   movePresetEntry,
   parsePresetEditor,
+  reorderPresetEntries,
 } from '../sillytavern-editor'
 
 const config = {
@@ -54,6 +55,37 @@ const config = {
     ],
   },
 }
+
+test('dragging an entry across multiple rows preserves unknown data and unrelated orders', () => {
+  const original = {
+    ...config,
+    preset: {
+      ...config.preset,
+      prompts: [
+        ...config.preset.prompts,
+        { identifier: 'third', content: 'third' },
+      ],
+      prompt_order: [
+        { character_id: 0, order: [{ identifier: 'first', enabled: false }] },
+        ...config.preset.prompt_order,
+      ],
+    },
+  }
+  const result = reorderPresetEntries(original, 'first', 'third')
+  expect(result).toMatchObject({
+    future: true,
+    preset: { custom: { keep: true } },
+  })
+  const ordered = result.preset as typeof original.preset
+  expect(ordered.prompt_order[0]).toEqual(original.preset.prompt_order[0])
+  expect(ordered.prompt_order[1].order).toEqual([
+    { identifier: 'second', enabled: false },
+    { identifier: 'third', enabled: false },
+    { identifier: 'first', enabled: true, extra: 'keep' },
+  ])
+  expect(original.preset.prompt_order[1].order[0].identifier).toBe('first')
+  expect(ordered.prompts).toEqual(original.preset.prompts)
+})
 
 test('edited content, role and order survive channel save and reopen with unknown fields intact', () => {
   const edited = editPresetEntry(JSON.stringify(config), 'first', {

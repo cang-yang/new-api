@@ -1387,12 +1387,18 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   await user.click(
     screen.getByRole('option', { name: 'SillyTavern Custom OpenAI-compatible' })
   )
-  await user.click(screen.getByRole('button', { name: /^main/ }))
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  expect(screen.getByRole('textbox', { name: 'Prompt content' })).toHaveValue(
+    'Hello'
+  )
   await user.clear(screen.getByRole('textbox', { name: 'Prompt content' }))
   await user.type(
     screen.getByRole('textbox', { name: 'Prompt content' }),
     'Edited instruction'
   )
+  expect(put).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
+  expect(put).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() => expect(put).toHaveBeenCalled())
   const payload = put.mock.calls[0]?.[1] as { settings: string }

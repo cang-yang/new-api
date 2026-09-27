@@ -40,13 +40,16 @@ export type PresetRegex = {
   generatesHtml: boolean
 }
 
-export function parsePresetEditor(value: string): {
+export function parsePresetEditor(value: string | Record<string, unknown>): {
   config: Record<string, unknown>
   entries: PresetEntry[]
   regexScripts: PresetRegex[]
 } | null {
   try {
-    const config = JSON.parse(value) as Record<string, unknown>
+    const config =
+      typeof value === 'string'
+        ? (JSON.parse(value) as Record<string, unknown>)
+        : value
     const preset = config.preset as {
       prompts: Array<{
         identifier: string
@@ -102,7 +105,7 @@ export function parsePresetEditor(value: string): {
       return [
         {
           identifier: item.identifier,
-          name: prompt.name || item.identifier,
+          name: prompt.name ?? item.identifier,
           content: prompt.content || '',
           role: prompt.role || 'system',
           marker: prompt.marker === true,
@@ -160,6 +163,75 @@ type EditablePreset = {
       [key: string]: unknown
     }>
   }>
+}
+
+export type PresetEntryChanges = Partial<
+  Pick<
+    PresetEntry,
+    | 'name'
+    | 'role'
+    | 'content'
+    | 'injection_position'
+    | 'injection_depth'
+    | 'injection_order'
+  >
+>
+
+export function editPresetConfigEntry(
+  config: Record<string, unknown>,
+  identifier: string,
+  changes: PresetEntryChanges
+): Record<string, unknown> {
+  const preset = config.preset as EditablePreset
+  const prompt = preset.prompts.find((item) => item.identifier === identifier)
+  if (
+    !prompt ||
+    (prompt.marker && Object.keys(changes).some((key) => key !== 'name'))
+  ) {
+    return config
+  }
+  return {
+    ...config,
+    preset: {
+      ...preset,
+      prompts: preset.prompts.map((item) =>
+        item === prompt ? { ...item, ...changes } : item
+      ),
+    },
+  }
+}
+
+export function reorderPresetEntries(
+  config: Record<string, unknown>,
+  identifier: string,
+  targetIdentifier: string
+): Record<string, unknown> {
+  const parsed = parsePresetEditor(config)
+  if (!parsed || identifier === targetIdentifier) return config
+  const preset = config.preset as EditablePreset
+  const active =
+    preset.prompt_order.find((item) => item.character_id === 100001) ||
+    preset.prompt_order[0]
+  const order = [...(active?.order || [])]
+  const known = new Set(order.map((item) => item.identifier))
+  order.push(
+    ...parsed.entries
+      .filter((entry) => !known.has(entry.identifier))
+      .map((entry) => ({
+        identifier: entry.identifier,
+        enabled: entry.originalEnabled,
+      }))
+  )
+  const from = order.findIndex((item) => item.identifier === identifier)
+  const to = order.findIndex((item) => item.identifier === targetIdentifier)
+  if (from < 0 || to < 0) return config
+  order.splice(to, 0, order.splice(from, 1)[0])
+  const prompt_order = active
+    ? preset.prompt_order.map((item) =>
+        item === active ? { ...item, order } : item
+      )
+    : [{ character_id: 100001, order }]
+  return { ...config, preset: { ...preset, prompt_order } }
 }
 
 export function editPresetEntry(
