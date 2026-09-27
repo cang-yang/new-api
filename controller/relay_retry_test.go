@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
@@ -39,6 +40,69 @@ func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
 	assert.NotEqual(t, presetRequestRetrySettings(preset, "m"), presetRequestRetrySettings(&other, "m"))
 	other.Models = []string{"another-model"}
 	assert.Equal(t, presetRequestRetrySettings(nil, "m"), presetRequestRetrySettings(&other, "m"), "inactive presets must not interfere with ordinary failover")
+}
+
+func TestSelectedChannelResponseRegexUsesContextSettings(t *testing.T) {
+	filter := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
+		{ID: "remove-wrapper", Stage: "receive", Action: "replace", Pattern: `/<\/?Interleaving\s*>/gi`},
+		{ID: "remove-thinking", Stage: "receive", Action: "replace", Pattern: `/<thinking>[\s\S]*?<\/thinking>/g`},
+		{ID: "remove-inner-tag", Stage: "receive", Action: "replace", Pattern: `/<(?!\/?(?:think|thinking)\b)([^<>]*?)>(?=(?:(?!<(?:think|thinking)\b)[\s\S])*?<\/(?:think|thinking)>)/gi`, Replacement: "$1"},
+	}}
+	for _, streamed := range []bool{false, true} {
+		name := "json"
+		if streamed {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{ResponseTextFilter: filter})
+			writer := beginSelectedResponseTextFilter(c, "model")
+			require.NotNil(t, writer, "the initial routing stub has no settings; the selected context must supply them")
+			if streamed {
+				c.Writer.Header().Set("Content-Type", "text/event-stream")
+				_, err := c.Writer.WriteString("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<Interleaving><thinking>hidden\"}}]}\n\n" +
+					"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"</thinking>body</Interleaving><state:+1>\"}}]}\n\n" +
+					"data: [DONE]\n\n")
+				require.NoError(t, err)
+			} else {
+				_, err := c.Writer.WriteString(`{"choices":[{"message":{"content":"<Interleaving><thinking>hidden</thinking>body</Interleaving><state:+1>","reasoning":"keep"}}]}`)
+				require.NoError(t, err)
+			}
+			require.NoError(t, writer.Finish(c, true))
+			content := ""
+			if streamed {
+				for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+					if data, ok := strings.CutPrefix(line, "data: {"); ok {
+						content += gjson.Get("{"+data, "choices.0.delta.content").String()
+					}
+				}
+			} else {
+				content = gjson.Get(recorder.Body.String(), "choices.0.message.content").String()
+				assert.Equal(t, "keep", gjson.Get(recorder.Body.String(), "choices.0.message.reasoning").String())
+			}
+			assert.Equal(t, "body<state:+1>", content)
+		})
+	}
+
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}],"extensions":{"regex_scripts":[{"id":"receiver","findRegex":"/<thinking>[\\s\\S]*?<\\/thinking>/g","replaceString":"","placement":[2],"markdownOnly":true}]}}`)}
+	presetRecorder := httptest.NewRecorder()
+	presetContext, _ := gin.CreateTestContext(presetRecorder)
+	common.SetContextKey(presetContext, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{SillyTavernPreset: preset})
+	presetWriter := beginSelectedResponseTextFilter(presetContext, "model")
+	require.NotNil(t, presetWriter)
+	_, err := presetContext.Writer.WriteString(`{"choices":[{"message":{"content":"<thinking>hidden</thinking>body"}}]}`)
+	require.NoError(t, err)
+	require.NoError(t, presetWriter.Finish(presetContext, true))
+	assert.Equal(t, "body", gjson.Get(presetRecorder.Body.String(), "choices.0.message.content").String())
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{})
+	assert.Nil(t, beginSelectedResponseTextFilter(c, "model"), "ordinary channels must not buffer or transform responses")
+	_, err = c.Writer.WriteString("data: passthrough\n\n")
+	require.NoError(t, err)
+	assert.Equal(t, "data: passthrough\n\n", recorder.Body.String())
 }
 
 func TestSillyTavernRejectsRoutePassthrough(t *testing.T) {

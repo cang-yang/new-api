@@ -247,8 +247,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			(relayInfo.RelayMode == relayconstant.RelayModeGemini &&
 				(strings.Contains(c.Request.URL.Path, "generateContent") || strings.Contains(c.Request.URL.Path, "streamGenerateContent"))) ||
 			relayInfo.RelayMode == relayconstant.RelayModeCompletions {
-			settings := channel.GetOtherSettings()
-			textFilter = service.BeginResponseTextFilterWithPreset(c, settings.ResponseTextFilter, settings.SillyTavernPreset, relayInfo.OriginModelName)
+			textFilter = beginSelectedResponseTextFilter(c, relayInfo.OriginModelName)
 		}
 
 		switch relayFormat {
@@ -290,6 +289,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
 	}
+}
+
+// The selected channel is stored in the request context on both the initial
+// attempt and retries. The initial attempt's Channel is only a routing stub
+// and does not contain its settings.
+func beginSelectedResponseTextFilter(c *gin.Context, model string) *service.ResponseTextFilterWriter {
+	settings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	return service.BeginResponseTextFilterWithPreset(c, settings.ResponseTextFilter, settings.SillyTavernPreset, model)
 }
 
 // Receive-only settings do not change the already prepared outbound request.
