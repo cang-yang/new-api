@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Import preset JSON": "Import preset JSON",
+    "Replace preset JSON": "Replace preset JSON",
+    "Unnamed preset": "Unnamed preset",
     "Edit preset": "Edit preset",
     "{{enabled}} of {{total}} entries enabled": "{{enabled}} of {{total}} entries enabled",
     "Edit the channel preset. Apply your draft, then save the channel.": "Edit the channel preset. Apply your draft, then save the channel.",

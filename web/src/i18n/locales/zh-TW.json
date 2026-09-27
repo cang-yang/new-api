@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Import preset JSON": "匯入預設 JSON",
+    "Replace preset JSON": "替換預設 JSON",
+    "Unnamed preset": "未命名預設",
     "Edit preset": "編輯預設",
     "{{enabled}} of {{total}} entries enabled": "已啟用 {{enabled}} / {{total}} 個項目",
     "Edit the channel preset. Apply your draft, then save the channel.": "編輯渠道預設，套用草稿後再儲存渠道。",

@@ -1,3 +1,4 @@
+import { FileText } from 'lucide-react'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -78,17 +79,41 @@ export function SillyTavernPresetEditor(props: Props) {
   }
   const enabledCount =
     parsed?.entries.filter((item) => item.enabled).length ?? 0
+  const preset = parsed?.config.preset as Record<string, unknown> | undefined
+  const sourceFileName =
+    typeof parsed?.config.source_file_name === 'string'
+      ? parsed.config.source_file_name.trim()
+      : ''
+  const presetName = typeof preset?.name === 'string' ? preset.name.trim() : ''
+  const displayName = presetName || sourceFileName || t('Unnamed preset')
   return (
     <>
-      <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4'>
-        <div className='flex min-w-0 flex-col gap-1'>
-          <p className='text-sm font-medium'>{t('Preset entries')}</p>
-          <p className='text-muted-foreground text-xs'>
-            {t('{{enabled}} of {{total}} entries enabled', {
-              enabled: enabledCount,
-              total: parsed?.entries.length ?? 0,
-            })}
+      <div className='bg-muted/20 flex flex-wrap items-center gap-3 rounded-xl border p-4'>
+        <div className='bg-background text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded-lg border'>
+          <FileText aria-hidden='true' className='size-5' />
+        </div>
+        <div className='flex min-w-0 flex-1 flex-col gap-1'>
+          <p className='truncate text-sm font-semibold' title={displayName}>
+            {displayName}
           </p>
+          <div className='text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs'>
+            <span>{t('Preset ready')}</span>
+            <span aria-hidden='true'>·</span>
+            <span>
+              {t('{{enabled}} of {{total}} entries enabled', {
+                enabled: enabledCount,
+                total: parsed?.entries.length ?? 0,
+              })}
+            </span>
+            {sourceFileName && presetName && (
+              <>
+                <span aria-hidden='true'>·</span>
+                <span className='max-w-48 truncate' title={sourceFileName}>
+                  {sourceFileName}
+                </span>
+              </>
+            )}
+          </div>
         </div>
         <Button
           type='button'

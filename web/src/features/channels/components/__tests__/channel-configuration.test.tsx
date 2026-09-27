@@ -1362,6 +1362,9 @@ test('importing a SillyTavern preset saves it with the existing channel settings
       type: 'application/json',
     })
   )
+  await user.click(
+    await screen.findByRole('button', { name: 'Only import preset' })
+  )
   await screen.findByText(/Preset ready/)
   await user.type(
     screen.getByRole('textbox', { name: 'Preset user name' }),
@@ -1422,6 +1425,198 @@ test('importing a SillyTavern preset saves it with the existing channel settings
       models: ['test-model'],
     },
   })
+})
+
+test('confirming embedded regex import adds receive rules without enabling send processing', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const preset = {
+    prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+    prompt_order: [
+      { character_id: 100001, order: [{ identifier: 'main', enabled: true }] },
+    ],
+    extensions: {
+      regex_scripts: [
+        {
+          id: 'strip-thinking',
+          scriptName: 'Strip thinking',
+          placement: [2],
+          findRegex: '/<thinking>[\\s\\S]*?<\\/thinking>/g',
+          replaceString: '',
+          markdownOnly: true,
+        },
+      ],
+    },
+  }
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File([JSON.stringify(preset)], 'preset.json', {
+      type: 'application/json',
+    })
+  )
+  expect(
+    await screen.findByText('Import embedded regex scripts?')
+  ).toBeInTheDocument()
+  expect(put).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Import regex rules' }))
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const settings = JSON.parse(
+    (put.mock.calls[0][1] as { settings: string }).settings
+  )
+  expect(settings.sillytavern_preset.preset).toEqual(preset)
+  expect(settings.sillytavern_preset.enable_embedded_regex).toBe(false)
+  expect(settings.response_text_filter).toMatchObject({
+    mode: 'rules',
+    enable_send: false,
+    rules: [
+      {
+        stage: 'receive',
+        pattern: '/<thinking>[\\s\\S]*?<\\/thinking>/g',
+        replacement: '',
+      },
+    ],
+  })
+})
+
+test('preset import shows a named compact summary and a clear replace action', async () => {
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const upload = screen.getByLabelText('SillyTavern Chat Completion Preset')
+  expect(
+    screen.getByRole('button', { name: 'Import preset JSON' })
+  ).toBeVisible()
+  expect(upload).toHaveClass('sr-only')
+  await user.upload(
+    upload,
+    new File(
+      [
+        JSON.stringify({
+          name: 'Moonlit Tavern',
+          prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+          prompt_order: [
+            {
+              character_id: 100001,
+              order: [{ identifier: 'main', enabled: true }],
+            },
+          ],
+        }),
+      ],
+      'my-preset.json',
+      { type: 'application/json' }
+    )
+  )
+  expect(await screen.findByText('Moonlit Tavern')).toBeVisible()
+  expect(screen.getByText('my-preset.json')).toBeVisible()
+  expect(
+    screen.getByRole('button', { name: 'Replace preset JSON' })
+  ).toBeVisible()
+})
+
+test('unnamed imported preset uses its filename and keeps that identity when saved', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File(
+      [
+        JSON.stringify({
+          prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+          prompt_order: [
+            {
+              character_id: 100001,
+              order: [{ identifier: 'main', enabled: true }],
+            },
+          ],
+        }),
+      ],
+      'silver-moon.json',
+      { type: 'application/json' }
+    )
+  )
+  expect(await screen.findByText('silver-moon.json')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const settings = JSON.parse(
+    (put.mock.calls[0][1] as { settings: string }).settings
+  )
+  expect(settings.sillytavern_preset.source_file_name).toBe('silver-moon.json')
+})
+
+test('preset regex import separates send-side choice and carries the HTML warning', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  const preset = {
+    prompts: [{ identifier: 'main', role: 'system', content: 'Hello' }],
+    prompt_order: [
+      { character_id: 100001, order: [{ identifier: 'main', enabled: true }] },
+    ],
+    extensions: {
+      regex_scripts: [
+        {
+          id: 'html',
+          scriptName: 'HTML',
+          placement: [2],
+          findRegex: '/x/g',
+          replaceString: '<div>reply</div>',
+        },
+      ],
+    },
+  }
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File([JSON.stringify(preset)], 'preset.json', {
+      type: 'application/json',
+    })
+  )
+  const dialog = await screen.findByRole('alertdialog', {
+    name: 'Import embedded regex scripts?',
+  })
+  expect(
+    within(dialog).getByRole('switch', { name: 'Import receive-side rules' })
+  ).toBeChecked()
+  expect(
+    within(dialog).getByRole('switch', { name: 'Import send-side rules' })
+  ).not.toBeChecked()
+  expect(
+    within(dialog).getByText(/Some response rules generate HTML/)
+  ).toBeVisible()
+  await user.click(
+    within(dialog).getByRole('switch', { name: 'Import receive-side rules' })
+  )
+  await user.click(
+    within(dialog).getByRole('switch', { name: 'Import send-side rules' })
+  )
+  expect(
+    within(dialog).queryByText(/Some response rules generate HTML/)
+  ).not.toBeInTheDocument()
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Import regex rules' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const settings = JSON.parse(
+    (put.mock.calls[0][1] as { settings: string }).settings
+  )
+  expect(settings.response_text_filter.rules).toMatchObject([{ stage: 'send' }])
+  expect(settings.response_text_filter.enable_send).toBe(false)
 })
 
 test('quick options show only applicable shortcuts when the provider changes', async () => {

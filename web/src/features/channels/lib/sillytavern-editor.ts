@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { regexReplacementGeneratesHtml } from './regex-rules'
+
 export type PresetEntry = {
   identifier: string
   name: string
@@ -138,9 +140,7 @@ export function parsePresetEditor(value: string | Record<string, unknown>): {
           !(script.markdownOnly && !script.promptOnly),
         generatesHtml:
           typeof script.replaceString === 'string' &&
-          /<!doctype\s+html|<\/?(?:html|head|body|script|style|div|span|iframe|svg|table|details|button|input|img|a|p|link|meta|section|article|canvas|video|audio)(?:\s|\/?>)/i.test(
-            script.replaceString
-          ),
+          regexReplacementGeneratesHtml(script.replaceString),
         responseSide:
           Array.isArray(script.placement) &&
           script.placement.includes(2) &&

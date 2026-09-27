@@ -25,6 +25,26 @@ import { RegexRulesEditor } from '../regex-rules-editor'
 
 afterEach(cleanup)
 
+test('external editor warns when an enabled receive rule generates HTML', () => {
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        mode: 'rules',
+        rules: [
+          {
+            id: 'html',
+            stage: 'receive',
+            action: 'replace',
+            pattern: '/x/g',
+            replacement: '<div>reply</div>',
+          },
+        ],
+      })}
+    />
+  )
+  expect(screen.getByText(/Some response rules generate HTML/)).toBeVisible()
+})
+
 test('stored rules inherit strict behavior until explicitly changed and keep unknown options', async () => {
   const user = userEvent.setup()
   render(

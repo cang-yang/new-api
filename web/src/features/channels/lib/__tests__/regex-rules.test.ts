@@ -18,7 +18,55 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { expect, test } from 'vitest'
 
-import { importRegexScripts, regexRulesSchema } from '../regex-rules'
+import {
+  importRegexScripts,
+  mergePresetRegexScripts,
+  regexRulesSchema,
+} from '../regex-rules'
+
+test('preset regex merge keeps existing rules and selects receive and send independently', () => {
+  const scripts = [
+    {
+      scriptName: 'Both',
+      findRegex: '/x/g',
+      replaceString: '<div>reply</div>',
+      placement: [2],
+    },
+  ]
+  const existing = JSON.stringify({
+    mode: 'rules',
+    enable_send: false,
+    custom_option: 'keep',
+    rules: [
+      {
+        id: 'old',
+        stage: 'receive',
+        action: 'replace',
+        pattern: '/old/g',
+        replacement: '',
+      },
+    ],
+  })
+  const receive = mergePresetRegexScripts(existing, scripts, ['receive'])
+  const receiveConfig = JSON.parse(receive.value)
+  expect(receive.added).toBe(1)
+  expect(
+    receiveConfig.rules.map((rule: { stage: string }) => rule.stage)
+  ).toEqual(['receive', 'receive'])
+  expect(receiveConfig.custom_option).toBe('keep')
+  expect(
+    mergePresetRegexScripts(receive.value, scripts, ['receive']).added
+  ).toBe(0)
+  const send = mergePresetRegexScripts(receive.value, scripts, ['send'])
+  expect(send.added).toBe(1)
+  expect(JSON.parse(send.value)).toMatchObject({ enable_send: false })
+  expect(
+    JSON.parse(send.value).rules.map((rule: { stage: string }) => rule.stage)
+  ).toEqual(['receive', 'receive', 'send'])
+  expect(() =>
+    mergePresetRegexScripts('{"mode":"advanced"}', scripts, ['receive'])
+  ).toThrow()
+})
 
 test.each(['/x/v', '/x/y', '/x/gg'])(
   'unsupported or duplicate flags %s import disabled with warning',

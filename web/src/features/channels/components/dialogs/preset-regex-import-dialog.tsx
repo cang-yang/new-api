@@ -1,0 +1,139 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
+
+import {
+  importRegexScripts,
+  regexReplacementGeneratesHtml,
+} from '../../lib/regex-rules'
+
+type Stage = 'receive' | 'send'
+
+export function PresetRegexImportDialog({
+  scripts,
+  onClose,
+  onImport,
+}: {
+  scripts: unknown[]
+  onClose: () => void
+  onImport: (stages: Stage[]) => void
+}) {
+  const { t } = useTranslation()
+  const [receive, setReceive] = useState(true)
+  const [send, setSend] = useState(false)
+  let rules: ReturnType<typeof importRegexScripts>['rules'] = []
+  let invalid = false
+  try {
+    rules = importRegexScripts(scripts).rules
+  } catch {
+    invalid = true
+  }
+  const receiveRules = rules.filter((rule) => rule.stage === 'receive')
+  const sendRules = rules.filter((rule) => rule.stage === 'send')
+  const includeReceive = receive && receiveRules.length > 0
+  const includeSend = send && sendRules.length > 0
+  const html = receiveRules.some((rule) =>
+    regexReplacementGeneratesHtml(rule.replacement)
+  )
+
+  return (
+    <ConfirmDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+      title={t('Import embedded regex scripts?')}
+      desc={t(
+        'The preset is ready. Choose which embedded scripts to copy into this channel’s regex rules. Existing rules are kept; identical rules are not added twice.'
+      )}
+      cancelBtnText={t('Only import preset')}
+      confirmText={t('Import regex rules')}
+      disabled={invalid || (!includeReceive && !includeSend)}
+      handleConfirm={() =>
+        onImport([
+          ...(includeReceive ? (['receive'] as const) : []),
+          ...(includeSend ? (['send'] as const) : []),
+        ])
+      }
+    >
+      <div className='space-y-3'>
+        <div className='flex items-center gap-3 rounded-lg border p-3'>
+          <Switch
+            aria-label={t('Import receive-side rules')}
+            checked={includeReceive}
+            disabled={receiveRules.length === 0 || invalid}
+            onCheckedChange={setReceive}
+          />
+          <div className='min-w-0 flex-1'>
+            <div className='flex items-center gap-2 text-sm font-medium'>
+              {t('Receive-side rules')}
+              <Badge variant='secondary'>{receiveRules.length}</Badge>
+            </div>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Processes upstream reply content before returning it to the client. Applicable rules buffer streaming responses.'
+              )}
+            </p>
+          </div>
+        </div>
+        <div className='flex items-center gap-3 rounded-lg border p-3'>
+          <Switch
+            aria-label={t('Import send-side rules')}
+            checked={includeSend}
+            disabled={sendRules.length === 0 || invalid}
+            onCheckedChange={setSend}
+          />
+          <div className='min-w-0 flex-1'>
+            <div className='flex items-center gap-2 text-sm font-medium'>
+              {t('Send-side rules')}
+              <Badge variant='secondary'>{sendRules.length}</Badge>
+            </div>
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Processes outgoing messages. Imported send rules remain inactive until you enable send-side regex in the external editor.'
+              )}
+            </p>
+          </div>
+        </div>
+        {includeReceive && html && (
+          <Alert className='border-amber-500/40 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100'>
+            <AlertDescription>
+              {t(
+                'Some response rules generate HTML. The API returns that HTML as text; it does not render it. Review the imported rules if your client expects plain text.'
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+        {invalid && (
+          <Alert variant='destructive'>
+            <AlertDescription>
+              {t('Invalid SillyTavern regex script')}
+            </AlertDescription>
+          </Alert>
+        )}
+      </div>
+    </ConfirmDialog>
+  )
+}

@@ -67,6 +67,12 @@ export const regexRulesSchema = editableRegexRulesSchema.refine(
 export type RegexRule = z.infer<typeof regexRuleSchema>
 export type RegexRulesConfig = z.infer<typeof regexRulesSchema>
 
+export function regexReplacementGeneratesHtml(value: string): boolean {
+  return /<!doctype\s+html|<\/?(?:html|head|body|script|style|div|span|iframe|svg|table|details|button|input|img|a|p|link|meta|section|article|canvas|video|audio)(?:\s|\/?>)/i.test(
+    value
+  )
+}
+
 export function importRegexScripts(value: unknown): {
   rules: RegexRule[]
   warnings: string[]
@@ -135,4 +141,54 @@ export function importRegexScripts(value: unknown): {
     if (!roles.length && !unsupported) warnings.push(name)
   }
   return { rules, warnings, originals: scripts }
+}
+
+export function mergePresetRegexScripts(
+  currentValue: string,
+  scripts: unknown[],
+  stages: Array<'receive' | 'send'> = ['receive']
+): { value: string; added: number; warnings: string[] } {
+  let current: RegexRulesConfig = {
+    mode: 'rules',
+    enable_send: false,
+    failure_policy: 'passthrough',
+    rules: [],
+  }
+  if (currentValue.trim()) {
+    const parsed = editableRegexRulesSchema.safeParse(JSON.parse(currentValue))
+    if (!parsed.success) {
+      throw new Error('Existing regex configuration cannot be merged safely.')
+    }
+    current = parsed.data
+  }
+
+  const imported = importRegexScripts(scripts)
+  const signature = (rule: RegexRule) =>
+    JSON.stringify([
+      rule.stage,
+      rule.action,
+      rule.pattern,
+      rule.replacement,
+      rule.roles || [],
+      rule.min_depth,
+      rule.max_depth,
+      rule.trim_strings || [],
+    ])
+  const known = new Set(current.rules.map(signature))
+  const addedRules = imported.rules.filter((rule) => {
+    if (!stages.includes(rule.stage)) return false
+    const key = signature(rule)
+    if (known.has(key)) return false
+    known.add(key)
+    return true
+  })
+  const next = { ...current, rules: [...current.rules, ...addedRules] }
+  if (!editableRegexRulesSchema.safeParse(next).success) {
+    throw new Error('Regex import exceeds rule count or text size limits.')
+  }
+  return {
+    value: JSON.stringify(next, null, 2),
+    added: addedRules.length,
+    warnings: imported.warnings,
+  }
 }

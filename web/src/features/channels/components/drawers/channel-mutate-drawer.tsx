@@ -197,6 +197,7 @@ import {
   supportsNewAPIUpstream,
 } from '../../lib/channel-plugin-extensions'
 import { getChannelTypeConfig } from '../../lib/channel-type-config'
+import { mergePresetRegexScripts } from '../../lib/regex-rules'
 import { parsePresetEditor } from '../../lib/sillytavern-editor'
 import {
   collectInvalidStatusCodeEntries,
@@ -222,6 +223,7 @@ import {
   PassthroughWarningDialog,
   type PassthroughKind,
 } from '../dialogs/passthrough-warning-dialog'
+import { PresetRegexImportDialog } from '../dialogs/preset-regex-import-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import {
   ModelMappingBatchDialog,
@@ -450,12 +452,20 @@ export function ChannelMutateDrawer({
     ((action: MissingModelsAction) => void) | null
   >(null)
   const channelFormRef = useRef<HTMLFormElement>(null)
+  const presetFileInputRef = useRef<HTMLInputElement | null>(null)
   const [modelConfiguration, setModelConfiguration] = useState<{
     pluginKey?: string
   } | null>(null)
   const [paramOverrideEditorOpen, setParamOverrideEditorOpen] = useState(false)
   const [advancedCustomEditorOpen, setAdvancedCustomEditorOpen] =
     useState(false)
+  const [pendingPresetRegex, setPendingPresetRegex] = useState<{
+    presetValue: string
+    scripts: unknown[]
+  } | null>(null)
+  useEffect(() => {
+    if (!open) setPendingPresetRegex(null)
+  }, [open])
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
     useState<ChannelConnectionInfo | null>(null)
 
@@ -2826,8 +2836,8 @@ export function ChannelMutateDrawer({
           name='sillytavern_preset'
           render={({ field }) => (
             <FormItem className='space-y-3 border-t pt-4'>
-              <div className='flex items-start justify-between gap-3'>
-                <div className='space-y-1'>
+              <div className='flex flex-wrap items-start justify-between gap-3'>
+                <div className='min-w-0 flex-1 space-y-1'>
                   <FormLabel htmlFor='sillytavern-preset-file'>
                     {t('SillyTavern Chat Completion Preset')}
                   </FormLabel>
@@ -2842,26 +2852,45 @@ export function ChannelMutateDrawer({
                     )}
                   </FormDescription>
                 </div>
-                {field.value && (
+                <div className='flex shrink-0 items-center gap-2'>
                   <Button
                     type='button'
-                    variant='ghost'
+                    variant={field.value ? 'outline' : 'default'}
                     size='sm'
-                    onClick={() => field.onChange('')}
                     disabled={sensitiveLocked || isSubmitting}
+                    onClick={() => presetFileInputRef.current?.click()}
                   >
-                    {t('Clear')}
+                    <FileText aria-hidden='true' />
+                    {field.value
+                      ? t('Replace preset JSON')
+                      : t('Import preset JSON')}
                   </Button>
-                )}
+                  {field.value && (
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      onClick={() => field.onChange('')}
+                      disabled={sensitiveLocked || isSubmitting}
+                    >
+                      {t('Clear')}
+                    </Button>
+                  )}
+                </div>
               </div>
               <FormControl>
                 <Input
                   id='sillytavern-preset-file'
                   type='file'
+                  className='sr-only'
+                  tabIndex={-1}
                   accept='.json,application/json'
                   disabled={sensitiveLocked || isSubmitting}
                   onBlur={field.onBlur}
-                  ref={field.ref}
+                  ref={(node) => {
+                    field.ref(node)
+                    presetFileInputRef.current = node
+                  }}
                   onChange={async (event) => {
                     const file = event.target.files?.[0]
                     if (!file) return
@@ -2881,15 +2910,28 @@ export function ChannelMutateDrawer({
                       ) {
                         throw new Error('Invalid preset')
                       }
-                      const config = { preset, parameter_policy: 'preset' }
+                      const config = {
+                        preset,
+                        parameter_policy: 'preset',
+                        source_file_name: file.name,
+                      }
                       const parsed = parsePresetEditor(JSON.stringify(config))
                       if (!parsed) throw new Error('Invalid preset')
-                      field.onChange(
-                        JSON.stringify({
-                          ...config,
-                          enable_embedded_regex: false,
-                          enable_send_regex: false,
-                        })
+                      const presetValue = JSON.stringify({
+                        ...config,
+                        enable_embedded_regex: false,
+                        enable_send_regex: false,
+                      })
+                      field.onChange(presetValue)
+                      const scripts = (
+                        preset.extensions as
+                          | { regex_scripts?: unknown[] }
+                          | undefined
+                      )?.regex_scripts
+                      setPendingPresetRegex(
+                        Array.isArray(scripts) && scripts.length > 0
+                          ? { presetValue, scripts }
+                          : null
                       )
                       toast.success(
                         t('Preset imported. Save the channel to apply it.')
@@ -2903,19 +2945,19 @@ export function ChannelMutateDrawer({
                 />
               </FormControl>
               {field.value && (
-                <FormDescription>
-                  {t('Preset ready')} · {Math.ceil(field.value.length / 1024)}{' '}
-                  KB
-                </FormDescription>
-              )}
-              {field.value && (
                 <SillyTavernPresetEditor
                   value={field.value}
                   onChange={field.onChange}
                   disabled={sensitiveLocked || isSubmitting}
                 />
               )}
-              {!field.value && <FormDescription>{t('No preset imported. This channel uses the standard New API relay behavior.')}</FormDescription>}
+              {!field.value && (
+                <FormDescription>
+                  {t(
+                    'No preset imported. This channel uses the standard New API relay behavior.'
+                  )}
+                </FormDescription>
+              )}
               <FormMessage />
             </FormItem>
           )}
@@ -5419,6 +5461,59 @@ export function ChannelMutateDrawer({
               shouldDirty: true,
               shouldValidate: true,
             })
+          }}
+        />
+      )}
+
+      {open && pendingPresetRegex && !sensitiveLocked && (
+        <PresetRegexImportDialog
+          key={pendingPresetRegex.presetValue}
+          scripts={pendingPresetRegex.scripts}
+          onClose={() => setPendingPresetRegex(null)}
+          onImport={(stages) => {
+            if (
+              form.getValues('sillytavern_preset') !==
+              pendingPresetRegex.presetValue
+            ) {
+              toast.error(
+                t(
+                  'Preset changed while importing. Import it again to keep the latest edits.'
+                )
+              )
+              setPendingPresetRegex(null)
+              return
+            }
+            try {
+              const merged = mergePresetRegexScripts(
+                form.getValues('response_text_filter') || '',
+                pendingPresetRegex.scripts,
+                stages
+              )
+              form.setValue('response_text_filter', merged.value, {
+                shouldDirty: true,
+                shouldValidate: true,
+              })
+              setPendingPresetRegex(null)
+              toast.success(
+                t(
+                  '{{count}} regex rules imported. Save the channel to apply them.',
+                  { count: merged.added }
+                )
+              )
+              if (merged.warnings.length) {
+                toast.warning(
+                  t('Unsupported scripts were imported disabled: {{names}}', {
+                    names: merged.warnings.join(', '),
+                  })
+                )
+              }
+            } catch (error) {
+              toast.error(
+                error instanceof Error
+                  ? error.message
+                  : t('Invalid SillyTavern regex script')
+              )
+            }
           }}
         />
       )}

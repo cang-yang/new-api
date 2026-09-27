@@ -37,6 +37,7 @@ import { normalizeResponseTextFilter } from '../lib/channel-form'
 import {
   editableRegexRulesSchema,
   importRegexScripts,
+  regexReplacementGeneratesHtml,
   type RegexRule,
   type RegexRulesConfig,
 } from '../lib/regex-rules'
@@ -134,6 +135,20 @@ export function RegexRulesEditor(props: {
             <Alert>
               <AlertDescription>
                 {t('Applicable receive rules buffer streaming responses.')}
+              </AlertDescription>
+            </Alert>
+          )}
+          {config.rules.some(
+            (rule) =>
+              rule.stage === 'receive' &&
+              !rule.disabled &&
+              regexReplacementGeneratesHtml(rule.replacement)
+          ) && (
+            <Alert className='border-amber-500/40 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100'>
+              <AlertDescription>
+                {t(
+                  'Some response rules generate HTML. The API returns that HTML as text; it does not render it. Review these rules if your client expects plain text.'
+                )}
               </AlertDescription>
             </Alert>
           )}
