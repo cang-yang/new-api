@@ -35,7 +35,10 @@ import { Switch } from '@/components/ui/switch'
 import {
   parsePresetEditor,
   updatePresetEntries,
+  movePresetEntry,
+  migratePresetPatches,
 } from '../lib/sillytavern-editor'
+import { PresetEntryFields } from './preset-entry-fields'
 import { RegexFailurePolicy } from './regex-failure-policy'
 import { SillyTavernMacroEditor } from './sillytavern-macro-editor'
 
@@ -48,6 +51,7 @@ type Props = {
 export function SillyTavernPresetEditor(props: Props) {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
+  const [migrationError, setMigrationError] = useState('')
   const parsed = useMemo(() => parsePresetEditor(props.value), [props.value])
   if (!parsed) return null
   const query = search.trim().toLocaleLowerCase()
@@ -58,6 +62,30 @@ export function SillyTavernPresetEditor(props: Props) {
 
   return (
     <div className='space-y-4'>
+      {Array.isArray(parsed.config.patches) &&
+        parsed.config.patches.length > 0 && (
+          <Alert>
+            <AlertTitle>{t('Legacy preset changes')}</AlertTitle>
+            <AlertDescription>
+              {t(
+                'Convert saved text patches into editable prompt content before editing entries. Save the channel to persist the conversion.'
+              )}
+              <Button
+                type='button'
+                variant='outline'
+                disabled={props.disabled}
+                onClick={() => {
+                  const result = migratePresetPatches(props.value)
+                  setMigrationError(result.error || '')
+                  if (!result.error) props.onChange(result.value)
+                }}
+              >
+                {t('Convert to editable entries')}
+              </Button>
+              {migrationError && <p role='status'>{t(migrationError)}</p>}
+            </AlertDescription>
+          </Alert>
+        )}
       <section
         className='bg-card overflow-hidden rounded-xl border'
         aria-label={t('Preset entries')}
@@ -81,12 +109,12 @@ export function SillyTavernPresetEditor(props: Props) {
                 props.onChange(JSON.stringify(config))
               }}
             >
-              {t('Restore preset defaults')}
+              {t('Restore entry switches')}
             </Button>
           </div>
           <p className='text-muted-foreground text-xs leading-relaxed'>
             {t(
-              'Entries follow the preset order. Switches override this channel only; the imported preset stays intact.'
+              'Edit prompt content, roles and order for this channel. Save the channel to apply changes; closing without saving discards them.'
             )}
           </p>
           <Input
@@ -140,7 +168,7 @@ export function SillyTavernPresetEditor(props: Props) {
             />
           ) : (
             <Accordion multiple>
-              {entries.map((entry, index) => (
+              {entries.map((entry) => (
                 <AccordionItem
                   key={entry.identifier}
                   value={entry.identifier}
@@ -148,7 +176,7 @@ export function SillyTavernPresetEditor(props: Props) {
                 >
                   <div className='flex items-center gap-3'>
                     <span className='text-muted-foreground w-5 shrink-0 text-right font-mono text-xs'>
-                      {index + 1}
+                      {parsed.entries.indexOf(entry) + 1}
                     </span>
                     <AccordionTrigger className='min-w-0 flex-1 py-3'>
                       <span className='min-w-0 space-y-1'>
@@ -164,6 +192,43 @@ export function SillyTavernPresetEditor(props: Props) {
                         </span>
                       </span>
                     </AccordionTrigger>
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='ghost'
+                      aria-label={t('Move {{name}} up', { name: entry.name })}
+                      disabled={
+                        props.disabled ||
+                        !!query ||
+                        parsed.entries.indexOf(entry) === 0
+                      }
+                      onClick={() =>
+                        props.onChange(
+                          movePresetEntry(props.value, entry.identifier, -1)
+                        )
+                      }
+                    >
+                      ↑
+                    </Button>
+                    <Button
+                      type='button'
+                      size='sm'
+                      variant='ghost'
+                      aria-label={t('Move {{name}} down', { name: entry.name })}
+                      disabled={
+                        props.disabled ||
+                        !!query ||
+                        parsed.entries.indexOf(entry) ===
+                          parsed.entries.length - 1
+                      }
+                      onClick={() =>
+                        props.onChange(
+                          movePresetEntry(props.value, entry.identifier, 1)
+                        )
+                      }
+                    >
+                      ↓
+                    </Button>
                     <Switch
                       checked={entry.enabled}
                       disabled={props.disabled}
@@ -186,15 +251,16 @@ export function SillyTavernPresetEditor(props: Props) {
                       <code className='text-muted-foreground text-xs break-all'>
                         {entry.identifier}
                       </code>
-                      {entry.content ? (
-                        <pre className='bg-muted/30 max-h-80 overflow-auto rounded-lg border p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap'>
-                          {entry.content}
-                        </pre>
-                      ) : (
-                        <p className='text-muted-foreground text-xs'>
-                          {t('This marker is filled from the request context.')}
-                        </p>
-                      )}
+                      <PresetEntryFields
+                        entry={entry}
+                        value={props.value}
+                        onChange={props.onChange}
+                        disabled={
+                          props.disabled ||
+                          (Array.isArray(parsed.config.patches) &&
+                            parsed.config.patches.length > 0)
+                        }
+                      />
                     </div>
                   </AccordionContent>
                 </AccordionItem>

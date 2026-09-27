@@ -134,6 +134,23 @@ func TestCompileSillyTavernPresetPreservesStructureAndContext(t *testing.T) {
 	assert.Equal(t, "CUSTOM", patched.Messages[7].Content)
 }
 
+func TestSillyTavernSavedEntryContentAndOrderAreApplied(t *testing.T) {
+	// This is the channel settings payload after editing and saving a preset.
+	settingsJSON := []byte(`{"sillytavern_preset":{"post_processing":"none","preset":{"prompts":[{"identifier":"first","name":"Renamed","role":"assistant","content":"edited {{user}}"},{"identifier":"second","role":"system","content":"second"},{"identifier":"off","role":"system","content":"disabled"},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"character_id":100000,"order":[{"identifier":"first","enabled":true}]},{"character_id":100001,"order":[{"identifier":"second","enabled":true},{"identifier":"first","enabled":true},{"identifier":"off","enabled":false},{"identifier":"chatHistory","enabled":true}]}]},"user":"Alice"}}`)
+	var settings dto.ChannelOtherSettings
+	require.NoError(t, common.Unmarshal(settingsJSON, &settings))
+	// Simulate serialization and reopening the saved channel.
+	saved, err := common.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, common.Unmarshal(saved, &settings))
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "client"}}}
+	got, _, err := CompileSillyTavernPreset(settings.SillyTavernPreset, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, got.Messages, 3)
+	assert.Equal(t, []dto.Message{{Role: "system", Content: "second"}, {Role: "assistant", Content: "edited Alice"}, {Role: "user", Content: "client"}}, got.Messages)
+	assert.Equal(t, []dto.Message{{Role: "user", Content: "client"}}, request.Messages)
+}
+
 func TestSillyTavernPostProcessingModes(t *testing.T) {
 	input := []presetMessage{
 		{message: dto.Message{Role: "system", Content: "setup"}, id: "setup"},

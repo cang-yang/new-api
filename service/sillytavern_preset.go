@@ -75,12 +75,12 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	if config == nil {
 		return request, trace, nil
 	}
+	if len(config.Models) > 0 && !slices.Contains(config.Models, request.Model) {
+		return request, trace, nil
+	}
 	preset, err := config.ParseAndValidate()
 	if err != nil {
 		return nil, trace, err
-	}
-	if len(config.Models) > 0 && !slices.Contains(config.Models, request.Model) {
-		return request, trace, nil
 	}
 	compiled, err := common.DeepCopy(request)
 	if err != nil {

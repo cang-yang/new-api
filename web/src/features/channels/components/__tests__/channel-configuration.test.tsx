@@ -1339,7 +1339,7 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   await screen.findByDisplayValue('Existing channel')
   await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
   const preset = {
-    name: 'ARGO-like',
+    name: 'Generic preset',
     extensions: {
       regex_scripts: [
         {
@@ -1387,8 +1387,11 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   await user.click(
     screen.getByRole('option', { name: 'SillyTavern Custom OpenAI-compatible' })
   )
-  await user.click(
-    screen.getByRole('button', { name: 'Remove ARGO fixed word counts' })
+  await user.click(screen.getByRole('button', { name: /^main/ }))
+  await user.clear(screen.getByRole('textbox', { name: 'Prompt content' }))
+  await user.type(
+    screen.getByRole('textbox', { name: 'Prompt content' }),
+    'Edited instruction'
   )
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() => expect(put).toHaveBeenCalled())
@@ -1396,7 +1399,12 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   expect(JSON.parse(payload.settings)).toMatchObject({
     upstream_model_update_check_enabled: true,
     sillytavern_preset: {
-      preset,
+      preset: {
+        ...preset,
+        prompts: [
+          { identifier: 'main', role: 'system', content: 'Edited instruction' },
+        ],
+      },
       enable_embedded_regex: false,
       enable_send_regex: false,
       parameter_policy: 'preset',
@@ -1406,13 +1414,6 @@ test('importing a SillyTavern preset saves it with the existing channel settings
       user: '苍阳',
       char: '乔治',
       models: ['test-model'],
-      patches: [
-        {
-          identifier: 'jailbreak',
-          find: '⦿ 篇幅定额：\n思考1000字，页眉50字，主体1000字',
-          replace: '',
-        },
-      ],
     },
   })
 })

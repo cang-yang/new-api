@@ -25,6 +25,39 @@ import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 
 afterEach(cleanup)
 
+test('editing and moving an entry updates the draft and preserves marker content protection', async () => {
+  const user = userEvent.setup()
+  render(<Editor />)
+  await user.click(screen.getByRole('button', { name: /^Main instruction/ }))
+  await user.clear(screen.getByRole('textbox', { name: 'Prompt content' }))
+  await user.type(
+    screen.getByRole('textbox', { name: 'Prompt content' }),
+    'Revised content'
+  )
+  await user.selectOptions(screen.getByLabelText('Message role'), 'user')
+  await user.click(
+    screen.getByRole('button', { name: 'Move Main instruction down' })
+  )
+  const saved = JSON.parse(
+    screen.getByLabelText('Saved config').textContent || '{}'
+  )
+  expect(saved.preset.prompts[0]).toMatchObject({
+    content: 'Revised content',
+    role: 'user',
+  })
+  expect(
+    saved.preset.prompt_order[1].order.map(
+      (item: { identifier: string }) => item.identifier
+    )
+  ).toEqual(['history', 'main', 'orphan'])
+  await user.click(screen.getByRole('button', { name: /^Main instruction/ }))
+  await user.click(screen.getByRole('button', { name: /^Conversation/ }))
+  expect(screen.queryByRole('textbox', { name: 'Prompt content' })).toBeNull()
+  expect(
+    screen.getByText('This marker is filled from the request context.')
+  ).toBeVisible()
+})
+
 test('preset failure policy remains inherited on unrelated changes and explicit changes preserve preset options', async () => {
   const user = userEvent.setup()
   render(
@@ -153,7 +186,7 @@ test('entry switches override the selected order without altering imported prese
   expect(saved.entry_overrides).toEqual({ main: false })
   expect(saved.preset).toEqual(preset)
   await user.click(
-    screen.getByRole('button', { name: 'Restore preset defaults' })
+    screen.getByRole('button', { name: 'Restore entry switches' })
   )
   expect(toggle.getAttribute('aria-checked')).toBe('true')
 })
@@ -176,7 +209,7 @@ test('unordered prompts are visible disabled and can be enabled without changing
 test('filtering limits bulk toggles to visible entries and full prompt expands inline', async () => {
   const user = userEvent.setup()
   render(<Editor />)
-  await user.click(screen.getByRole('button', { name: /Main instruction/ }))
+  await user.click(screen.getByRole('button', { name: /^Main instruction/ }))
   expect(screen.getByText('Full prompt text')).toBeTruthy()
   await user.type(
     screen.getByRole('textbox', { name: 'Search preset entries' }),

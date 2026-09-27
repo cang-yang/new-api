@@ -895,11 +895,8 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     config.post_processing = formData.sillytavern_post_processing || 'none'
     config.reference_source = formData.sillytavern_reference_source || 'newapi'
     config.context_mode = formData.sillytavern_context_mode || 'compatibility'
-    if (formData.sillytavern_preset_patches?.trim()) {
-      config.patches = JSON.parse(formData.sillytavern_preset_patches)
-    } else {
-      delete config.patches
-    }
+    // Legacy patches live in the preset config until explicitly migrated by
+    // the entry editor. Never reapply the stale, formerly separate form field.
     settingsObj.sillytavern_preset = config
   } else {
     delete settingsObj.sillytavern_preset

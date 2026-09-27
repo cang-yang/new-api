@@ -2915,6 +2915,7 @@ export function ChannelMutateDrawer({
                   disabled={sensitiveLocked || isSubmitting}
                 />
               )}
+              {!field.value && <FormDescription>{t('No preset imported. This channel uses the standard New API relay behavior.')}</FormDescription>}
               <FormMessage />
             </FormItem>
           )}
@@ -3149,59 +3150,6 @@ export function ChannelMutateDrawer({
             )}
           />
         </div>
-
-        <FormField
-          control={form.control}
-          name='sillytavern_preset_patches'
-          render={({ field }) => (
-            <FormItem className='space-y-2'>
-              <div className='flex items-center justify-between gap-2'>
-                <FormLabel>{t('Preset text patches')}</FormLabel>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  disabled={sensitiveLocked || isSubmitting}
-                  onClick={() =>
-                    field.onChange(
-                      JSON.stringify(
-                        [
-                          {
-                            identifier: 'jailbreak',
-                            find: '⦿ 篇幅定额：\n思考1000字，页眉50字，主体1000字',
-                            replace: '',
-                          },
-                        ],
-                        null,
-                        2
-                      )
-                    )
-                  }
-                >
-                  {t('Remove ARGO fixed word counts')}
-                </Button>
-              </div>
-              <FormDescription>
-                {t(
-                  'Optional literal replacements in preset prompts; leave empty to keep the imported preset unchanged.'
-                )}
-              </FormDescription>
-              <FormControl>
-                <JsonCodeEditor
-                  value={field.value || ''}
-                  onChange={field.onChange}
-                  name={field.name}
-                  onBlur={field.onBlur}
-                  textareaRef={field.ref}
-                  disabled={sensitiveLocked || isSubmitting}
-                  placeholder='[{"identifier":"jailbreak","find":"old text","replace":"new text"}]'
-                  heightClassName='h-28 min-h-28 max-h-28'
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
 
         <FormField
           control={form.control}

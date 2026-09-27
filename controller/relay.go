@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -205,7 +206,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if channel.Id != initialChannelID {
 			selected := channel.GetOtherSettings()
-			if (sendRegexApplied || selected.ResponseTextFilter != nil && selected.ResponseTextFilter.EnableSend || selected.SillyTavernPreset != nil && selected.SillyTavernPreset.EnableSendRegex) && (!reflect.DeepEqual(sendRegexRetrySettings(initialOtherSettings.ResponseTextFilter), sendRegexRetrySettings(selected.ResponseTextFilter)) || !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset), presetRequestRetrySettings(selected.SillyTavernPreset))) {
+			if (sendRegexApplied || selected.ResponseTextFilter != nil && selected.ResponseTextFilter.EnableSend || selected.SillyTavernPreset != nil && selected.SillyTavernPreset.EnableSendRegex) && (!reflect.DeepEqual(sendRegexRetrySettings(initialOtherSettings.ResponseTextFilter), sendRegexRetrySettings(selected.ResponseTextFilter)) || !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName), presetRequestRetrySettings(selected.SillyTavernPreset, relayInfo.OriginModelName))) {
 				newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry across channels with different send-side regex settings"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 				break
 			}
@@ -215,7 +216,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				relayInfo.Request = initialCompiledRequest
 			} else {
 				selectedSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
-				if !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset), presetRequestRetrySettings(selectedSettings.SillyTavernPreset)) {
+				if !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName), presetRequestRetrySettings(selectedSettings.SillyTavernPreset, relayInfo.OriginModelName)) {
 					newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry a chat request across channels with different SillyTavern presets"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 					break
 				}
@@ -311,11 +312,12 @@ func sendRegexRetrySettings(config *kitdto.ResponseTextFilter) *kitdto.ResponseT
 	return &copy
 }
 
-func presetRequestRetrySettings(config *kitdto.SillyTavernPresetConfig) *kitdto.SillyTavernPresetConfig {
-	if config == nil {
+func presetRequestRetrySettings(config *kitdto.SillyTavernPresetConfig, model string) *kitdto.SillyTavernPresetConfig {
+	if config == nil || len(config.Models) > 0 && !slices.Contains(config.Models, model) {
 		return nil
 	}
 	copy := *config
+	copy.Models = nil // Both applicable configs act on the same current model.
 	copy.EnableEmbeddedRegex = false
 	if !copy.EnableSendRegex {
 		copy.RegexOverrides = nil
@@ -355,6 +357,9 @@ func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request) (k
 	}
 	chatRequest, ok := request.(*kitdto.GeneralOpenAIRequest)
 	if !ok {
+		return request, nil, nil
+	}
+	if models := settings.SillyTavernPreset.Models; len(models) > 0 && !slices.Contains(models, chatRequest.Model) {
 		return request, nil, nil
 	}
 	channelSetting, _ := common.GetContextKeyType[kitdto.ChannelSettings](c, constant.ContextKeyChannelSetting)
