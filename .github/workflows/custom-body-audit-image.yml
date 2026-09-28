@@ -67,6 +67,7 @@ jobs:
         run: >-
           bun run test
           src/features/usage-logs/components/__tests__/body-audit-result.test.tsx
+          src/features/usage-logs/components/__tests__/body-audit-section-layout.test.tsx
           src/features/usage-logs/components/__tests__/audit-replay-dialog.test.tsx
           src/features/usage-logs/lib/__tests__/body-audit-response.test.ts
           src/features/usage-logs/lib/__tests__/json-diff.test.ts

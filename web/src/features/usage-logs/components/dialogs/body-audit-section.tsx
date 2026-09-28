@@ -78,6 +78,7 @@ function PayloadPanel(props: {
   encoding: 'utf-8' | 'base64'
   size: number
   truncated: boolean
+  incomplete?: boolean
   contentType?: string
   icon: React.ReactNode
 }) {
@@ -88,6 +89,16 @@ function PayloadPanel(props: {
     [props.body, props.encoding]
   )
   const copied = copiedText === formattedBody
+  let warning: string | null = null
+  if (props.truncated) {
+    warning = t('The body exceeded the audit size limit and was truncated')
+  } else if (props.incomplete) {
+    warning = t(
+      'Client response write was interrupted; only the bytes written before the failure were captured, possibly ending inside a character.'
+    )
+  } else if (props.encoding === 'base64') {
+    warning = t('Binary body is displayed as Base64')
+  }
 
   return (
     <div className='border-border bg-background overflow-hidden rounded-lg border shadow-sm'>
@@ -122,12 +133,10 @@ function PayloadPanel(props: {
           <span className='text-xs'>{copied ? t('Copied') : t('Copy')}</span>
         </Button>
       </div>
-      {(props.truncated || props.encoding === 'base64') && (
+      {warning && (
         <div className='flex items-center gap-2 border-b border-amber-400/30 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:bg-amber-950/20 dark:text-amber-300'>
           <AlertTriangle className='size-3.5 shrink-0' aria-hidden='true' />
-          {props.truncated
-            ? t('The body exceeded the audit size limit and was truncated')
-            : t('Binary body is displayed as Base64')}
+          {warning}
         </div>
       )}
       <pre
@@ -259,6 +268,7 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
             encoding={props.audit.client_response_body_encoding}
             size={props.audit.client_response_body_size}
             truncated={props.audit.client_response_body_truncated}
+            incomplete={!props.audit.client_response_complete}
             contentType={props.audit.client_response_content_type}
             icon={<FileJson2 className='size-3.5' aria-hidden='true' />}
           />
@@ -610,13 +620,22 @@ function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
             <StatusBadge
               label={
                 props.audit.response_complete
-                  ? t('Capture complete')
-                  : t('Capture incomplete')
+                  ? t('Upstream capture complete')
+                  : t('Upstream capture incomplete')
               }
               variant={props.audit.response_complete ? 'green' : 'orange'}
               size='sm'
               copyable={false}
             />
+            {props.audit.client_response_status > 0 &&
+              !props.audit.client_response_complete && (
+                <StatusBadge
+                  label={t('Client response write interrupted')}
+                  variant='orange'
+                  size='sm'
+                  copyable={false}
+                />
+              )}
           </div>
         </div>
         <TabsContent value='request'>

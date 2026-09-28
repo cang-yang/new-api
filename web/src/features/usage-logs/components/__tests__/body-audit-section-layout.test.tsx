@@ -161,6 +161,33 @@ describe('body audit attempt actions', () => {
     ).toBeInTheDocument()
   })
 
+  test('distinguishes an interrupted client write from a complete upstream capture', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: 'eyJ4Ijoi5Q==',
+      client_response_body_encoding: 'base64',
+      client_response_body_size: 7,
+      client_response_complete: false,
+    })
+    renderAudit()
+
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    expect(screen.getByText('上游采集完整')).toBeInTheDocument()
+    expect(screen.getByText('客户端响应写入中断')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: '客户端原文' }))
+    expect(
+      screen.getByText(
+        '客户端响应写入中断；这里只记录了成功写出的部分，可能断在一个字符中间。'
+      )
+    ).toBeInTheDocument()
+    expect(screen.getByText('eyJ4Ijoi5Q==')).toBeInTheDocument()
+    expect(
+      screen.queryByText('二进制正文以 Base64 显示')
+    ).not.toBeInTheDocument()
+  })
+
   test('labels reasoning-only streams without showing raw SSE as the final result', async () => {
     const user = userEvent.setup()
     getAudit.mockResolvedValue({
