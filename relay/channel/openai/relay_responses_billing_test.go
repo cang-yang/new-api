@@ -254,7 +254,7 @@ func TestOaiResponsesStreamHandlerDeduplicatesCompletedImageOutput(t *testing.T)
 func TestOaiResponsesStreamHandlerDiscardsImageOutputOnIncomplete(t *testing.T) {
 	info := runResponsesImageBillingStream(
 		t,
-		true,
+		false,
 		`{"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","id":"img_1","status":"completed","result":"base64-a"}}`,
 		`{"type":"response.incomplete","response":{"status":"incomplete"}}`,
 	)

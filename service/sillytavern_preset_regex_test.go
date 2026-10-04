@@ -121,6 +121,113 @@ func TestPreviewTextRegexIgnoresImportedScriptArchive(t *testing.T) {
 	assert.Empty(t, got.Steps)
 }
 
+func TestPreviewTextRegexReportsAtomicFallback(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, RegexFailurePolicy: "passthrough", Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"macro","placement":[2],"findRegex":"x","replaceString":"{{user}}"}]}}`)}
+	config := &dto.ResponseTextFilter{Mode: "rules", FailurePolicy: "passthrough", Rules: []dto.TextRegexRule{{ID: "strip", Stage: "receive", Action: "replace", Pattern: "secret", Replacement: "clean"}}}
+	got, err := PreviewTextRegex(config, preset, "m", "receive", "assistant", 0, "secret")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "secret", got.Output, "live fallback returns the original, not a partially filtered result")
+	assert.True(t, got.RolledBack)
+	assert.NotEmpty(t, got.Warnings)
+	assert.Empty(t, got.Steps, "compatibility failures prevent the entire chain from starting")
+	preset.RegexFailurePolicy = "error"
+	_, err = PreviewTextRegex(config, preset, "m", "receive", "assistant", 0, "secret")
+	require.Error(t, err, "a strict source must not be weakened by another source")
+}
+
+func TestImportedRegexOwnsOnlyItsLinkedDirection(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, EnableSendRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"original","scriptName":"prefix","placement":[1,2],"findRegex":"/^/","replaceString":"!"}]}}`)}
+	for _, disabled := range []bool{false, true} {
+		var config dto.ResponseTextFilter
+		raw := `{"mode":"rules","enable_send":true,"failure_policy":"passthrough","rules":[{"id":"copy","source_script_id":"original","stage":"receive","action":"replace","pattern":"/^/","replacement":"!","disabled":false}]}`
+		if disabled {
+			raw = strings.Replace(raw, `"disabled":false`, `"disabled":true`, 1)
+		}
+		require.NoError(t, common.Unmarshal([]byte(raw), &config))
+		got, err := PreviewTextRegex(&config, preset, "m", "receive", "assistant", 0, "body")
+		require.NoError(t, err)
+		want := "!body"
+		if disabled {
+			want = "body"
+		}
+		assert.Equal(t, want, got.Output)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		writer := BeginResponseTextFilterWithPreset(ctx, &config, preset, "m")
+		if disabled {
+			assert.Nil(t, writer)
+		} else {
+			require.NotNil(t, writer)
+			live, _ := writer.transform("body")
+			assert.Equal(t, want, live)
+		}
+		// A receive copy does not suppress the embedded send rule.
+		sent, err := ApplyRequestTextRegex(&config, preset, &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "body"}}}, "m")
+		require.NoError(t, err)
+		assert.Equal(t, "!body", sent.(*dto.GeneralOpenAIRequest).Messages[0].Content)
+		// Nor may it suppress rules outside its channel model scope.
+		config.Models = []string{"other"}
+		got, err = PreviewTextRegex(&config, preset, "m", "receive", "assistant", 0, "body")
+		require.NoError(t, err)
+		assert.Equal(t, "!body", got.Output)
+	}
+}
+
+func TestImportedSendRegexDoesNotExecuteItsEmbeddedCopy(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{EnableSendRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"original","placement":[1],"findRegex":"/^/","replaceString":"!"}]}}`)}
+	var config dto.ResponseTextFilter
+	require.NoError(t, common.Unmarshal([]byte(`{"mode":"rules","enable_send":true,"rules":[{"id":"copy","source_script_id":"original","stage":"send","action":"replace","pattern":"/^/","replacement":"!"}]}`), &config))
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "body"}}}
+	filtered, err := ApplyRequestTextRegex(&config, preset, request, "m")
+	require.NoError(t, err)
+	assert.Equal(t, "!body", filtered.(*dto.GeneralOpenAIRequest).Messages[0].Content)
+	assert.Equal(t, "body", request.Messages[0].Content)
+	got, err := PreviewTextRegex(&config, preset, "m", "send", "user", 0, "body")
+	require.NoError(t, err)
+	assert.Equal(t, "!body", got.Output)
+}
+
+func TestPreviewTextRegexKeepsNamesOfUnlinkedRulesWithSameID(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"same","scriptName":"embedded","placement":[2],"markdownOnly":true,"findRegex":"/^/","replaceString":"!"}]}}`)}
+	config := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "same", Name: "manual", Stage: "receive", Action: "replace", Pattern: "/^/", Replacement: "!"}}}
+	got, err := PreviewTextRegex(config, preset, "m", "receive", "assistant", 0, "body")
+	require.NoError(t, err)
+	assert.Equal(t, "!!body", got.Output, "unlinked repeated expressions are not silently deduplicated")
+	require.Len(t, got.Steps, 2)
+	assert.Equal(t, "manual", got.Steps[0].Name)
+	assert.Equal(t, "embedded", got.Steps[1].Name)
+}
+
+func TestImportedRegexConcurrentChannelsStayIsolated(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"original","placement":[2],"markdownOnly":true,"findRegex":"/^/","replaceString":"!"}]}}`)}
+	for _, prefix := range []string{"channel-one:", "channel-two:"} {
+		t.Run(prefix, func(t *testing.T) {
+			t.Parallel()
+			config := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "copy", SourceScriptID: "original", Stage: "receive", Action: "replace", Pattern: "/^/", Replacement: prefix}}}
+			for range 30 {
+				got, err := PreviewTextRegex(config, preset, "m", "receive", "assistant", 0, "body")
+				require.NoError(t, err)
+				require.Equal(t, prefix+"body", got.Output)
+			}
+		})
+	}
+}
+
+func TestPreviewTextRegexRollsBackEarlierStepsOnExpansionFailure(t *testing.T) {
+	config := &dto.ResponseTextFilter{Mode: "rules", FailurePolicy: "passthrough", Rules: []dto.TextRegexRule{
+		{ID: "first", Stage: "receive", Action: "replace", Pattern: "/a/g", Replacement: "b"},
+		{ID: "expand", Stage: "receive", Action: "replace", Pattern: "/b/g", Replacement: strings.Repeat("x", 4096)},
+	}}
+	input := strings.Repeat("a", 9000)
+	got, err := PreviewTextRegex(config, nil, "m", "receive", "assistant", 0, input)
+	require.NoError(t, err)
+	assert.Equal(t, input, got.Output)
+	assert.True(t, got.RolledBack)
+	require.Len(t, got.Steps, 1, "completed steps are diagnostic only when the chain rolls back")
+	assert.True(t, got.Steps[0].Changed)
+	assert.NotEmpty(t, got.Warnings)
+}
+
 func TestSendTextRegexOptInScopesAndMetadata(t *testing.T) {
 	config := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
 		{ID: "one", Stage: "send", Action: "replace", Pattern: `/secret/g`, Replacement: "clean", Roles: []string{"user"}},

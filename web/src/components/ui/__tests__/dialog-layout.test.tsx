@@ -27,6 +27,27 @@ import { Button } from '@/components/ui/button'
 import { Dialog as DialogRoot, DialogContent, DialogTitle } from '../dialog'
 
 describe('dialog viewport layout', () => {
+  test('panel editors can own scrolling without the default negative body margin', () => {
+    render(
+      <Dialog
+        open
+        title='Panel editor'
+        contentHeight='100%'
+        bodyViewportClassName='mx-0 min-w-0 flex-1 overflow-hidden'
+        footer={<Button>Apply</Button>}
+      >
+        <section>Scrollable editor panel</section>
+      </Dialog>
+    )
+    const viewport = screen.getByText('Scrollable editor panel').parentElement
+      ?.parentElement
+    expect(viewport).toHaveClass('mx-0', 'min-w-0', 'flex-1', 'overflow-hidden')
+    expect(viewport).not.toHaveClass('-mx-1', 'overflow-y-auto')
+    expect(
+      viewport?.contains(screen.getByRole('button', { name: 'Apply' }))
+    ).toBe(false)
+  })
+
   test('long content shrinks independently of a stacked action footer', async () => {
     const onConfirm = vi.fn()
     render(

@@ -13,8 +13,10 @@ import (
 // TextRegexPreview runs the same bounded regex executor as live traffic, but
 // only on the caller-provided sample. It never loads or edits a channel.
 type TextRegexPreview struct {
-	Output string                 `json:"output"`
-	Steps  []TextRegexPreviewStep `json:"steps"`
+	Output     string                 `json:"output"`
+	Steps      []TextRegexPreviewStep `json:"steps"`
+	RolledBack bool                   `json:"rolled_back,omitempty"`
+	Warnings   []string               `json:"warnings,omitempty"`
 }
 
 type TextRegexPreviewStep struct {
@@ -44,6 +46,17 @@ func PreviewTextRegex(config *dto.ResponseTextFilter, preset *dto.SillyTavernPre
 	} else {
 		config = nil
 	}
+	// Match live traffic's atomic failure policy: completed intermediate steps
+	// are diagnostic only; passthrough restores the entire original text.
+	fail := func(err error) (*TextRegexPreview, error) {
+		if textRegexRequiresStrictFailure(config, preset, model, stage == "send") {
+			return nil, err
+		}
+		result.Output = input
+		result.RolledBack = true
+		result.Warnings = append(result.Warnings, err.Error())
+		return result, nil
+	}
 	if stage == "receive" && config != nil && config.Mode != "rules" {
 		match := regexp.MustCompile(config.Pattern).FindStringSubmatch(result.Output)
 		before := result.Output
@@ -61,24 +74,11 @@ func PreviewTextRegex(config *dto.ResponseTextFilter, preset *dto.SillyTavernPre
 	if err != nil {
 		return nil, err
 	}
-	names := make(map[string]string)
-	if config != nil {
-		for _, rule := range config.Rules {
-			names[rule.ID] = rule.Name
-		}
-	}
-	imported, warnings := compilePresetTextRegex(preset, model, stage == "send")
+	imported, warnings := compileEffectivePresetTextRegex(preset, config, model, stage == "send")
 	if len(warnings) > 0 {
-		return nil, fmt.Errorf("preset regex contains unsupported or invalid rules; check preset compatibility warnings")
-	}
-	if preset != nil && len(imported) > 0 {
-		parsed, err := preset.ParseAndValidate()
-		if err != nil {
-			return nil, err
-		}
-		for _, script := range parsed.Extensions.RegexScripts {
-			names[script.ID] = script.ScriptName
-		}
+		result.Steps = []TextRegexPreviewStep{} // Live compatibility validation precedes all transforms.
+		result.Warnings = append(result.Warnings, warnings...)
+		return fail(fmt.Errorf("preset regex compatibility failure; the entire rule chain was not applied"))
 	}
 	rules = append(rules, imported...)
 	deadline := time.Now().Add(2 * time.Second)
@@ -87,14 +87,14 @@ func PreviewTextRegex(config *dto.ResponseTextFilter, preset *dto.SillyTavernPre
 			continue
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("regex preview execution budget exceeded")
+			return fail(fmt.Errorf("regex preview execution budget exceeded"))
 		}
 		before := result.Output
 		after, err := rule.replace(before)
 		if err != nil {
-			return nil, fmt.Errorf("regex preview rule %q failed or exceeded execution limits", rule.id)
+			return fail(fmt.Errorf("regex preview rule %q failed or exceeded execution limits", rule.id))
 		}
-		name := names[rule.id]
+		name := rule.name
 		if name == "" {
 			name = rule.id
 		}

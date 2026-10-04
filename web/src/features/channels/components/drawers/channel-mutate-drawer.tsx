@@ -236,8 +236,7 @@ import {
   type ModelMappingDraftRequest,
 } from '../model-mapping-editor'
 import { ModelRedirectPanel } from '../model-redirect-panel'
-import { RegexPlayground } from '../regex-playground'
-import { RegexRulesEditor } from '../regex-rules-editor'
+import { RegexSettings } from '../regex-settings'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 import { UpstreamModelSelection } from '../upstream-model-selection'
@@ -2715,7 +2714,7 @@ export function ChannelMutateDrawer({
         control={form.control}
         name='status_code_mapping'
         render={({ field }) => (
-          <FormItem className='space-y-3'>
+          <FormItem className='min-w-0 space-y-3'>
             <div className='space-y-1'>
               <FormLabel>{t('Status Code Mapping')}</FormLabel>
               <FormDescription>
@@ -2748,13 +2747,13 @@ export function ChannelMutateDrawer({
       )}
       <fieldset
         disabled={sensitiveLocked}
-        className='space-y-4 disabled:opacity-60'
+        className='min-w-0 space-y-4 disabled:opacity-60'
       >
         <FormField
           control={form.control}
           name='param_override'
           render={({ field }) => (
-            <FormItem className='max-w-full min-w-0 space-y-3 border-t pt-4'>
+            <FormItem className='max-w-full min-w-0 grid-cols-[minmax(0,1fr)] space-y-3 border-t pt-4'>
               <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                 <div className='min-w-0 space-y-1'>
                   <FormLabel>{t('Parameter Override')}</FormLabel>
@@ -2849,27 +2848,11 @@ export function ChannelMutateDrawer({
                     )}
                   </FormDescription>
                 </div>
-                <div className='flex flex-wrap gap-2'>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    onClick={() => field.onChange('')}
-                    disabled={sensitiveLocked || isSubmitting}
-                  >
-                    {t('Clear')}
-                  </Button>
-                </div>
               </div>
-              <RegexRulesEditor
+              <RegexSettings
                 scopeKey={channelId ?? 'new'}
                 value={field.value || ''}
                 onChange={field.onChange}
-                disabled={sensitiveLocked || isSubmitting}
-              />
-              <RegexPlayground
-                scopeKey={channelId ?? 'new'}
-                value={field.value || ''}
                 presetValue={formValues.sillytavern_preset}
                 presetModels={formValues.sillytavern_models}
                 disabled={sensitiveLocked || isSubmitting}
@@ -2959,10 +2942,10 @@ export function ChannelMutateDrawer({
                 </div>
               </div>
               <FormControl>
-                <Input
+                <input
                   id='sillytavern-preset-file'
                   type='file'
-                  className='sr-only'
+                  hidden
                   tabIndex={-1}
                   accept='.json,application/json'
                   disabled={sensitiveLocked || isSubmitting}
@@ -3059,7 +3042,7 @@ export function ChannelMutateDrawer({
             control={form.control}
             name='sillytavern_parameter_policy'
             render={({ field }) => (
-              <FormItem>
+              <FormItem className='min-w-0'>
                 <FormLabel>{t('Preset parameter priority')}</FormLabel>
                 <Select
                   disabled={sensitiveLocked || isSubmitting}
@@ -3073,7 +3056,7 @@ export function ChannelMutateDrawer({
                   }
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className='w-full max-w-full min-w-0'>
                       <SelectValue />
                     </SelectTrigger>
                   </FormControl>
@@ -3095,7 +3078,7 @@ export function ChannelMutateDrawer({
             control={form.control}
             name='sillytavern_post_processing'
             render={({ field }) => (
-              <FormItem>
+              <FormItem className='min-w-0'>
                 <FormLabel>{t('SillyTavern prompt post-processing')}</FormLabel>
                 <Select
                   disabled={sensitiveLocked || isSubmitting}
@@ -3115,7 +3098,7 @@ export function ChannelMutateDrawer({
                   }
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className='w-full max-w-full min-w-0'>
                       <SelectValue />
                     </SelectTrigger>
                   </FormControl>
@@ -3143,7 +3126,7 @@ export function ChannelMutateDrawer({
             control={form.control}
             name='sillytavern_context_mode'
             render={({ field }) => (
-              <FormItem>
+              <FormItem className='min-w-0'>
                 <FormLabel>{t('Preset context mode')}</FormLabel>
                 <Select
                   disabled={sensitiveLocked || isSubmitting}
@@ -3165,7 +3148,7 @@ export function ChannelMutateDrawer({
                   }
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className='w-full max-w-full min-w-0'>
                       <SelectValue />
                     </SelectTrigger>
                   </FormControl>
@@ -3188,7 +3171,7 @@ export function ChannelMutateDrawer({
             control={form.control}
             name='sillytavern_reference_source'
             render={({ field }) => (
-              <FormItem>
+              <FormItem className='min-w-0'>
                 <FormLabel>{t('SillyTavern reference source')}</FormLabel>
                 <Select
                   disabled={sensitiveLocked || isSubmitting}
@@ -3204,7 +3187,7 @@ export function ChannelMutateDrawer({
                   onValueChange={(value) => field.onChange(value || 'newapi')}
                 >
                   <FormControl>
-                    <SelectTrigger>
+                    <SelectTrigger className='w-full max-w-full min-w-0'>
                       <SelectValue />
                     </SelectTrigger>
                   </FormControl>

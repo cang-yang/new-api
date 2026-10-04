@@ -17,6 +17,7 @@ import (
 // preset scripts. Callers select explicit text slots and direction.
 type presetResponseRegex struct {
 	id           string
+	name         string
 	pattern      *regexp2.Regexp
 	global       bool
 	replaceBy    string
@@ -47,7 +48,7 @@ func textRegexRequiresStrictFailure(config *dto.ResponseTextFilter, preset *dto.
 		}
 	}
 	if preset != nil && (len(preset.Models) == 0 || slices.Contains(preset.Models, model)) && ((send && preset.EnableSendRegex) || (!send && preset.EnableEmbeddedRegex)) {
-		rules, warnings := compilePresetTextRegex(preset, model, send)
+		rules, warnings := compileEffectivePresetTextRegex(preset, config, model, send)
 		return (len(rules) > 0 || len(warnings) > 0) && preset.RegexFailurePolicy != "passthrough"
 	}
 	return false
@@ -58,6 +59,13 @@ func compilePresetResponseRegex(config *dto.SillyTavernPresetConfig, model strin
 }
 
 func compilePresetTextRegex(config *dto.SillyTavernPresetConfig, model string, send bool) ([]presetResponseRegex, []string) {
+	return compileEffectivePresetTextRegex(config, nil, model, send)
+}
+
+// Imported copies are explicit references, not name/pattern guesses. Ownership
+// is local to this channel and direction, including disabled copies. Never
+// mutate either configuration or keep cross-request deduplication state.
+func compileEffectivePresetTextRegex(config *dto.SillyTavernPresetConfig, channel *dto.ResponseTextFilter, model string, send bool) ([]presetResponseRegex, []string) {
 	if config == nil || (send && !config.EnableSendRegex) || (!send && !config.EnableEmbeddedRegex) || (len(config.Models) > 0 && !slices.Contains(config.Models, model)) {
 		return nil, nil
 	}
@@ -67,7 +75,22 @@ func compilePresetTextRegex(config *dto.SillyTavernPresetConfig, model string, s
 	}
 	var compiled []presetResponseRegex
 	var warnings []string
+	owned := make(map[string]bool)
+	if channel != nil && channel.Mode == "rules" && (len(channel.Models) == 0 || slices.Contains(channel.Models, model)) {
+		stage := "receive"
+		if send {
+			stage = "send"
+		}
+		for _, rule := range channel.Rules {
+			if rule.Stage == stage && rule.SourceScriptID != "" {
+				owned[rule.SourceScriptID] = true
+			}
+		}
+	}
 	for _, script := range preset.Extensions.RegexScripts {
+		if owned[script.ID] {
+			continue
+		}
 		enabled := !script.Disabled
 		if override, ok := config.RegexOverrides[script.ID]; ok {
 			enabled = override
@@ -97,7 +120,7 @@ func compilePresetTextRegex(config *dto.SillyTavernPresetConfig, model string, s
 			continue
 		}
 		if script.SubstituteRegex != 0 {
-			warnings = append(warnings, fmt.Sprintf("embedded regex %q requires unsupported find-pattern macro substitution; skipped", script.ID))
+			warnings = append(warnings, fmt.Sprintf("embedded regex %q requires unsupported find-pattern macro substitution; the entire chain follows the failure policy", script.ID))
 			continue
 		}
 		replacement := presetRegexMatchMacro.ReplaceAllLiteralString(script.ReplaceString, "$0")
@@ -106,15 +129,15 @@ func compilePresetTextRegex(config *dto.SillyTavernPresetConfig, model string, s
 			unsupportedMacro = unsupportedMacro || strings.Contains(trim, "{{")
 		}
 		if unsupportedMacro {
-			warnings = append(warnings, fmt.Sprintf("embedded regex %q requires unsupported replacement/trim macros; skipped", script.ID))
+			warnings = append(warnings, fmt.Sprintf("embedded regex %q requires unsupported replacement/trim macros; the entire chain follows the failure policy", script.ID))
 			continue
 		}
 		re, global, err := dto.CompileTextRegex(script.FindRegex)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("embedded regex %q cannot be compiled; skipped", script.ID))
+			warnings = append(warnings, fmt.Sprintf("embedded regex %q cannot be compiled; the entire chain follows the failure policy", script.ID))
 			continue
 		}
-		compiled = append(compiled, presetResponseRegex{id: script.ID, pattern: re, global: global, replaceBy: replacement, trimStrings: script.TrimStrings, roles: roles, minDepth: script.MinDepth, maxDepth: script.MaxDepth})
+		compiled = append(compiled, presetResponseRegex{id: script.ID, name: script.ScriptName, pattern: re, global: global, replaceBy: replacement, trimStrings: script.TrimStrings, roles: roles, minDepth: script.MinDepth, maxDepth: script.MaxDepth})
 	}
 	return compiled, warnings
 }
@@ -139,7 +162,7 @@ func compileChannelTextRegex(config *dto.ResponseTextFilter, model, stage string
 		if len(roles) == 0 {
 			roles = []string{"user", "assistant"}
 		}
-		rules = append(rules, presetResponseRegex{id: rule.ID, pattern: re, global: global, replaceBy: presetRegexMatchMacro.ReplaceAllLiteralString(rule.Replacement, "$0"), extract: rule.Action == "extract", missingEmpty: rule.MissingMatch == "empty", trimCapture: rule.TrimCapture, trimStrings: rule.TrimStrings, roles: roles, minDepth: rule.MinDepth, maxDepth: rule.MaxDepth})
+		rules = append(rules, presetResponseRegex{id: rule.ID, name: rule.Name, pattern: re, global: global, replaceBy: presetRegexMatchMacro.ReplaceAllLiteralString(rule.Replacement, "$0"), extract: rule.Action == "extract", missingEmpty: rule.MissingMatch == "empty", trimCapture: rule.TrimCapture, trimStrings: rule.TrimStrings, roles: roles, minDepth: rule.MinDepth, maxDepth: rule.MaxDepth})
 	}
 	return rules, nil
 }

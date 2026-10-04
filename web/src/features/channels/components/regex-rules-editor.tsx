@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { FileUp } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -28,6 +29,7 @@ import {
   AccordionContent,
 } from '@/components/ui/accordion'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -37,6 +39,7 @@ import { normalizeResponseTextFilter } from '../lib/channel-form'
 import {
   editableRegexRulesSchema,
   importRegexScripts,
+  mergeImportedRegexRules,
   materializeRegexRuleSwitches,
   regexReplacementGeneratesHtml,
   type RegexRule,
@@ -50,6 +53,7 @@ type RegexRulesEditorProps = {
   onChange: (value: string) => void
   disabled?: boolean
   scopeKey?: string | number
+  compact?: boolean
 }
 
 export function RegexRulesEditor(props: RegexRulesEditorProps) {
@@ -61,6 +65,8 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
   const id = useId()
   const [warning, setWarning] = useState('')
   const [importing, setImporting] = useState(false)
+  const [expandedRules, setExpandedRules] = useState<string[]>([])
+  const importInput = useRef<HTMLInputElement>(null)
   const latestValue = useRef(props.value)
   latestValue.current = props.value
   const mounted = useRef(true)
@@ -102,11 +108,8 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
       })
     }
   }
-  return (
-    <section
-      aria-label={t('Regex rules')}
-      className='flex max-w-full min-w-0 flex-col gap-4'
-    >
+  const executionSettings = (
+    <div className='flex min-w-0 flex-col gap-4'>
       {(config || parsed) && (
         <RegexFailurePolicy
           value={(config || parsed)?.failure_policy}
@@ -119,7 +122,7 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
           }}
         />
       )}
-      {config ? (
+      {config && (
         <>
           <p className='text-muted-foreground text-xs'>
             {t(
@@ -129,29 +132,6 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
               'Channel rules run first, followed by embedded preset rules. Send rules process incoming messages before preset assembly.'
             )}
           </p>
-          {config.rules.some(
-            (rule) => rule.stage === 'receive' && !rule.disabled
-          ) && (
-            <Alert>
-              <AlertDescription>
-                {t('Applicable receive rules buffer streaming responses.')}
-              </AlertDescription>
-            </Alert>
-          )}
-          {config.rules.some(
-            (rule) =>
-              rule.stage === 'receive' &&
-              !rule.disabled &&
-              regexReplacementGeneratesHtml(rule.replacement)
-          ) && (
-            <Alert className='border-amber-500/40 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100'>
-              <AlertDescription>
-                {t(
-                  'Some response rules generate HTML. The API returns that HTML as text; it does not render it. Review these rules if your client expects plain text.'
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
           <Field>
             <FieldLabel htmlFor={`${id}-models`}>
               {t('Models (comma-separated, empty for all)')}
@@ -179,6 +159,50 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
               }
             />
           </Field>
+        </>
+      )}
+    </div>
+  )
+  return (
+    <section
+      aria-label={t('Regex rules')}
+      className='flex max-w-full min-w-0 flex-col gap-4'
+    >
+      {props.compact ? (
+        <Accordion className='min-w-0'>
+          <AccordionItem value='settings'>
+            <AccordionTrigger>{t('Execution settings')}</AccordionTrigger>
+            <AccordionContent>{executionSettings}</AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      ) : (
+        executionSettings
+      )}
+      {config ? (
+        <>
+          {config.rules.some(
+            (rule) => rule.stage === 'receive' && !rule.disabled
+          ) && (
+            <Alert>
+              <AlertDescription>
+                {t('Applicable receive rules buffer streaming responses.')}
+              </AlertDescription>
+            </Alert>
+          )}
+          {config.rules.some(
+            (rule) =>
+              rule.stage === 'receive' &&
+              !rule.disabled &&
+              regexReplacementGeneratesHtml(rule.replacement)
+          ) && (
+            <Alert className='border-amber-500/40 bg-amber-50 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100'>
+              <AlertDescription>
+                {t(
+                  'Some response rules generate HTML. The API returns that HTML as text; it does not render it. Review these rules if your client expects plain text.'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           {config.rules.length === 0 && (
             <EmptyState title={t('No regex rules')} className='min-h-24' />
           )}
@@ -192,6 +216,16 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                 <span className='mr-auto min-w-0 text-sm font-semibold break-all'>
                   {index + 1}. {rule.name || t('Regex rule')}
                 </span>
+                {rule.source_script_id && (
+                  <Badge variant='outline' title={rule.source_script_id}>
+                    {t('Imported script')}
+                  </Badge>
+                )}
+                {props.compact && (
+                  <Badge variant='secondary'>
+                    {rule.stage === 'receive' ? t('Receive') : t('Send')}
+                  </Badge>
+                )}
                 <Switch
                   aria-label={t('Enable rule')}
                   checked={!rule.disabled}
@@ -238,24 +272,52 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                   {t('Remove rule')}
                 </Button>
               </div>
-              <RegexRuleFields
-                rule={rule}
-                disabled={disabled}
-                onChange={(next) => update(index, next)}
-              />
+              {props.compact ? (
+                <Accordion
+                  value={expandedRules.includes(rule.id) ? ['edit'] : []}
+                  onValueChange={(value) =>
+                    setExpandedRules((current) =>
+                      value.length
+                        ? [...current.filter((id) => id !== rule.id), rule.id]
+                        : current.filter((id) => id !== rule.id)
+                    )
+                  }
+                >
+                  <AccordionItem value='edit'>
+                    <AccordionTrigger>
+                      {t('Edit rule {{number}}', { number: index + 1 })}
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <RegexRuleFields
+                        rule={rule}
+                        disabled={disabled}
+                        onChange={(next) => update(index, next)}
+                      />
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              ) : (
+                <RegexRuleFields
+                  rule={rule}
+                  disabled={disabled}
+                  onChange={(next) => update(index, next)}
+                />
+              )}
             </section>
           ))}
           <Button
             type='button'
             variant='outline'
             disabled={disabled}
-            onClick={() =>
+            onClick={() => {
+              const ruleId = crypto.randomUUID()
+              setExpandedRules((current) => [...current, ruleId])
               save({
                 ...config,
                 rules: [
                   ...config.rules,
                   {
-                    id: crypto.randomUUID(),
+                    id: ruleId,
                     stage: 'receive',
                     action: 'replace',
                     pattern: '',
@@ -263,16 +325,18 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                   },
                 ],
               })
-            }
+            }}
           >
             {t('Add regex rule')}
           </Button>
           <Field>
-            <FieldLabel htmlFor={`${id}-import`}>
+            <FieldLabel htmlFor={`${id}-import`} className='sr-only'>
               {t('Import SillyTavern regex JSON')}
             </FieldLabel>
-            <Input
+            <input
               id={`${id}-import`}
+              ref={importInput}
+              hidden
               type='file'
               accept='.json,application/json'
               disabled={disabled}
@@ -301,7 +365,10 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                   }
                   const next = {
                     ...config,
-                    rules: [...config.rules, ...imported.rules],
+                    rules: mergeImportedRegexRules(
+                      config.rules,
+                      imported.rules
+                    ),
                     imported_scripts: [
                       ...(Array.isArray(config.imported_scripts)
                         ? config.imported_scripts
@@ -333,6 +400,16 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                 }
               }}
             />
+            <Button
+              type='button'
+              variant='outline'
+              disabled={disabled}
+              className='w-fit max-w-full whitespace-normal'
+              onClick={() => importInput.current?.click()}
+            >
+              <FileUp aria-hidden='true' className='size-4' />
+              {t('Import SillyTavern regex JSON')}
+            </Button>
           </Field>
           {warning && (
             <Alert variant='destructive'>

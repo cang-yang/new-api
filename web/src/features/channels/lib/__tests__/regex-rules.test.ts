@@ -20,9 +20,93 @@ import { expect, test } from 'vitest'
 
 import {
   importRegexScripts,
+  mergeImportedRegexRules,
   mergePresetRegexScripts,
   regexRulesSchema,
 } from '../regex-rules'
+
+test('rule text limits match backend UTF-8 byte limits', () => {
+  const rule = {
+    id: 'rule',
+    stage: 'receive',
+    action: 'replace',
+    pattern: '/x/g',
+    replacement: '',
+  }
+  for (const extra of [
+    { id: '字'.repeat(43) },
+    { source_script_id: '字'.repeat(43) },
+    { name: '字'.repeat(86) },
+    { trim_strings: ['字'.repeat(5462)] },
+  ]) {
+    expect(
+      regexRulesSchema.safeParse({
+        mode: 'rules',
+        rules: [{ ...rule, ...extra }],
+      }).success
+    ).toBe(false)
+  }
+  expect(
+    regexRulesSchema.safeParse({
+      mode: 'rules',
+      rules: [
+        { ...rule, name: '字'.repeat(85), trim_strings: ['字'.repeat(5461)] },
+      ],
+    }).success
+  ).toBe(true)
+})
+
+test('import preserves explicit script ownership in each direction and reimport does not overwrite edits', () => {
+  const script = {
+    id: 'source-id',
+    scriptName: 'Both',
+    findRegex: '/^/',
+    replaceString: '!',
+    placement: [2],
+  }
+  const imported = importRegexScripts(script)
+  expect(imported.rules).toHaveLength(2)
+  expect(
+    imported.rules.every((rule) => rule.source_script_id === 'source-id')
+  ).toBe(true)
+  const current = JSON.stringify({
+    mode: 'rules',
+    enable_send: true,
+    rules: [{ ...imported.rules[1], replacement: 'edited', disabled: true }],
+  })
+  const merged = mergePresetRegexScripts(current, [script], ['receive'])
+  expect(merged.added).toBe(0)
+  expect(JSON.parse(merged.value).rules[0]).toMatchObject({
+    replacement: 'edited',
+    disabled: true,
+    source_script_id: 'source-id',
+  })
+})
+
+test('reimporting a legacy identical rule neither duplicates nor guesses its ownership', () => {
+  const old = {
+    id: 'legacy',
+    stage: 'receive',
+    action: 'replace',
+    pattern: '/x/g',
+    replacement: '',
+    disabled: true,
+  }
+  const merged = mergePresetRegexScripts(
+    JSON.stringify({ mode: 'rules', rules: [old] }),
+    [
+      {
+        id: 'source',
+        placement: [2],
+        markdownOnly: true,
+        findRegex: '/x/g',
+        replaceString: '',
+      },
+    ]
+  )
+  expect(merged.added).toBe(0)
+  expect(JSON.parse(merged.value).rules).toEqual([old])
+})
 
 test('preset regex merge keeps existing rules and selects receive and send independently', () => {
   const scripts = [
@@ -223,6 +307,28 @@ test('plain capture trims and case-insensitive match macro import without losing
     },
   ])
 })
+test('legacy import matching preserves different extraction behavior', () => {
+  const current = {
+    id: 'manual',
+    stage: 'receive' as const,
+    action: 'extract' as const,
+    pattern: '/(body)/',
+    replacement: '$1',
+    missing_match: 'empty' as const,
+    trim_capture: true,
+  }
+  const incoming = {
+    ...current,
+    id: 'imported',
+    missing_match: 'passthrough' as const,
+    trim_capture: false,
+  }
+  expect(mergeImportedRegexRules([current], [incoming])).toEqual([
+    current,
+    incoming,
+  ])
+})
+
 test('rule validation accepts empty replacement but rejects invalid direction, duplicate IDs and reversed depth', () => {
   const rule = {
     id: 'a',

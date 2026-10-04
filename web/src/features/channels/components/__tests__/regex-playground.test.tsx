@@ -27,6 +27,40 @@ import { RegexPlayground } from '../regex-playground'
 
 afterEach(cleanup)
 
+test('fallback shows the original text and never labels reverted steps as applied', async () => {
+  const user = userEvent.setup()
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        output: 'original',
+        rolled_back: true,
+        warnings: ['execution limit'],
+        steps: [
+          {
+            name: 'earlier rule',
+            before: 'original',
+            after: 'partial',
+            changed: true,
+          },
+        ],
+      },
+    },
+  })
+  render(<Playground />)
+  await user.click(screen.getByRole('button', { name: 'Run regex test' }))
+  expect(await screen.findByLabelText('Original text (fallback)')).toHaveValue(
+    'original'
+  )
+  expect(
+    screen.getByText(
+      'Processing failed. All changes were reverted according to the failure policy.'
+    )
+  ).toBeVisible()
+  expect(screen.queryByText('Applied rules, in order')).toBeNull()
+  expect(screen.getByText('Reverted')).toBeVisible()
+})
+
 function Playground(props: { scopeKey?: string; value?: string }) {
   return (
     <QueryClientProvider
@@ -45,24 +79,22 @@ function Playground(props: { scopeKey?: string; value?: string }) {
 
 test('preview sends unsaved channel and preset rules and shows server output and applied rules', async () => {
   const user = userEvent.setup()
-  const post = vi
-    .spyOn(api, 'post')
-    .mockResolvedValue({
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
       data: {
-        success: true,
-        data: {
-          output: 'hello',
-          steps: [
-            {
-              name: 'Extract body',
-              before: '<body>hello</body>',
-              after: 'hello',
-              changed: true,
-            },
-          ],
-        },
+        output: 'hello',
+        steps: [
+          {
+            name: 'Extract body',
+            before: '<body>hello</body>',
+            after: 'hello',
+            changed: true,
+          },
+        ],
       },
-    })
+    },
+  })
   render(<Playground />)
   await user.type(screen.getByLabelText('Test text'), '<body>hello</body>')
   await user.click(screen.getByRole('button', { name: 'Send' }))

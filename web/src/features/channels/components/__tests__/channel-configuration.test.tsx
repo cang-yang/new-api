@@ -1249,24 +1249,15 @@ test('channel regex rules save without an extraction template and disable editin
   expect(
     screen.queryByRole('button', { name: 'Regex Extraction Template' })
   ).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Add regex rule' })).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Edit regex' }))
   await user.click(screen.getByRole('button', { name: 'Add regex rule' }))
   await user.type(screen.getByLabelText('Find pattern'), 'secret')
-  await user.click(screen.getByRole('button', { name: 'Advanced regex JSON' }))
+  await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() => expect(put).toHaveBeenCalled())
-  expect(screen.getByRole('button', { name: 'Add regex rule' })).toBeDisabled()
-  const filterEditor = screen.getByRole('textbox', {
-    name: 'Response Text Filter',
-  })
-  expect(filterEditor.closest('[role="tabpanel"]')).toHaveClass(
-    'min-w-0',
-    'overflow-x-hidden'
-  )
-  expect(filterEditor).toBeDisabled()
-  const filterSection = filterEditor.closest('[data-slot="form-item"]')
-  expect(
-    within(filterSection as HTMLElement).getByRole('button', { name: 'Clear' })
-  ).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Edit regex' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Add regex rule' })).toBeNull()
   const payload = put.mock.calls[0]?.[1] as { settings: string }
   expect(JSON.parse(payload.settings)).toMatchObject({
     upstream_model_update_check_enabled: true,
@@ -1538,7 +1529,7 @@ test('preset import shows a named compact summary and a clear replace action', a
   expect(
     screen.getByRole('button', { name: 'Import preset JSON' })
   ).toBeVisible()
-  expect(upload).toHaveClass('sr-only')
+  expect(upload).not.toBeVisible()
   await user.upload(
     upload,
     new File(

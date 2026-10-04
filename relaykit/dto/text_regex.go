@@ -11,19 +11,22 @@ import (
 
 // TextRegexRule operates on text fields, never on an entire protocol document.
 type TextRegexRule struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name,omitempty"`
-	Disabled     bool     `json:"disabled,omitempty"`
-	Stage        string   `json:"stage"`
-	Action       string   `json:"action"`
-	Pattern      string   `json:"pattern"`
-	Replacement  string   `json:"replacement"`
-	Roles        []string `json:"roles,omitempty"`
-	MinDepth     *int     `json:"min_depth,omitempty"`
-	MaxDepth     *int     `json:"max_depth,omitempty"`
-	MissingMatch string   `json:"missing_match,omitempty"`
-	TrimCapture  bool     `json:"trim_capture,omitempty"`
-	TrimStrings  []string `json:"trim_strings,omitempty"`
+	ID string `json:"id"`
+	// SourceScriptID explicitly links an imported rule to the current preset's
+	// script in the same direction. The external copy owns its enable switch.
+	SourceScriptID string   `json:"source_script_id,omitempty"`
+	Name           string   `json:"name,omitempty"`
+	Disabled       bool     `json:"disabled,omitempty"`
+	Stage          string   `json:"stage"`
+	Action         string   `json:"action"`
+	Pattern        string   `json:"pattern"`
+	Replacement    string   `json:"replacement"`
+	Roles          []string `json:"roles,omitempty"`
+	MinDepth       *int     `json:"min_depth,omitempty"`
+	MaxDepth       *int     `json:"max_depth,omitempty"`
+	MissingMatch   string   `json:"missing_match,omitempty"`
+	TrimCapture    bool     `json:"trim_capture,omitempty"`
+	TrimStrings    []string `json:"trim_strings,omitempty"`
 }
 
 func (r TextRegexRule) Validate() error {
@@ -35,7 +38,7 @@ func (r TextRegexRule) Validate() error {
 			return fmt.Errorf("text regex trim string exceeds 16 KiB")
 		}
 	}
-	if r.ID == "" || len(r.ID) > 128 || len(r.Name) > 256 {
+	if r.ID == "" || len(r.ID) > 128 || len(r.Name) > 256 || len(r.SourceScriptID) > 128 {
 		return fmt.Errorf("text regex requires a bounded rule ID/name")
 	}
 	if r.Stage != "send" && r.Stage != "receive" {

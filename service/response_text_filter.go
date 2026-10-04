@@ -62,14 +62,14 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 	if setupErr == nil {
 		config = normalized
 	}
-	regexes, warnings := compilePresetResponseRegex(preset, model)
+	regexes, warnings := compileEffectivePresetTextRegex(preset, config, model, false)
 	channelRules, compileErr := compileChannelTextRegex(config, model, "receive")
 	if compileErr != nil {
 		setupErr = compileErr
 	}
 	regexes = append(channelRules, regexes...)
 	if len(warnings) > 0 {
-		logger.LogWarn(c, "Some preset response regex rules were skipped during compilation; inspect preset compatibility warnings")
+		logger.LogWarn(c, "Preset response regex compatibility validation failed; the entire rule chain follows the failure policy")
 	}
 	hasFilter := config != nil && config.Mode != "rules"
 	if !hasFilter && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
@@ -224,7 +224,7 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 		replaced, err := script.replace(text)
 		if err != nil || len(replaced) > maxFilteredResponseBytes {
 			if !w.warned {
-				common.SysError("Preset response regex skipped a rule after an execution/output limit; response text and patterns omitted")
+				common.SysError("Response regex execution failed; the entire rule chain follows the failure policy; response text and patterns omitted")
 				w.warned = true
 			}
 			w.transformErr = fmt.Errorf("response regex execution failed or exceeded output limit")

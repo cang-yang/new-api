@@ -23,6 +23,26 @@ import { describe, expect, test, vi } from 'vitest'
 import { JsonCodeEditor } from '../../json-code-editor'
 
 describe('JsonCodeEditor component', () => {
+  test('long JSON stays in a bounded editor with wrapping toolbar controls', () => {
+    const view = render(
+      <JsonCodeEditor
+        value={JSON.stringify({ html: '<div>long template</div>'.repeat(500) })}
+        onChange={() => undefined}
+        ariaLabel='Long JSON'
+      />
+    )
+    expect(view.container.firstElementChild).toHaveClass(
+      'min-w-0',
+      'max-w-full',
+      'overflow-hidden'
+    )
+    expect(
+      screen.getByRole('button', { name: 'Format JSON' }).parentElement
+    ).toHaveClass('min-w-0', 'flex-wrap')
+    expect(screen.getByRole('textbox', { name: 'Long JSON' })).toHaveValue(
+      JSON.stringify({ html: '<div>long template</div>'.repeat(500) })
+    )
+  })
   test('forwards form attributes and the textarea ref', () => {
     const textareaRef = vi.fn()
     const rendered = render(

@@ -26,7 +26,7 @@ func applyRequestTextRegex(config *dto.ResponseTextFilter, preset *dto.SillyTave
 	if err != nil {
 		return nil, err
 	}
-	imported, warnings := compilePresetTextRegex(preset, model, true)
+	imported, warnings := compileEffectivePresetTextRegex(preset, config, model, true)
 	if len(warnings) > 0 {
 		return nil, fmt.Errorf("send-side preset regex has unsupported or invalid rules; resolve compatibility warnings before enabling")
 	}

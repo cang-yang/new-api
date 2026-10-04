@@ -19,6 +19,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSillyTavernUnknownEnabledOrderEntryIsDiagnosed(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"missing","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, request.Messages, compiled.Messages)
+	assert.Contains(t, trace.Warnings, `enabled prompt_order identifier "missing" has no matching prompt`)
+	config.ContextMode = "exact"
+	config.ReferenceSource = "custom"
+	_, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{User: "u", Char: "c", Markers: map[string]string{}, ChatHistory: request.Messages, DialogueExamples: [][]dto.Message{}})
+	require.ErrorContains(t, err, "missing")
+}
+
+func TestSillyTavernInactiveGenerationPromptIsDiagnosed(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"chatHistory","marker":true},{"identifier":"continue","content":"continue only","injection_trigger":["continue"]}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true},{"identifier":"continue","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, request.Messages, compiled.Messages)
+	assert.Contains(t, trace.Warnings, `preset prompt "continue" is not applicable to normal generation`)
+}
+
 // The checked-in hashes were computed from real provider-bound SillyTavern
 // captures. The preset itself remains in the user's archive rather than being
 // copied into source control. Set ST_PRESET_ZIP to run this offline regression.

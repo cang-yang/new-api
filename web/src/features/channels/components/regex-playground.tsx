@@ -39,6 +39,7 @@ import {
 
 type PreviewResult = {
   output: string
+  rolled_back?: boolean
   steps: Array<{
     key: string
     name: string
@@ -135,6 +136,9 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
   const disabled = props.disabled || preview.isPending
   const validDepth =
     depth.trim() !== '' && Number.isInteger(Number(depth)) && Number(depth) >= 0
+  let stepsLabel = t('No applicable rules')
+  if (result?.rolled_back) stepsLabel = t('Intermediate steps (reverted)')
+  else if (result?.steps.length) stepsLabel = t('Applied rules, in order')
 
   return (
     <section
@@ -157,7 +161,7 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
       {props.presetValue?.trim() && (
         <p className='text-muted-foreground text-xs'>
           {t(
-            'If you also enable embedded scripts after copying them into channel rules, both copies run.'
+            'Imported rules linked by script ID replace their embedded copy in the same direction, even when disabled. Older unlinked copies may still run twice.'
           )}
         </p>
       )}
@@ -258,6 +262,15 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
         )}
         {result && (
           <>
+            {result.rolled_back && (
+              <Alert variant='destructive'>
+                <AlertDescription>
+                  {t(
+                    'Processing failed. All changes were reverted according to the failure policy.'
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
             {[...new Set(result.warnings)].map((warning) => (
               <Alert key={warning}>
                 <AlertDescription className='break-all'>
@@ -268,7 +281,9 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
             <Field>
               <div className='flex items-center justify-between gap-2'>
                 <FieldLabel htmlFor={`${id}-output`}>
-                  {t('Transformed text')}
+                  {result.rolled_back
+                    ? t('Original text (fallback)')
+                    : t('Transformed text')}
                 </FieldLabel>
                 <CopyButton
                   value={result.output}
@@ -284,11 +299,7 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
               />
             </Field>
             <div className='flex min-w-0 flex-col gap-2'>
-              <p className='text-muted-foreground text-xs'>
-                {result.steps.length
-                  ? t('Applied rules, in order')
-                  : t('No applicable rules')}
-              </p>
+              <p className='text-muted-foreground text-xs'>{stepsLabel}</p>
               {result.steps.map((step, index) => (
                 <div
                   key={step.key}
@@ -298,7 +309,9 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
                     {index + 1}. {step.name}
                   </span>
                   <Badge variant={step.changed ? 'secondary' : 'outline'}>
-                    {step.changed ? t('Changed') : t('Unchanged')}
+                    {result.rolled_back
+                      ? t('Reverted')
+                      : t(step.changed ? 'Changed' : 'Unchanged')}
                   </Badge>
                 </div>
               ))}

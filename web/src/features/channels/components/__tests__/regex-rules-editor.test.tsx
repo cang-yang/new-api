@@ -25,6 +25,79 @@ import { RegexRulesEditor } from '../regex-rules-editor'
 
 afterEach(cleanup)
 
+test('imported rules display their origin and retain it when switched off', async () => {
+  const user = userEvent.setup()
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        mode: 'rules',
+        rules: [
+          {
+            id: 'copy',
+            source_script_id: 'original',
+            stage: 'receive',
+            action: 'replace',
+            pattern: 'x',
+            replacement: '',
+          },
+        ],
+      })}
+    />
+  )
+  expect(screen.getByText('Imported script')).toBeVisible()
+  await user.click(screen.getByRole('switch', { name: 'Enable rule' }))
+  expect(
+    JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
+      .rules[0]
+  ).toMatchObject({ source_script_id: 'original', disabled: true })
+})
+
+test('uploading the same linked script again keeps edited disabled rules instead of appending a copy', async () => {
+  const user = userEvent.setup()
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        mode: 'rules',
+        enable_send: true,
+        rules: [
+          {
+            id: 'copy',
+            source_script_id: 'original',
+            stage: 'receive',
+            action: 'replace',
+            pattern: 'x',
+            replacement: 'edited',
+            disabled: true,
+          },
+        ],
+      })}
+    />
+  )
+  const file = new File(['{}'], 'regex.json', { type: 'application/json' })
+  Object.defineProperty(file, 'text', {
+    value: async () =>
+      JSON.stringify({
+        id: 'original',
+        placement: [2],
+        markdownOnly: true,
+        findRegex: 'x',
+        replaceString: 'old',
+      }),
+  })
+  await user.upload(
+    screen.getByLabelText('Import SillyTavern regex JSON'),
+    file
+  )
+  const saved = JSON.parse(
+    screen.getByLabelText('Saved rules').textContent || '{}'
+  )
+  expect(saved.rules).toHaveLength(1)
+  expect(saved.rules[0]).toMatchObject({
+    replacement: 'edited',
+    disabled: true,
+  })
+})
+
 test('external editor warns when an enabled receive rule generates HTML', () => {
   render(
     <Editor

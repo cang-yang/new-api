@@ -110,10 +110,14 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
 	info.StreamStatus.RequireTerminal()
 	streamOutcome := info.StreamStatus.Outcome(info.ReceivedResponseCount)
-	if streamOutcome != relaycommon.StreamResultComplete {
+	// Protocol failures and interrupted streams already reached the client.
+	// Preserve their usage through the shared accumulator, like WebSocket and
+	// converted Responses streams. StreamStatus retains the health outcome;
+	// returning a relay error here would refund consumed output and may retry it.
+	if streamOutcome != relaycommon.StreamResultComplete && !hasMeaningfulOutput && !info.StreamStatus.ResponseFailed() {
 		return nil, types.NewOpenAIError(fmt.Errorf("upstream responses stream ended with outcome %s", streamOutcome), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
-	if !hasMeaningfulOutput {
+	if !hasMeaningfulOutput && !info.StreamStatus.ResponseFailed() {
 		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned an empty responses stream"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 

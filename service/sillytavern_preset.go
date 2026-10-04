@@ -172,6 +172,13 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		if override, ok := config.EntryOverrides[entry.Identifier]; ok {
 			enabled = override
 		}
+		if enabled && !exists {
+			warning := fmt.Sprintf("enabled prompt_order identifier %q has no matching prompt", entry.Identifier)
+			if trace.Mode == "exact" {
+				return nil, trace, fmt.Errorf("%s", warning)
+			}
+			trace.Warnings = append(trace.Warnings, warning)
+		}
 		if !exists || !enabled {
 			continue
 		}
@@ -207,7 +214,11 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		if override, ok := config.EntryOverrides[entry.Identifier]; ok {
 			enabled = override
 		}
-		if !exists || !enabled || (len(prompt.InjectionTrigger) > 0 && !slices.Contains(prompt.InjectionTrigger, "normal")) {
+		if !exists || !enabled {
+			continue
+		}
+		if len(prompt.InjectionTrigger) > 0 && !slices.Contains(prompt.InjectionTrigger, "normal") {
+			trace.Warnings = append(trace.Warnings, fmt.Sprintf("preset prompt %q is not applicable to normal generation", entry.Identifier))
 			continue
 		}
 		if prompt.Identifier == "chatHistory" {

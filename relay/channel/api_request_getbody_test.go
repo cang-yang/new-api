@@ -379,6 +379,15 @@ func runResetOnFirstStreamServer(ln net.Listener, expectRetry bool) <-chan h2Ser
 					return
 				}
 				if !expectRetry {
+					// Drain pending control frames before closing the socket. Closing
+					// with unread data can send a TCP reset and mask REFUSED_STREAM.
+					if tcp, ok := conn.(*net.TCPConn); ok {
+						if err := tcp.CloseWrite(); err != nil {
+							res.err = err
+							return
+						}
+					}
+					_, _ = io.Copy(io.Discard, conn)
 					break attempts
 				}
 				continue
@@ -416,11 +425,20 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 
 			if attempt == 0 {
 				err = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
-				conn.Close()
 				if err != nil {
+					conn.Close()
 					res.err = err
 					return
 				}
+				if tcp, ok := conn.(*net.TCPConn); ok {
+					if err := tcp.CloseWrite(); err != nil {
+						conn.Close()
+						res.err = err
+						return
+					}
+				}
+				_, _ = io.Copy(io.Discard, conn)
+				conn.Close()
 				continue
 			}
 
@@ -584,6 +602,7 @@ func TestUpstreamGetBody_HTTP2CannotRetryWithoutGetBody(t *testing.T) {
 	assert.Nil(t, resp)
 	require.ErrorContains(t, err, "cannot retry err")
 	require.ErrorContains(t, err, "Request.Body was written")
+	transport.CloseIdleConnections()
 
 	srv := awaitH2ServerResult(t, resCh)
 	require.NoError(t, srv.err)

@@ -18,19 +18,22 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+const utf8Encoder = new TextEncoder()
+const byteLimitedString = (limit: number) =>
+  z.string().refine((value) => utf8Encoder.encode(value).length <= limit)
+
 export const regexRuleSchema = z
   .object({
-    id: z.string().min(1).max(128),
-    name: z.string().max(256).optional(),
+    id: byteLimitedString(128).refine((value) => value.length > 0),
+    source_script_id: byteLimitedString(128)
+      .refine((value) => value.length > 0)
+      .optional(),
+    name: byteLimitedString(256).optional(),
     disabled: z.boolean().optional(),
     stage: z.enum(['receive', 'send']),
     action: z.enum(['replace', 'extract']),
-    pattern: z
-      .string()
-      .refine((value) => new TextEncoder().encode(value).length <= 16384),
-    replacement: z
-      .string()
-      .refine((value) => new TextEncoder().encode(value).length <= 524288),
+    pattern: byteLimitedString(16384),
+    replacement: byteLimitedString(524288),
     roles: z
       .array(z.enum(['user', 'assistant', 'system', 'developer']))
       .optional(),
@@ -38,7 +41,7 @@ export const regexRuleSchema = z
     max_depth: z.number().int().nonnegative().optional(),
     missing_match: z.enum(['passthrough', 'empty']).optional(),
     trim_capture: z.boolean().optional(),
-    trim_strings: z.array(z.string().max(16384)).max(100).optional(),
+    trim_strings: z.array(byteLimitedString(16384)).max(100).optional(),
   })
   .passthrough()
 export const editableRegexRulesSchema = z
@@ -125,6 +128,11 @@ export function importRegexScripts(value: unknown): {
     if (unsupported) warnings.push(name)
     const base = {
       name,
+      ...(typeof script.id === 'string' &&
+      script.id.length > 0 &&
+      new TextEncoder().encode(script.id).length <= 128
+        ? { source_script_id: script.id }
+        : {}),
       pattern: item.findRegex,
       replacement:
         typeof script.replaceString === 'string' ? script.replaceString : '',
@@ -157,6 +165,49 @@ export function importRegexScripts(value: unknown): {
   return { rules, warnings, originals: scripts }
 }
 
+// Share import identity rules between the preset dialog and standalone upload.
+// Legacy matching copies are retained without inventing provenance.
+export function mergeImportedRegexRules(
+  current: RegexRule[],
+  incoming: RegexRule[]
+): RegexRule[] {
+  const signature = (rule: RegexRule) =>
+    JSON.stringify([
+      rule.stage,
+      rule.action,
+      rule.pattern,
+      rule.replacement,
+      rule.roles || [],
+      rule.min_depth,
+      rule.max_depth,
+      rule.trim_strings || [],
+      rule.missing_match || 'passthrough',
+      rule.trim_capture === true,
+    ])
+  const sourceKey = (rule: RegexRule) =>
+    JSON.stringify([rule.stage, rule.source_script_id])
+  const owned = new Set(
+    current.filter((rule) => rule.source_script_id).map(sourceKey)
+  )
+  const unlinked = new Set(
+    current.filter((rule) => !rule.source_script_id).map(signature)
+  )
+  return [
+    ...current,
+    ...incoming.filter((rule) => {
+      if (
+        (rule.source_script_id && owned.has(sourceKey(rule))) ||
+        unlinked.has(signature(rule))
+      ) {
+        return false
+      }
+      if (rule.source_script_id) owned.add(sourceKey(rule))
+      else unlinked.add(signature(rule))
+      return true
+    }),
+  ]
+}
+
 export function mergePresetRegexScripts(
   currentValue: string,
   scripts: unknown[],
@@ -177,25 +228,11 @@ export function mergePresetRegexScripts(
   }
 
   const imported = importRegexScripts(scripts)
-  const signature = (rule: RegexRule) =>
-    JSON.stringify([
-      rule.stage,
-      rule.action,
-      rule.pattern,
-      rule.replacement,
-      rule.roles || [],
-      rule.min_depth,
-      rule.max_depth,
-      rule.trim_strings || [],
-    ])
-  const known = new Set(current.rules.map(signature))
-  const addedRules = imported.rules.filter((rule) => {
-    if (!stages.includes(rule.stage)) return false
-    const key = signature(rule)
-    if (known.has(key)) return false
-    known.add(key)
-    return true
-  })
+  const rules = mergeImportedRegexRules(
+    current.rules,
+    imported.rules.filter((rule) => stages.includes(rule.stage))
+  )
+  const addedRules = rules.slice(current.rules.length)
   if (addedRules.some((rule) => rule.stage === 'send')) {
     current = materializeRegexRuleSwitches(current)
   }

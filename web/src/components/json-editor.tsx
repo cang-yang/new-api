@@ -185,9 +185,9 @@ export function JsonEditor({
   }
 
   return (
-    <div className='space-y-2'>
-      <div className='flex items-center justify-between'>
-        <div className='flex gap-2'>
+    <div className='min-w-0 space-y-2'>
+      <div className='flex min-w-0 flex-wrap items-center justify-between gap-2'>
+        <div className='flex min-w-0 flex-wrap gap-2'>
           <Button
             type='button'
             variant='outline'
