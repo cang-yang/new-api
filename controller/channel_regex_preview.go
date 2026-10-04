@@ -20,7 +20,10 @@ func PreviewChannelRegex(c *gin.Context) {
 		Depth  int                          `json:"depth"`
 		Text   string                       `json:"text"`
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+	// A supported preset may itself be 6 MiB. Leave bounded room for the
+	// channel rules, sample text and JSON envelope without weakening the
+	// executor's separate 16 KiB sample limit.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, dto.MaxSillyTavernPresetBytes+(2<<20))
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
 		if err == io.EOF {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "regex preview request is empty"})

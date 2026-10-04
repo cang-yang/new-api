@@ -325,8 +325,68 @@ func TestCompileSillyTavernPresetModelFilterAndMalformedPreset(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, request, compiled)
 	config.Preset = []byte(`{"prompts":[]}`)
+	compiled, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Same(t, request, compiled)
+	// An unrelated model bypasses this preset; validate malformed data only
+	// after selecting a model to which the preset actually applies.
+	request.Model = "selected"
 	_, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.Error(t, err)
+}
+
+func TestSillyTavernPresetRejectsDuplicateOrderEntries(t *testing.T) {
+	for _, identifier := range []string{"chatHistory", "main"} {
+		t.Run(identifier, func(t *testing.T) {
+			config := &dto.SillyTavernPresetConfig{Preset: []byte(fmt.Sprintf(`{"prompts":[{"identifier":%q,"content":"POLICY"}],"prompt_order":[{"order":[{"identifier":%q,"enabled":true},{"identifier":%q,"enabled":true}]}]}`, identifier, identifier, identifier))}
+			_, err := config.ParseAndValidate()
+			require.ErrorContains(t, err, "duplicate prompt_order identifier")
+		})
+	}
+}
+
+func TestSillyTavernPresetRejectsHistoryTriggerThatDropsClientMessages(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"main","content":"POLICY"},{"identifier":"chatHistory","marker":true,"injection_trigger":["continue"]}],"prompt_order":[{"order":[{"identifier":"main","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "CURRENT REQUEST"}}}
+	_, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.ErrorContains(t, err, "chatHistory")
+	assert.Equal(t, "CURRENT REQUEST", request.Messages[0].Content)
+}
+
+func TestSillyTavernPresetSingleCandidateOverridesClient(t *testing.T) {
+	for _, policy := range []string{"preset", "client"} {
+		t.Run(policy, func(t *testing.T) {
+			three := 3
+			request := &dto.GeneralOpenAIRequest{Model: "test", N: &three, Messages: []dto.Message{{Role: "user", Content: "HELLO"}}}
+			config := &dto.SillyTavernPresetConfig{ParameterPolicy: policy, Preset: []byte(`{"n":1,"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true}]}]}`)}
+			compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			expected := 1
+			if policy == "client" {
+				expected = 3
+			}
+			require.NotNil(t, compiled.N)
+			assert.Equal(t, expected, *compiled.N)
+			assert.Equal(t, 3, *request.N, "compilation must not mutate the client's request")
+		})
+	}
+}
+
+func TestSillyTavernPresetKeepsDefaultCandidateOmitted(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "HELLO"}}}
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"n":1,"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true}]}]}`)}
+	compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Nil(t, compiled.N)
+}
+
+func TestSillyTavernPresetIndependentCharacterOrdersKeepHistoryOnce(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "HELLO"}}}
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"chatHistory","marker":true,"injection_trigger":["normal","continue"]}],"prompt_order":[{"character_id":100000,"order":[{"identifier":"chatHistory","enabled":true}]},{"character_id":100001,"order":[{"identifier":"chatHistory","enabled":true}]}]}`)}
+	compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, compiled.Messages, 1)
+	assert.Equal(t, "HELLO", compiled.Messages[0].Content)
 }
 
 func TestDecodeSillyTavernContextKeepsStructuredMarkers(t *testing.T) {

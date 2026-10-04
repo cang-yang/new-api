@@ -182,6 +182,15 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 			return nil, fmt.Errorf("sillytavern_preset entry override references unknown prompt %q", identifier)
 		}
 	}
+	for _, order := range preset.PromptOrder {
+		ordered := make(map[string]bool, len(order.Order))
+		for _, entry := range order.Order {
+			if ordered[entry.Identifier] {
+				return nil, fmt.Errorf("sillytavern_preset has duplicate prompt_order identifier %q", entry.Identifier)
+			}
+			ordered[entry.Identifier] = true
+		}
+	}
 	if len(preset.Extensions.RegexScripts) > 100 {
 		return nil, fmt.Errorf("sillytavern_preset allows at most 100 embedded regex scripts")
 	}

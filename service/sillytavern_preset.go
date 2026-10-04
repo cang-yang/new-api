@@ -181,6 +181,11 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 			}
 		}
 		if entry.Identifier == "chatHistory" {
+			// Normal API requests cannot honor continue-only history. Reject
+			// this configuration instead of silently sending only the preset.
+			if len(prompt.InjectionTrigger) > 0 && !slices.Contains(prompt.InjectionTrigger, "normal") {
+				return nil, trace, fmt.Errorf("chatHistory injection_trigger must include normal for API requests")
+			}
 			chatMarkerEnabled = true
 		}
 	}
@@ -486,7 +491,10 @@ func applySillyTavernParameters(config *dto.SillyTavernPresetConfig, preset *dto
 			request.MaxCompletionTokens = nil
 		}
 	}
-	if preset.N != nil && *preset.N > 1 && (!preferClient || request.N == nil) {
+	// Preserve SillyTavern's omission of the default n=1 when no client n
+	// exists, but do not let a client multi-candidate value survive preset
+	// priority when the preset explicitly selects a single candidate.
+	if preset.N != nil && (*preset.N > 1 || request.N != nil) && (!preferClient || request.N == nil) {
 		request.N = preset.N
 	}
 	allowReasoning := config.ReferenceSource != "custom" || strings.HasPrefix(request.Model, "gpt-5") || strings.HasPrefix(request.Model, "o1") || strings.HasPrefix(request.Model, "o3") || strings.HasPrefix(request.Model, "o4") || strings.HasPrefix(request.Model, "koboldcpp/")
