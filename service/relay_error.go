@@ -78,6 +78,8 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode())))
 	clientGone := isClientGoneChannelError(c, err)
 	if !clientGone && ShouldDisableChannel(err) && channelError.AutoBan {
+	logger.LogError(c, common.LogText("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode())))
+	if !clientGone && ShouldDisableChannel(err) && channelError.AutoBan {
 		reason := err.MaskSensitiveErrorWithStatusCode()
 		gopool.Go(func() {
 			DisableChannel(channelError, reason)
