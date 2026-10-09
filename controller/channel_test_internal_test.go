@@ -26,7 +26,16 @@ import (
 func TestChannelTestStoresBodyAuditUnderConsumeLogRequestID(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	withSelfUseModeEnabled(t)
-	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.BodyAudit{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.Log{},
+		&model.BodyAudit{},
+		&model.AuditTrace{},
+		&model.AuditAttempt{},
+		&model.AuditWireSend{},
+		&model.AuditConfigSnapshot{},
+		&model.AuditBlob{},
+		&model.AuditReplayGrant{},
+	))
 
 	previousAuditEnabled := constant.BodyAuditEnabled
 	previousAuditLimit := constant.BodyAuditMaxBodyMB
@@ -82,7 +91,7 @@ func TestChannelTestStoresBodyAuditUnderConsumeLogRequestID(t *testing.T) {
 	require.Nil(t, result.newAPIError)
 
 	var consumeLog model.Log
-	require.NoError(t, db.Where("token_name = ?", "模型测试").First(&consumeLog).Error)
+	require.NoError(t, db.Where("model_name = ? AND channel = ?", "gpt-4o-mini", channel.Id).Order("id desc").First(&consumeLog).Error)
 	require.NotEmpty(t, consumeLog.RequestId)
 
 	audit, err := model.GetBodyAuditByRequestId(consumeLog.RequestId)
@@ -110,7 +119,7 @@ data: [DONE]
 	require.NoError(t, streamResult.localErr)
 	require.Nil(t, streamResult.newAPIError)
 	consumeLog = model.Log{}
-	require.NoError(t, db.Where("token_name = ?", "模型测试").Order("id desc").First(&consumeLog).Error)
+	require.NoError(t, db.Where("model_name = ? AND channel = ?", "gpt-4o-mini", channel.Id).Order("id desc").First(&consumeLog).Error)
 	streamAudit, err := model.GetBodyAuditByRequestId(consumeLog.RequestId)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, streamAudit.ClientResponseStatus)
