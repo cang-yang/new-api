@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Field,
@@ -79,6 +80,28 @@ export function SillyTavernMacroEditor(props: Props) {
           )}
         </p>
       </div>
+      <Alert role='note'>
+        <AlertTitle>{t('Built-in macros run automatically')}</AlertTitle>
+        <AlertDescription className='space-y-2'>
+          <p>
+            {t(
+              'Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.'
+            )}
+          </p>
+          <p>
+            <code>{'{{roll 1999999}}'}</code>
+            {' · '}
+            <code>{'{{roll 1d99999}}'}</code>
+            {' · '}
+            <code>{'{{random::A::B}}'}</code>
+          </p>
+          <p>
+            {t(
+              'Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.'
+            )}
+          </p>
+        </AlertDescription>
+      </Alert>
       <FieldSet className='rounded-lg border p-3' disabled={props.disabled}>
         <Field orientation='horizontal'>
           <div>

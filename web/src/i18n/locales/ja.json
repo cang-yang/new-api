@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Built-in macros run automatically": "組み込みマクロは自動で動作します",
+    "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "有効なプリセット項目では、送信前に roll、random、テキスト、時刻、履歴、リクエスト内変数のマクロが自動展開されます。別のスイッチは不要です。",
+    "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "ブラウザーの状態や永続的なグローバル書き込みを必要とするマクロは再現しません。不足するコンテキストは実行トレースに表示されます。取得できないデータは下のテキスト値で補えます。",
     "Execution settings": "実行設定",
     "Regex settings": "正規表現設定",
     "Edit regex": "正規表現を編集",

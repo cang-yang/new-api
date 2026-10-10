@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -304,6 +305,12 @@ func TestSillyTavernExternalPresetCompatibility(t *testing.T) {
 			require.NoError(t, err)
 			require.NotEmpty(t, compiled.Messages)
 			assert.Contains(t, trace.Warnings, "Browser scripts are preserved but not executed; use native declarative features for server-side compatibility")
+			for _, message := range compiled.Messages {
+				if content, ok := message.Content.(string); ok {
+					assert.NotRegexp(t, `(?i)\{\{roll[ :]+`, content, "numeric macros must expand automatically in the imported preset")
+				}
+			}
+			assert.NotContains(t, strings.Join(trace.Warnings, ","), "unsupported dice macro")
 			assert.Equal(t, "hello", request.Messages[0].Content)
 			assert.Equal(t, before, string(config.Preset))
 		})
@@ -618,6 +625,133 @@ func TestSillyTavernTimeAndManualMacros(t *testing.T) {
 	config.TimeZone = "not/a/timezone"
 	_, err = config.ParseAndValidate()
 	require.ErrorContains(t, err, "IANA time zone")
+}
+
+func TestSillyTavernRollMacroIsAutomaticAndSupportsSTSyntax(t *testing.T) {
+	for _, test := range []struct {
+		input    string
+		min, max int64
+	}{
+		{"{{roll 1999999}}", 1, 1999999},
+		{"{{roll 1d99999}}", 1, 99999},
+		{"{{roll::1d20}}", 1, 20},
+		{"{{roll:2d6+3}}", 5, 15},
+		{"{{dice::d4}}", 1, 4},
+		{"{{ROLL 2d1-3}}", -1, -1},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"main","content":"` + test.input + `"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`)}
+			request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+			compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.NotEmpty(t, compiled.Messages)
+			content, ok := compiled.Messages[0].Content.(string)
+			require.True(t, ok)
+			assert.NotContains(t, content, "{{roll")
+			assert.NotContains(t, content, "{{dice")
+			assert.NotContains(t, strings.Join(trace.Warnings, ","), "unsupported dice macro")
+			value, err := strconv.ParseInt(content, 10, 64)
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, value, test.min)
+			assert.LessOrEqual(t, value, test.max)
+		})
+	}
+}
+
+func TestSillyTavernRollMacroRejectsUnsafeFormula(t *testing.T) {
+	for _, formula := range []string{"0", "0d20", "1001d20", "1d100000001", "1d20+nope", "1d", "1d1+9223372036854775807"} {
+		_, ok := rollSillyTavernDice(formula, nil)
+		assert.False(t, ok, formula)
+	}
+	budget := int64(2)
+	value, ok := rollSillyTavernDice("2d1", &budget)
+	require.True(t, ok)
+	assert.Equal(t, int64(2), value)
+	_, ok = rollSillyTavernDice("1", &budget)
+	assert.False(t, ok, "execution must stop when the per-request budget is exhausted")
+}
+
+func TestSillyTavernMacroSyntaxAndRequestScopedState(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 34, 56, 123_000_000, time.UTC)
+	for _, test := range []struct {
+		input, expected string
+	}{
+		{"<user>|<bot>|<char>|<group>", "Alice|Bot|Bot|Bot"},
+		{"{{reverse:你好abc}}|{{newline}}{{noop}}{{// comment}}", "cba好你|\n"},
+		{"{{setvar:: n ::1}}{{incvar::n}}|{{decvar::n}}|{{addvar::n::2}}{{getvar::n}}", "2|1|3"},
+		{`{{setvar::a::["x"]}}{{addvar::a::y}}{{getvar::a}}`, `["x","y"]`},
+		{"{{setvar::n::{{roll 1}}}}{{getvar::n}}", "1"},
+		{"{{random:A}}|{{random::A}}|{{random A}}", "A|A|A"},
+		{`{{random::a\,b}}`, "a,b"},
+		{"{{datetimeformat YYYY-MM-DD [at] HH:mm:ss.SSS Z}}", "2026-10-10 at 12:34:56.123 +00:00"},
+		{"{{datetimeformat [2006 YYYY] d dd ddd dddd}}", "2006 YYYY 6 Sa Sat Saturday"},
+		{"{{time_UTC+8}}|{{time_UTC-4}}", "20:34|08:34"},
+		{"{{timeDiff::2026-10-10 12:00::2026-10-10 10:00}}", "in 2 hours"},
+		{"{{timeDiff::2026-10-09::2026-10-10}}", "a day ago"},
+		{"{{description}}|{{persona}}|{{lastGenerationType}}|{{model}}", "Character|User persona|normal|test"},
+	} {
+		t.Run(test.input, func(t *testing.T) {
+			preset, err := common.Marshal(map[string]any{
+				"prompts":      []map[string]any{{"identifier": "main", "content": test.input}},
+				"prompt_order": []map[string]any{{"order": []map[string]any{{"identifier": "main", "enabled": true}}}},
+			})
+			require.NoError(t, err)
+			config := &dto.SillyTavernPresetConfig{User: "Alice", Char: "Bot", Preset: preset}
+			request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+			context := SillyTavernContext{Now: now, Markers: map[string]string{"charDescription": "Character", "personaDescription": "User persona"}}
+			compiled, trace, err := CompileSillyTavernPreset(config, request, context)
+			require.NoError(t, err)
+			assert.Equal(t, test.expected, compiled.Messages[0].Content)
+			assert.NotContains(t, strings.Join(trace.Warnings, ","), "unsupported macro")
+			assert.Equal(t, "hello", request.Messages[0].Content)
+			again, _, err := CompileSillyTavernPreset(config, request, context)
+			require.NoError(t, err)
+			assert.Equal(t, compiled.Messages, again.Messages, "state must not leak into a later request")
+		})
+	}
+}
+
+func TestSillyTavernMacroContextLimitsAndStablePick(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"openai_max_context":8192,"openai_max_tokens":512,"prompts":[{"identifier":"main","content":"{{maxPrompt}}|{{maxContextTokens}}|{{maxResponse}}|{{lastMessageId}}|{{input}}|{{getglobalvar::color}}|{{pick::A::B::C}}|{{lastMessage}}|{{lastCharMessage}}"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "old"}, {Role: "assistant", Content: "reply"}, {Role: "assistant", Content: ""}, {Role: "system", Content: "system"}}}
+	input := ""
+	context := SillyTavernContext{ChatID: "chat-1", Input: &input, GlobalVariables: map[string]string{"color": "blue"}}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, context)
+	require.NoError(t, err)
+	content := compiled.Messages[0].Content.(string)
+	assert.Regexp(t, `^7680\|8192\|512\|3\|\|blue\|[ABC]\|system\|$`, content)
+	assert.NotContains(t, strings.Join(trace.Warnings, ","), "pick uses content-only")
+	again, _, err := CompileSillyTavernPreset(config, request, context)
+	require.NoError(t, err)
+	assert.Equal(t, compiled.Messages, again.Messages)
+	context.MacroValues = map[string]string{"maxContextTokens": "16384", "idle_duration": "an hour"}
+	override, _, err := CompileSillyTavernPreset(config, request, context)
+	require.NoError(t, err)
+	assert.Contains(t, override.Messages[0].Content.(string), "|16384|")
+	assert.Equal(t, map[string]string{"color": "blue"}, context.GlobalVariables)
+}
+
+func TestSillyTavernUnavailableMacrosRemainVisibleAndWarn(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"main","content":"{{idle_duration}}|{{setglobalvar::x::1}}|{{lastSwipeId}}|{{roll bad}}"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hi"}}}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Contains(t, compiled.Messages[0].Content.(string), "{{idle_duration}}")
+	assert.Contains(t, strings.Join(trace.Warnings, ","), "unsupported macro: idle_duration")
+	assert.Contains(t, strings.Join(trace.Warnings, ","), "unsupported dice macro: bad")
+}
+
+func TestSillyTavernCommonMacros(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{User: "Alice", Char: "Bot", TimeZone: "UTC", Preset: []byte(`{"prompts":[{"identifier":"main","content":"<USER>|<CHAR>|{{newline}}|{{reverse::abc}}|{{random::A,B}}|{{lastMessage}}|{{lastUserMessage}}|{{input}}|{{allChatRange}}|{{datetimeformat YYYY-MM-DD}}"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hello"}, {Role: "assistant", Content: "reply"}}}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	content := compiled.Messages[0].Content.(string)
+	assert.Contains(t, content, "Alice|Bot|\n|cba|")
+	assert.Regexp(t, `\|(A|B)\|`, content)
+	assert.Contains(t, content, "|reply|hello|hello|0-1|")
+	assert.NotContains(t, content, "{{")
+	assert.NotContains(t, strings.Join(trace.Warnings, ","), "unsupported macro")
 }
 
 func TestSillyTavernUnorderedEntriesRequireExplicitEnable(t *testing.T) {

@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Built-in macros run automatically": "Macro tích hợp tự động hoạt động",
+    "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "Các mục preset được bật tự động mở rộng macro roll, random, văn bản, thời gian, lịch sử và biến trong yêu cầu trước khi gửi. Không cần công tắc riêng.",
+    "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "Không mô phỏng macro cần trạng thái trình duyệt hoặc ghi toàn cục lâu dài. Ngữ cảnh thiếu được báo trong dấu vết thực thi; giá trị văn bản bên dưới có thể bổ sung dữ liệu không có sẵn.",
     "Execution settings": "Cài đặt thực thi",
     "Regex settings": "Cài đặt regex",
     "Edit regex": "Chỉnh sửa regex",

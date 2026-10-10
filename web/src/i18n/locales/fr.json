@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Built-in macros run automatically": "Les macros intégrées s’exécutent automatiquement",
+    "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "Les entrées activées développent automatiquement les macros roll, random, texte, heure, historique et variables locales à la requête avant l’envoi. Aucun interrupteur supplémentaire n’est nécessaire.",
+    "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "Les macros nécessitant l’état du navigateur ou des écritures globales persistantes ne sont pas émulées. Le contexte manquant est signalé dans la trace ; les valeurs littérales ci-dessous peuvent fournir les données indisponibles.",
     "Execution settings": "Paramètres d’exécution",
     "Regex settings": "Paramètres regex",
     "Edit regex": "Modifier les regex",

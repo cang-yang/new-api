@@ -3,9 +3,12 @@ package service
 import (
 	"cmp"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"regexp"
 	"slices"
@@ -29,6 +32,10 @@ type SillyTavernContext struct {
 	ChatHistory      []dto.Message     `json:"chat_history,omitempty"`
 	DialogueExamples [][]dto.Message   `json:"dialogue_examples,omitempty"`
 	Variables        map[string]string `json:"variables,omitempty"`
+	GlobalVariables  map[string]string `json:"global_variables,omitempty"`
+	MacroValues      map[string]string `json:"macro_values,omitempty"`
+	ChatID           string            `json:"chat_id,omitempty"`
+	Input            *string           `json:"input,omitempty"`
 	Now              time.Time         `json:"-"`
 }
 
@@ -55,15 +62,27 @@ type presetMessage struct {
 type presetMacroContext struct {
 	user            string
 	char            string
+	model           string
+	chatID          string
+	input           string
+	lastMessage     string
 	lastUserMessage string
+	lastCharMessage string
+	chatCount       int
+	rollsRemaining  int64
 	markers         map[string]string
 	vars            map[string]string
+	globalVars      map[string]string
+	values          map[string]string
 	warnings        map[string]bool
 	manual          map[string]string
 	now             time.Time
 }
 
 var sillyTavernTrimMacro = regexp.MustCompile(`(?i)(?:\r?\n)*\{\{trim\}\}(?:\r?\n)*`)
+var sillyTavernDice = regexp.MustCompile(`(?i)^(?:(\d+)?d(\d+)([+-]\d+)?|(\d+))$`)
+var sillyTavernUTCTime = regexp.MustCompile(`(?i)^time_utc([+-]\d{1,2})$`)
+var sillyTavernLegacyMacro = regexp.MustCompile(`(?i)<(USER|BOT|CHAR|CHARIFNOTGROUP|GROUP)>`)
 
 const maxSillyTavernExpansionBytes = 8 << 20
 
@@ -143,7 +162,68 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		location, _ := time.LoadLocation(config.TimeZone) // validated by ParseAndValidate
 		now = now.In(location)
 	}
-	macro := presetMacroContext{user: context.User, char: context.Char, lastUserMessage: lastUserMessage, markers: context.Markers, vars: make(map[string]string), warnings: make(map[string]bool), manual: config.MacroValues, now: now}
+	lastMessage, lastCharMessage := "", ""
+	foundLastMessage, foundLastCharMessage := false, false
+	lastMessageID := ""
+	for index := len(chat) - 1; index >= 0; index-- {
+		content, ok := chat[index].Content.(string)
+		if !ok {
+			continue
+		}
+		if !foundLastMessage {
+			lastMessage = content
+			lastMessageID = strconv.Itoa(index)
+			foundLastMessage = true
+		}
+		if !foundLastCharMessage && chat[index].Role == "assistant" {
+			lastCharMessage = content
+			foundLastCharMessage = true
+		}
+		if foundLastMessage && foundLastCharMessage {
+			break
+		}
+	}
+	macro := presetMacroContext{
+		user: context.User, char: context.Char, model: request.Model, chatID: context.ChatID,
+		input: lastUserMessage, lastMessage: lastMessage, lastUserMessage: lastUserMessage,
+		lastCharMessage: lastCharMessage, chatCount: len(chat), markers: context.Markers,
+		rollsRemaining: 10_000,
+		vars:           make(map[string]string), globalVars: context.GlobalVariables,
+		values: make(map[string]string), warnings: make(map[string]bool), manual: config.MacroValues, now: now,
+	}
+	if context.Input != nil {
+		macro.input = *context.Input
+	}
+	macro.values["lastmessageid"] = lastMessageID
+	// These are request-local limits, not inferred provider capacities.
+	var limits struct {
+		Context *int64 `json:"openai_max_context"`
+	}
+	if err := common.Unmarshal(config.Preset, &limits); err != nil {
+		return nil, trace, err
+	}
+	responseLimit := request.MaxTokens
+	if request.MaxCompletionTokens != nil {
+		responseLimit = request.MaxCompletionTokens
+	}
+	if preset.MaxTokens != nil && (config.ParameterPolicy != "client" || responseLimit == nil) {
+		responseLimit = preset.MaxTokens
+	}
+	if responseLimit != nil {
+		macro.values["maxresponse"] = strconv.FormatUint(uint64(*responseLimit), 10)
+		macro.values["maxresponsetokens"] = macro.values["maxresponse"]
+	}
+	if limits.Context != nil && *limits.Context > 0 {
+		macro.values["maxcontext"] = strconv.FormatInt(*limits.Context, 10)
+		macro.values["maxcontexttokens"] = macro.values["maxcontext"]
+		if responseLimit != nil && uint64(*responseLimit) <= uint64(*limits.Context) {
+			macro.values["maxprompt"] = strconv.FormatInt(*limits.Context-int64(*responseLimit), 10)
+			macro.values["maxprompttokens"] = macro.values["maxprompt"]
+		}
+	}
+	for key, value := range context.MacroValues {
+		macro.values[strings.ToLower(key)] = value
+	}
 	for key, value := range context.Variables {
 		macro.vars[key] = value
 	}
@@ -637,6 +717,23 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 		m.warnings["macro expansion limit reached"] = true
 		return input
 	}
+	group := m.char
+	if value, ok := m.markers["group"]; ok {
+		group = value
+	}
+	legacyValues := map[string]string{"<USER>": m.user, "<BOT>": m.char, "<CHAR>": m.char, "<GROUP>": group, "<CHARIFNOTGROUP>": group}
+	expandedBytes := len(input)
+	for _, index := range sillyTavernLegacyMacro.FindAllStringIndex(input, -1) {
+		expandedBytes += len(legacyValues[strings.ToUpper(input[index[0]:index[1]])]) - (index[1] - index[0])
+		if expandedBytes > maxSillyTavernExpansionBytes {
+			m.warnings["macro expansion limit reached"] = true
+			return input
+		}
+	}
+	input = sillyTavernLegacyMacro.ReplaceAllStringFunc(input, func(token string) string {
+		return legacyValues[strings.ToUpper(token)]
+	})
+	rawInput := input
 	var result strings.Builder
 	write := func(value string) {
 		if len(value) > maxSillyTavernExpansionBytes-result.Len() {
@@ -656,6 +753,7 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 			break
 		}
 		write(input[:start])
+		offset := len(rawInput) - len(input) + start
 		input = input[start+2:]
 		level := 1
 		end := -1
@@ -679,12 +777,35 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 		}
 		body := input[:end]
 		input = input[end+2:]
-		name, args, _ := strings.Cut(body, "::")
+		name, args, hasSeparator := strings.Cut(body, "::")
+		if !hasSeparator {
+			trimmedBody := strings.TrimSpace(body)
+			if fields := strings.Fields(trimmedBody); len(fields) > 1 && !strings.Contains(fields[0], ":") {
+				name, args = fields[0], strings.TrimSpace(strings.TrimPrefix(trimmedBody, fields[0]))
+			} else if colon := strings.IndexByte(trimmedBody, ':'); colon > 0 {
+				name, args = trimmedBody[:colon], trimmedBody[colon+1:]
+			} else {
+				name = trimmedBody
+			}
+		}
 		if value, ok := m.manual[strings.TrimSpace(name)]; ok && args == "" {
 			write(value)
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(name)) {
+		macroName := strings.ToLower(strings.TrimSpace(name))
+		if value, ok := m.values[macroName]; ok && args == "" {
+			write(value)
+			continue
+		}
+		if utcMatch := sillyTavernUTCTime.FindStringSubmatch(macroName); len(utcMatch) == 2 {
+			offset, err := strconv.Atoi(utcMatch[1])
+			if err == nil && offset >= -23 && offset <= 23 {
+				location := time.FixedZone("UTC", offset*60*60)
+				write(m.now.In(location).Format("15:04"))
+				continue
+			}
+		}
+		switch macroName {
 		case "user":
 			if m.user == "" {
 				m.warnings["{{user}} has no value; set the channel user or request context"] = true
@@ -700,32 +821,104 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 				m.warnings["{{lastUserMessage}} has no plain-text user message in the request context"] = true
 			}
 			write(m.lastUserMessage)
+		case "lastmessage":
+			write(m.lastMessage)
+		case "lastcharmessage":
+			write(m.lastCharMessage)
+		case "input":
+			write(m.input)
+		case "model":
+			write(m.model)
+		case "group", "charifnotgroup":
+			if group, ok := m.markers["group"]; ok {
+				write(group)
+			} else {
+				write(m.char)
+			}
+		case "lastgenerationtype":
+			write("normal") // This compiler only handles normal chat generation.
+		case "allchatrange":
+			if m.chatCount > 0 {
+				write(fmt.Sprintf("0-%d", m.chatCount-1))
+			}
 		case "isodate", "date":
 			write(m.now.Format("2006-01-02"))
 		case "isotime", "time":
 			write(m.now.Format("15:04"))
+		case "datetimeformat":
+			if format := strings.TrimSpace(args); format != "" {
+				write(formatSillyTavernDate(m.now, format))
+			}
+		case "timediff":
+			first, second, ok := strings.Cut(m.expand(args, depth+1), "::")
+			time1, ok1 := parseSillyTavernDate(first, m.now.Location())
+			time2, ok2 := parseSillyTavernDate(second, m.now.Location())
+			if ok && ok1 && ok2 {
+				write(humanizeSillyTavernDuration(time1.Sub(time2)))
+			} else {
+				m.warnings["timeDiff requires two valid ISO dates or date/time values"] = true
+				write("{{" + body + "}}")
+			}
 		case "weekday":
 			write(m.now.Weekday().String())
-		case "scenario":
-			write(m.markers["scenario"])
-		case "personality":
-			write(m.markers["charPersonality"])
+		case "newline":
+			write("\n")
+		case "noop":
+			// Intentionally expands to an empty string.
+		case "uuid":
+			var id [16]byte
+			if _, err := rand.Read(id[:]); err != nil {
+				m.warnings["random number source unavailable"] = true
+				write("{{" + body + "}}")
+				break
+			}
+			id[6] = (id[6] & 0x0f) | 0x40
+			id[8] = (id[8] & 0x3f) | 0x80
+			write(fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]))
+		case "reverse":
+			write(reverseSillyTavernString(m.expand(args, depth+1)))
+		case "scenario", "description", "personality", "persona", "charprompt", "charjailbreak", "charinstruction", "charversion", "char_version", "chardepthprompt", "creatornotes", "mesexamples", "mesexamplesraw":
+			key := map[string]string{
+				"scenario": "scenario", "description": "charDescription", "personality": "charPersonality",
+				"persona": "personaDescription", "charprompt": "charPrompt", "charjailbreak": "charJailbreak",
+				"charinstruction": "charJailbreak", "charversion": "charVersion", "char_version": "charVersion",
+				"chardepthprompt": "charDepthPrompt", "creatornotes": "creatorNotes",
+				"mesexamples": "mesExamples", "mesexamplesraw": "mesExamplesRaw",
+			}[macroName]
+			if value, ok := m.markers[key]; ok {
+				write(value)
+			} else {
+				m.warnings["macro requires request context marker: "+key] = true
+				write("{{" + body + "}}")
+			}
 		case "setvar":
 			key, value, ok := strings.Cut(args, "::")
 			if ok {
-				m.vars[key] = m.expand(value, depth+1)
+				m.vars[strings.TrimSpace(key)] = m.expand(value, depth+1)
 			}
 		case "addvar":
 			key, value, ok := strings.Cut(args, "::")
 			if ok {
 				value = m.expand(value, depth+1)
+				key = strings.TrimSpace(key)
 				current := m.vars[key]
+				var array []any
+				if common.Unmarshal([]byte(current), &array) == nil && array != nil {
+					array = append(array, value)
+					encoded, err := common.Marshal(array)
+					if err != nil || len(encoded) > maxSillyTavernExpansionBytes {
+						m.warnings["macro expansion limit reached"] = true
+						return result.String()
+					}
+					m.vars[key] = string(encoded)
+					break
+				}
 				currentNumber, currentError := strconv.ParseFloat(current, 64)
 				valueNumber, valueError := strconv.ParseFloat(value, 64)
 				if current == "" {
 					currentNumber, currentError = 0, nil
 				}
-				if currentError == nil && valueError == nil {
+				if currentError == nil && valueError == nil && !math.IsNaN(currentNumber+valueNumber) && !math.IsInf(currentNumber+valueNumber, 0) {
 					m.vars[key] = strconv.FormatFloat(currentNumber+valueNumber, 'f', -1, 64)
 				} else {
 					if len(current) > maxSillyTavernExpansionBytes || len(value) > maxSillyTavernExpansionBytes-len(current) {
@@ -736,14 +929,68 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 				}
 			}
 		case "getvar":
-			write(m.vars[args])
+			write(m.vars[strings.TrimSpace(args)])
+		case "incvar", "decvar":
+			key := strings.TrimSpace(args)
+			current := float64(0)
+			if value := m.vars[key]; value != "" {
+				var err error
+				current, err = strconv.ParseFloat(value, 64)
+				if err != nil || math.IsNaN(current) || math.IsInf(current, 0) {
+					m.warnings["increment/decrement requires a numeric variable: "+key] = true
+					write("{{" + body + "}}")
+					break
+				}
+			}
+			if macroName == "incvar" {
+				current++
+			} else {
+				current--
+			}
+			m.vars[key] = strconv.FormatFloat(current, 'f', -1, 64)
+			write(m.vars[key])
+		case "getglobalvar":
+			if value, ok := m.globalVars[strings.TrimSpace(args)]; ok {
+				write(value)
+			} else {
+				m.warnings["global variable requires explicit request context: "+strings.TrimSpace(args)] = true
+				write("{{" + body + "}}")
+			}
 		case "random":
-			choices := strings.Split(m.expand(args, depth+1), "::")
+			choices := splitSillyTavernMacroList(m.expand(args, depth+1))
 			if len(choices) > 0 {
 				index, err := rand.Int(rand.Reader, big.NewInt(int64(len(choices))))
 				if err == nil {
 					write(choices[index.Int64()])
+				} else {
+					m.warnings["random number source unavailable"] = true
+					write("{{" + body + "}}")
 				}
+			}
+		case "pick":
+			choices := splitSillyTavernMacroList(m.expand(args, depth+1))
+			if len(choices) > 0 {
+				// Stable choices are supported, but the gateway cannot reproduce
+				// a browser's cached seedrandom chat hash or its PRNG sequence.
+				m.warnings["pick is deterministic in New API but does not reproduce SillyTavern's seedrandom sequence"] = true
+				if m.chatID == "" {
+					m.warnings["pick uses content-only seed; supply chat_id for chat-scoped stable choices"] = true
+				}
+				seed := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", m.chatID, rawInput, offset)))
+				index := binary.BigEndian.Uint64(seed[:8]) % uint64(len(choices))
+				write(choices[index])
+			}
+		case "roll", "dice":
+			if value, ok := rollSillyTavernDice(m.expand(strings.TrimSpace(args), depth+1), &m.rollsRemaining); ok {
+				write(strconv.FormatInt(value, 10))
+			} else {
+				if m.rollsRemaining == 0 {
+					m.warnings["dice macro execution budget exceeded"] = true
+				}
+				m.warnings["unsupported dice macro: "+strings.TrimSpace(args)] = true
+				write("{{")
+				write(body)
+				write("}}")
 			}
 		case "trim":
 			write("{{trim}}")
@@ -752,6 +999,21 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 			if strings.HasPrefix(body, "//") {
 				break
 			}
+			// Explicit context markers also support extension/instruct macros,
+			// without exposing server-global state or executing preset code.
+			if args == "" {
+				found := false
+				for key, value := range m.markers {
+					if strings.EqualFold(key, macroName) {
+						write(value)
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
 			m.warnings["unsupported macro: "+name] = true
 			write("{{")
 			write(body)
@@ -759,6 +1021,185 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 		}
 	}
 	return sillyTavernTrimMacro.ReplaceAllString(result.String(), "")
+}
+
+func rollSillyTavernDice(formula string, remaining *int64) (int64, bool) {
+	match := sillyTavernDice.FindStringSubmatch(strings.ReplaceAll(formula, " ", ""))
+	if match == nil {
+		return 0, false
+	}
+	count := int64(1)
+	if match[1] != "" {
+		parsed, err := strconv.ParseInt(match[1], 10, 64)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			return 0, false
+		}
+		count = parsed
+	}
+	sideText := match[2]
+	if match[4] != "" {
+		sideText = match[4] // {{roll N}} is shorthand for 1dN.
+	}
+	sides, err := strconv.ParseInt(sideText, 10, 64)
+	if err != nil || sides < 1 || sides > 100_000_000 {
+		return 0, false
+	}
+	modifier := int64(0)
+	if match[3] != "" {
+		modifier, err = strconv.ParseInt(match[3], 10, 64)
+		if err != nil || (modifier > 0 && count*sides > math.MaxInt64-modifier) {
+			return 0, false
+		}
+	}
+	if remaining != nil {
+		if count > *remaining {
+			*remaining = 0
+			return 0, false
+		}
+		*remaining -= count
+	}
+	total := modifier
+	for range count {
+		roll, err := rand.Int(rand.Reader, big.NewInt(sides))
+		if err != nil {
+			return 0, false
+		}
+		total += roll.Int64() + 1
+	}
+	return total, true
+}
+
+func splitSillyTavernMacroList(value string) []string {
+	if strings.Contains(value, "::") {
+		return strings.Split(value, "::")
+	}
+	value = strings.ReplaceAll(value, `\,`, "\x00")
+	parts := strings.Split(value, ",")
+	for index := range parts {
+		parts[index] = strings.TrimSpace(strings.ReplaceAll(parts[index], "\x00", ","))
+	}
+	return parts
+}
+
+func reverseSillyTavernString(value string) string {
+	runes := []rune(value)
+	for left, right := 0, len(runes)-1; left < right; left, right = left+1, right-1 {
+		runes[left], runes[right] = runes[right], runes[left]
+	}
+	return string(runes)
+}
+
+// Format the common Moment tokens individually: converting a whole format to
+// a Go layout would also reinterpret literal digits and bracketed text.
+func formatSillyTavernDate(now time.Time, format string) string {
+	tokens := []struct{ token, layout string }{
+		{"YYYY", "2006"}, {"MMMM", "January"}, {"dddd", "Monday"},
+		{"MMM", "Jan"}, {"ddd", "Mon"}, {"SSS", "000"},
+		{"YY", "06"}, {"MM", "01"}, {"DD", "02"}, {"HH", "15"}, {"hh", "03"},
+		{"mm", "04"}, {"ss", "05"}, {"ZZ", "-0700"}, {"SS", "00"},
+		{"M", "1"}, {"D", "2"}, {"H", "15"}, {"h", "3"}, {"m", "4"},
+		{"s", "5"}, {"A", "PM"}, {"a", "pm"}, {"Z", "-07:00"}, {"S", "0"},
+	}
+	var output strings.Builder
+	for len(format) > 0 {
+		if strings.HasPrefix(format, "[") {
+			if literal, rest, ok := strings.Cut(format[1:], "]"); ok {
+				output.WriteString(literal)
+				format = rest
+				continue
+			}
+		}
+		if strings.HasPrefix(format, "X") {
+			output.WriteString(strconv.FormatInt(now.Unix(), 10))
+			format = format[1:]
+			continue
+		}
+		if strings.HasPrefix(format, "x") {
+			output.WriteString(strconv.FormatInt(now.UnixMilli(), 10))
+			format = format[1:]
+			continue
+		}
+		if strings.HasPrefix(format, "d") && !strings.HasPrefix(format, "ddd") {
+			if strings.HasPrefix(format, "dd") {
+				output.WriteString(now.Weekday().String()[:2])
+				format = format[2:]
+			} else {
+				output.WriteString(strconv.Itoa(int(now.Weekday())))
+				format = format[1:]
+			}
+			continue
+		}
+		matched := false
+		for _, token := range tokens {
+			if rest, ok := strings.CutPrefix(format, token.token); ok {
+				if token.token == "H" {
+					output.WriteString(strconv.Itoa(now.Hour()))
+				} else if strings.HasPrefix(token.token, "S") {
+					milliseconds := fmt.Sprintf("%03d", now.Nanosecond()/1_000_000)
+					output.WriteString(milliseconds[:len(token.token)])
+				} else {
+					output.WriteString(now.Format(token.layout))
+				}
+				format = rest
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			output.WriteByte(format[0])
+			format = format[1:]
+		}
+	}
+	return output.String()
+}
+
+func parseSillyTavernDate(value string, location *time.Location) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02", "2006-01-02T15:04:05", "2006-01-02T15:04"} {
+		if parsed, err := time.ParseInLocation(layout, strings.TrimSpace(value), location); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// Moment's default English relative-time thresholds. The gateway deliberately
+// uses a stable language instead of depending on the administrator's locale.
+func humanizeSillyTavernDuration(duration time.Duration) string {
+	seconds := math.Round(math.Abs(duration.Seconds()))
+	minutes := math.Round(seconds / 60)
+	hours := math.Round(seconds / 3600)
+	days := math.Round(seconds / 86400)
+	months := math.Round(days * 4800 / 146097)
+	years := math.Round(days * 400 / 146097)
+	var text string
+	switch {
+	case seconds < 45:
+		text = "a few seconds"
+	case minutes <= 1:
+		text = "a minute"
+	case minutes < 45:
+		text = fmt.Sprintf("%.0f minutes", minutes)
+	case hours <= 1:
+		text = "an hour"
+	case hours < 22:
+		text = fmt.Sprintf("%.0f hours", hours)
+	case days <= 1:
+		text = "a day"
+	case days < 26:
+		text = fmt.Sprintf("%.0f days", days)
+	case months <= 1:
+		text = "a month"
+	case months < 11:
+		text = fmt.Sprintf("%.0f months", months)
+	case years <= 1:
+		text = "a year"
+	default:
+		text = fmt.Sprintf("%.0f years", years)
+	}
+	if duration > 0 {
+		return "in " + text
+	}
+	return text + " ago"
 }
 
 // DecodeSillyTavernContext reads an optional structured context without

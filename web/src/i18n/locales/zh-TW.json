@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Built-in macros run automatically": "內建巨集自動生效",
+    "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "已啟用的預設項目會在傳送前自動展開 roll、random、文字、時間、歷史訊息及請求內變數巨集，不需要額外開啟開關。",
+    "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "不會模擬依賴瀏覽器狀態或持久化全域寫入的巨集。缺少的上下文會在執行過程中提示；可透過下方文字值補充無法取得的資料。",
     "Execution settings": "執行設定",
     "Regex settings": "正則設定",
     "Edit regex": "編輯正則",

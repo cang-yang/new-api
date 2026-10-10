@@ -139,6 +139,10 @@ test('native tool transport is opt-in and preserves embedded browser scripts', a
   ).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   await user.click(screen.getByRole('tab', { name: 'Macro values and time' }))
+  expect(screen.getByRole('note')).toHaveTextContent(
+    'Built-in macros run automatically'
+  )
+  expect(screen.getByRole('note')).toHaveTextContent('{{roll 1999999}}')
   const toggle = screen.getByRole('switch', {
     name: 'Enable native tool-text transport',
   })

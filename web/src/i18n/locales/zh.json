@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Built-in macros run automatically": "内置宏自动生效",
+    "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "已启用的预设条目会在发送前自动展开 roll、random、文本、时间、历史消息及请求内变量宏，不需要额外打开开关。",
+    "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "不会模拟依赖浏览器状态或持久化全局写入的宏。缺少的上下文会在执行过程里提示；可通过下方文本值补充无法获取的数据。",
     "Execution settings": "执行设置",
     "Regex settings": "正则设置",
     "Edit regex": "编辑正则",

@@ -1,5 +1,8 @@
 {
   "translation": {
+    "Built-in macros run automatically": "Built-in macros run automatically",
+    "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.",
+    "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.",
     "Execution settings": "Execution settings",
     "Regex settings": "Regex settings",
     "Edit regex": "Edit regex",
