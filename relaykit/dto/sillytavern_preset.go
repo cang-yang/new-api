@@ -13,13 +13,15 @@ import (
 // SillyTavernPresetConfig is deliberately opt-in and channel scoped. The
 // original preset is kept intact so it can be edited or exported losslessly.
 type SillyTavernPresetConfig struct {
-	RegexFailurePolicy  string                   `json:"regex_failure_policy,omitempty"`
-	Preset              json.RawMessage          `json:"preset"`
-	Models              []string                 `json:"models,omitempty"`
-	User                string                   `json:"user,omitempty"`
-	Char                string                   `json:"char,omitempty"`
-	ParameterPolicy     string                   `json:"parameter_policy,omitempty"` // preset (default) or client
-	PostProcessing      string                   `json:"post_processing,omitempty"`  // none (default) or strict
+	RegexFailurePolicy string          `json:"regex_failure_policy,omitempty"`
+	Preset             json.RawMessage `json:"preset"`
+	Models             []string        `json:"models,omitempty"`
+	User               string          `json:"user,omitempty"`
+	Char               string          `json:"char,omitempty"`
+	ParameterPolicy    string          `json:"parameter_policy,omitempty"` // preset (default) or client
+	// PostProcessing controls the optional final message normalization:
+	// none, merge, semi_strict, strict, or single_user.
+	PostProcessing      string                   `json:"post_processing,omitempty"`
 	ReferenceSource     string                   `json:"reference_source,omitempty"` // custom, openai, or newapi (default)
 	ContextMode         string                   `json:"context_mode,omitempty"`     // compatibility (default) or exact
 	Patches             []SillyTavernPresetPatch `json:"patches,omitempty"`
@@ -122,8 +124,10 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 	if c.ParameterPolicy != "" && c.ParameterPolicy != "preset" && c.ParameterPolicy != "client" {
 		return nil, fmt.Errorf("sillytavern_preset parameter_policy must be preset or client")
 	}
-	if c.PostProcessing != "" && c.PostProcessing != "none" && c.PostProcessing != "strict" {
-		return nil, fmt.Errorf("sillytavern_preset post_processing must be none or strict")
+	switch c.PostProcessing {
+	case "", "none", "merge", "semi_strict", "strict", "single_user":
+	default:
+		return nil, fmt.Errorf("sillytavern_preset post_processing must be none, merge, semi_strict, strict, or single_user")
 	}
 	if c.ReferenceSource != "" && c.ReferenceSource != "newapi" && c.ReferenceSource != "custom" && c.ReferenceSource != "openai" {
 		return nil, fmt.Errorf("sillytavern_preset reference_source must be newapi, custom, or openai")

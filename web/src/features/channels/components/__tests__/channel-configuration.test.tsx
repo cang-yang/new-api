@@ -1376,6 +1376,19 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   await user.click(
     screen.getByRole('combobox', { name: 'SillyTavern prompt post-processing' })
   )
+  expect(
+    screen.getByRole('option', { name: 'Merge consecutive same-role messages' })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('option', {
+      name: 'Semi-strict: allow one leading system message',
+    })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('option', {
+      name: 'Single user message: flatten all text',
+    })
+  ).toBeInTheDocument()
   await user.click(
     screen.getByRole('option', { name: 'Strict: force alternating roles' })
   )

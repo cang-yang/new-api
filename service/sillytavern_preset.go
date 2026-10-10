@@ -385,11 +385,18 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 		final = squashed
 	}
-	if config.PostProcessing == "strict" {
+	switch config.PostProcessing {
+	case "merge":
+		final = mergeAdjacentSillyTavernRoles(final)
+	case "semi_strict":
+		final, err = semiStrictSillyTavernPostProcess(final)
+	case "strict":
 		final, err = strictSillyTavernPostProcess(final)
-		if err != nil {
-			return nil, trace, err
-		}
+	case "single_user":
+		final, err = singleUserSillyTavernPostProcess(final)
+	}
+	if err != nil {
+		return nil, trace, err
 	}
 	compiled.Messages = make([]dto.Message, 0, len(final))
 	createdTextBytes := 0
@@ -419,35 +426,48 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	return compiled, trace, nil
 }
 
+func validateSillyTavernTextMessages(items []presetMessage, mode string) error {
+	for index, item := range items {
+		if _, ok := item.message.Content.(string); !ok || item.message.Name != nil ||
+			len(item.message.ToolCalls) > 0 || item.message.ToolCallId != "" || len(item.message.Tools) > 0 ||
+			(item.message.Role != "system" && item.message.Role != "user" && item.message.Role != "assistant") {
+			return fmt.Errorf("SillyTavern %s post-processing cannot safely reproduce structured content, named messages, or tools at message[%d]", mode, index)
+		}
+	}
+	return nil
+}
+
+// mergeAdjacentSillyTavernRoles merges adjacent text messages with the same
+// role. Callers validate structured messages before using this helper when the
+// selected mode requires a text-only representation.
+func mergeAdjacentSillyTavernRoles(items []presetMessage) []presetMessage {
+	merged := make([]presetMessage, 0, len(items))
+	for _, item := range items {
+		content, ok := item.message.Content.(string)
+		if len(merged) > 0 && ok && content != "" && merged[len(merged)-1].message.Role == item.message.Role {
+			previous := &merged[len(merged)-1]
+			if previousContent, previousOK := previous.message.Content.(string); previousOK {
+				previous.message.Content = previousContent + "\n\n" + content
+				previous.id += "," + item.id
+				previous.source = "post_processing"
+				continue
+			}
+		}
+		merged = append(merged, item)
+	}
+	return merged
+}
+
 // strictSillyTavernPostProcess mirrors SillyTavern's strict, no-tools
 // postProcessPrompt: merge identical adjacent roles with two newlines, turn
 // non-leading system messages into user messages, insert a user placeholder
 // when needed, and merge again. Structured media and tools are rejected until
 // their exact SillyTavern flatten/restore behavior can be reproduced.
 func strictSillyTavernPostProcess(items []presetMessage) ([]presetMessage, error) {
-	for index, item := range items {
-		if _, ok := item.message.Content.(string); !ok || item.message.Name != nil ||
-			len(item.message.ToolCalls) > 0 || item.message.ToolCallId != "" || len(item.message.Tools) > 0 ||
-			(item.message.Role != "system" && item.message.Role != "user" && item.message.Role != "assistant") {
-			return nil, fmt.Errorf("SillyTavern strict post-processing cannot safely reproduce structured content, named messages, or tools at message[%d]", index)
-		}
+	if err := validateSillyTavernTextMessages(items, "strict"); err != nil {
+		return nil, err
 	}
-	merge := func(input []presetMessage) []presetMessage {
-		merged := make([]presetMessage, 0, len(input))
-		for _, item := range input {
-			content := item.message.Content.(string)
-			if len(merged) > 0 && merged[len(merged)-1].message.Role == item.message.Role && content != "" {
-				previous := &merged[len(merged)-1]
-				previous.message.Content = previous.message.Content.(string) + "\n\n" + content
-				previous.id += "," + item.id
-				previous.source = "post_processing"
-				continue
-			}
-			merged = append(merged, item)
-		}
-		return merged
-	}
-	merged := merge(items)
+	merged := mergeAdjacentSillyTavernRoles(items)
 	if len(merged) == 0 {
 		merged = []presetMessage{{message: dto.Message{Role: "user", Content: "[Start a new chat]"}, source: "post_processing"}}
 	}
@@ -463,7 +483,46 @@ func strictSillyTavernPostProcess(items []presetMessage) ([]presetMessage, error
 	} else if merged[0].message.Role != "user" {
 		merged = slices.Insert(merged, 0, presetMessage{message: dto.Message{Role: "user", Content: "[Start a new chat]"}, source: "post_processing"})
 	}
-	return merge(merged), nil
+	return mergeAdjacentSillyTavernRoles(merged), nil
+}
+
+// semiStrictSillyTavernPostProcess keeps an optional leading system message,
+// merges adjacent roles, and normalizes later system messages to user messages.
+// It intentionally does not insert a placeholder or force the first role.
+func semiStrictSillyTavernPostProcess(items []presetMessage) ([]presetMessage, error) {
+	if err := validateSillyTavernTextMessages(items, "semi_strict"); err != nil {
+		return nil, err
+	}
+	merged := mergeAdjacentSillyTavernRoles(items)
+	for index := 1; index < len(merged); index++ {
+		if merged[index].message.Role == "system" {
+			merged[index].message.Role = "user"
+		}
+	}
+	return mergeAdjacentSillyTavernRoles(merged), nil
+}
+
+// singleUserSillyTavernPostProcess flattens all textual messages into one
+// user message. Structured content and tools fail closed instead of being
+// silently stringified and losing semantics.
+func singleUserSillyTavernPostProcess(items []presetMessage) ([]presetMessage, error) {
+	if err := validateSillyTavernTextMessages(items, "single_user"); err != nil {
+		return nil, err
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if content := item.message.Content.(string); content != "" {
+			parts = append(parts, content)
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "[Start a new chat]")
+	}
+	return []presetMessage{{
+		message: dto.Message{Role: "user", Content: strings.Join(parts, "\n\n")},
+		source:  "post_processing",
+		id:      "single_user",
+	}}, nil
 }
 
 func applySillyTavernParameters(config *dto.SillyTavernPresetConfig, preset *dto.SillyTavernPreset, request *dto.GeneralOpenAIRequest) {

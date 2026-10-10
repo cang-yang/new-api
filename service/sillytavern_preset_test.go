@@ -208,6 +208,27 @@ func TestSillyTavernPostProcessingModes(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, placeholder, 2)
 	assert.Equal(t, "[Start a new chat]", placeholder[1].message.Content)
+
+	merged := mergeAdjacentSillyTavernRoles(input)
+	require.Len(t, merged, 5)
+	assert.Equal(t, "setup\n\nrules", merged[0].message.Content)
+	assert.Equal(t, "first\n\nsecond", merged[1].message.Content)
+	assert.Equal(t, "assistant", merged[2].message.Role)
+	assert.Equal(t, "system", merged[3].message.Role)
+
+	semiStrict, err := semiStrictSillyTavernPostProcess(input)
+	require.NoError(t, err)
+	require.Len(t, semiStrict, 4)
+	assert.Equal(t, "system", semiStrict[0].message.Role)
+	assert.Equal(t, "setup\n\nrules", semiStrict[0].message.Content)
+	assert.Equal(t, "user", semiStrict[3].message.Role)
+	assert.Equal(t, "late rules\n\nlast", semiStrict[3].message.Content)
+
+	singleUser, err := singleUserSillyTavernPostProcess(input)
+	require.NoError(t, err)
+	require.Len(t, singleUser, 1)
+	assert.Equal(t, "user", singleUser[0].message.Role)
+	assert.Equal(t, "setup\n\nrules\n\nfirst\n\nsecond\n\nreply\n\nlate rules\n\nlast", singleUser[0].message.Content)
 }
 
 // ST_ORACLE_CAPTURE_URL points at a local mock provider that has captured a

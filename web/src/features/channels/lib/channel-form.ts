@@ -353,7 +353,9 @@ export const channelFormSchema = z
     sillytavern_char: z.string().optional(),
     sillytavern_models: z.string().optional(),
     sillytavern_parameter_policy: z.enum(['preset', 'client']).optional(),
-    sillytavern_post_processing: z.enum(['none', 'strict']).optional(),
+    sillytavern_post_processing: z
+      .enum(['none', 'merge', 'semi_strict', 'strict', 'single_user'])
+      .optional(),
     sillytavern_reference_source: z
       .enum(['newapi', 'custom', 'openai'])
       .optional(),
@@ -677,7 +679,12 @@ export function transformChannelToFormDefaults(
   let sillytavernChar = ''
   let sillytavernModels = ''
   let sillytavernParameterPolicy: 'preset' | 'client' = 'preset'
-  let sillytavernPostProcessing: 'none' | 'strict' = 'none'
+  let sillytavernPostProcessing:
+    | 'none'
+    | 'merge'
+    | 'semi_strict'
+    | 'strict'
+    | 'single_user' = 'none'
   let sillytavernReferenceSource: 'newapi' | 'custom' | 'openai' = 'newapi'
   let sillytavernContextMode: 'compatibility' | 'exact' = 'compatibility'
 
@@ -727,9 +734,13 @@ export function transformChannelToFormDefaults(
           parsed.sillytavern_preset.parameter_policy === 'client'
             ? 'client'
             : 'preset'
+        const postProcessing = parsed.sillytavern_preset.post_processing
         sillytavernPostProcessing =
-          parsed.sillytavern_preset.post_processing === 'strict'
-            ? 'strict'
+          postProcessing === 'merge' ||
+          postProcessing === 'semi_strict' ||
+          postProcessing === 'strict' ||
+          postProcessing === 'single_user'
+            ? postProcessing
             : 'none'
         sillytavernReferenceSource =
           parsed.sillytavern_preset.reference_source === 'custom' ||

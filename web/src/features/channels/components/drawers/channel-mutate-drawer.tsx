@@ -3088,14 +3088,35 @@ export function ChannelMutateDrawer({
                       label: t('None: preserve message boundaries'),
                     },
                     {
+                      value: 'merge',
+                      label: t('Merge consecutive same-role messages'),
+                    },
+                    {
+                      value: 'semi_strict',
+                      label: t('Semi-strict: allow one leading system message'),
+                    },
+                    {
                       value: 'strict',
                       label: t('Strict: force alternating roles'),
                     },
+                    {
+                      value: 'single_user',
+                      label: t('Single user message: flatten all text'),
+                    },
                   ]}
                   value={field.value || 'none'}
-                  onValueChange={(value) =>
-                    field.onChange(value === 'strict' ? 'strict' : 'none')
-                  }
+                  onValueChange={(value) => {
+                    if (
+                      value === 'merge' ||
+                      value === 'semi_strict' ||
+                      value === 'strict' ||
+                      value === 'single_user'
+                    ) {
+                      field.onChange(value)
+                    } else {
+                      field.onChange('none')
+                    }
+                  }}
                 >
                   <FormControl>
                     <SelectTrigger className='w-full max-w-full min-w-0'>
@@ -3107,15 +3128,24 @@ export function ChannelMutateDrawer({
                       <SelectItem value='none'>
                         {t('None: preserve message boundaries')}
                       </SelectItem>
+                      <SelectItem value='merge'>
+                        {t('Merge consecutive same-role messages')}
+                      </SelectItem>
+                      <SelectItem value='semi_strict'>
+                        {t('Semi-strict: allow one leading system message')}
+                      </SelectItem>
                       <SelectItem value='strict'>
                         {t('Strict: force alternating roles')}
+                      </SelectItem>
+                      <SelectItem value='single_user'>
+                        {t('Single user message: flatten all text')}
                       </SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
                 <FormDescription>
                   {t(
-                    'Strict follows SillyTavern no-tools mode: it merges adjacent roles and may turn later system messages into user messages.'
+                    'Choose how the compiled preset messages are normalized before the upstream request. Structured content is rejected only by the text-only modes.'
                   )}
                 </FormDescription>
                 <FormMessage />
