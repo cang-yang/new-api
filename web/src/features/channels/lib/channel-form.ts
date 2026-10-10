@@ -735,13 +735,22 @@ export function transformChannelToFormDefaults(
             ? 'client'
             : 'preset'
         const postProcessing = parsed.sillytavern_preset.post_processing
-        sillytavernPostProcessing =
+        if (postProcessing === 'claude') {
+          sillytavernPostProcessing = 'merge'
+        } else if (postProcessing === 'semi') {
+          sillytavernPostProcessing = 'semi_strict'
+        } else if (postProcessing === 'single') {
+          sillytavernPostProcessing = 'single_user'
+        } else if (
           postProcessing === 'merge' ||
           postProcessing === 'semi_strict' ||
           postProcessing === 'strict' ||
           postProcessing === 'single_user'
-            ? postProcessing
-            : 'none'
+        ) {
+          sillytavernPostProcessing = postProcessing
+        } else {
+          sillytavernPostProcessing = 'none'
+        }
         sillytavernReferenceSource =
           parsed.sillytavern_preset.reference_source === 'custom' ||
           parsed.sillytavern_preset.reference_source === 'openai'

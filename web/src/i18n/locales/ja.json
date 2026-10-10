@@ -7359,6 +7359,16 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Merge consecutive same-role messages": "同じ役割の連続メッセージを結合",
+    "Semi-strict: allow one leading system message": "準厳格：先頭のシステムメッセージを保持",
+    "Single user message: flatten all text": "単一のユーザーメッセージに統合",
+    "Choose how the compiled preset messages are normalized before the upstream request. Structured content is rejected only by the text-only modes.": "送信前のメッセージ処理を選択します。テキスト専用モードでは構造化コンテンツを使用できません。",
+    "Native tool-text transport": "ネイティブツールテキスト転送",
+    "Enable native tool-text transport": "ネイティブツールテキスト転送を有効化",
+    "Transport tool name": "転送ツール名",
+    "Transport text argument": "テキスト引数",
+    "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "JSON文字列で本文を返すプロバイダー向けに宣言的な関数ツールを追加します。ブラウザースクリプトは保存のみで、New APIでは実行しません。",
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "ブラウザースクリプトは保存のみです。プリセットエディターでネイティブ互換機能を設定してください。"
   }
 }

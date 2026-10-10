@@ -88,6 +88,12 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	}
 	trace.Name = preset.Name
 	trace.Mode = "compatibility"
+	for _, script := range preset.Extensions.TavernHelper.Scripts {
+		if script.Type == "script" && script.Enabled {
+			trace.Warnings = append(trace.Warnings, "Browser scripts are preserved but not executed; use native declarative features for server-side compatibility")
+			break
+		}
+	}
 	_, regexWarnings := compilePresetResponseRegex(config, request.Model)
 	trace.Warnings = append(trace.Warnings, regexWarnings...)
 	if config.ContextMode == "exact" {
@@ -385,15 +391,18 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 		final = squashed
 	}
-	switch config.PostProcessing {
+	switch normalizeSillyTavernPostProcessing(config.PostProcessing) {
 	case "merge":
-		final = mergeAdjacentSillyTavernRoles(final)
+		err = validateSillyTavernTextMessages(final, "merge")
+		if err == nil {
+			final = mergeAdjacentSillyTavernRoles(final)
+		}
 	case "semi_strict":
 		final, err = semiStrictSillyTavernPostProcess(final)
 	case "strict":
 		final, err = strictSillyTavernPostProcess(final)
 	case "single_user":
-		final, err = singleUserSillyTavernPostProcess(final)
+		final, err = singleUserSillyTavernPostProcess(final, context.User, context.Char)
 	}
 	if err != nil {
 		return nil, trace, err
@@ -416,6 +425,30 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		return nil, trace, fmt.Errorf("sillytavern_preset compiled an empty message list")
 	}
 	applySillyTavernParameters(config, preset, compiled)
+	if config.ToolText != nil && config.ToolText.Enabled {
+		if compiled.ToolChoice != nil {
+			return nil, trace, fmt.Errorf("preset tool_text cannot override an explicit client tool_choice")
+		}
+		for _, tool := range compiled.Tools {
+			if tool.Function.Name == config.ToolText.Name {
+				return nil, trace, fmt.Errorf("preset tool_text tool name conflicts with a client tool")
+			}
+		}
+		compiled.Tools = append(compiled.Tools, dto.ToolCallRequest{
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:        config.ToolText.Name,
+				Description: "Return the assistant's user-visible response text. This transport does not execute an external action.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{config.ToolText.Argument: map[string]any{
+						"type": "string", "description": "The complete user-visible response text.",
+					}},
+					"required": []string{config.ToolText.Argument},
+				},
+			},
+		})
+	}
 	for warning := range macro.warnings {
 		trace.Warnings = append(trace.Warnings, warning)
 	}
@@ -424,6 +457,19 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		return nil, trace, fmt.Errorf("exact SillyTavern mode cannot resolve every preset macro: %s", strings.Join(trace.Warnings, "; "))
 	}
 	return compiled, trace, nil
+}
+
+func normalizeSillyTavernPostProcessing(mode string) string {
+	switch mode {
+	case "claude":
+		return "merge"
+	case "semi":
+		return "semi_strict"
+	case "single":
+		return "single_user"
+	default:
+		return mode
+	}
 }
 
 func validateSillyTavernTextMessages(items []presetMessage, mode string) error {
@@ -505,13 +551,22 @@ func semiStrictSillyTavernPostProcess(items []presetMessage) ([]presetMessage, e
 // singleUserSillyTavernPostProcess flattens all textual messages into one
 // user message. Structured content and tools fail closed instead of being
 // silently stringified and losing semantics.
-func singleUserSillyTavernPostProcess(items []presetMessage) ([]presetMessage, error) {
+func singleUserSillyTavernPostProcess(items []presetMessage, user, char string) ([]presetMessage, error) {
 	if err := validateSillyTavernTextMessages(items, "single_user"); err != nil {
 		return nil, err
 	}
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		if content := item.message.Content.(string); content != "" {
+			name := ""
+			if item.message.Role == "user" {
+				name = user
+			} else if item.message.Role == "assistant" {
+				name = char
+			}
+			if name != "" && !strings.HasPrefix(content, name+": ") {
+				content = name + ": " + content
+			}
 			parts = append(parts, content)
 		}
 	}

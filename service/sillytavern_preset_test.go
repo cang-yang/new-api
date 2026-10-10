@@ -224,11 +224,101 @@ func TestSillyTavernPostProcessingModes(t *testing.T) {
 	assert.Equal(t, "user", semiStrict[3].message.Role)
 	assert.Equal(t, "late rules\n\nlast", semiStrict[3].message.Content)
 
-	singleUser, err := singleUserSillyTavernPostProcess(input)
+	singleUser, err := singleUserSillyTavernPostProcess(input, "", "")
 	require.NoError(t, err)
 	require.Len(t, singleUser, 1)
 	assert.Equal(t, "user", singleUser[0].message.Role)
 	assert.Equal(t, "setup\n\nrules\n\nfirst\n\nsecond\n\nreply\n\nlate rules\n\nlast", singleUser[0].message.Content)
+}
+
+func TestSillyTavernPostProcessingAliases(t *testing.T) {
+	preset := []byte(`{"prompts":[{"identifier":"main","content":"main"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`)
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	for _, mode := range []string{"claude", "semi", "single"} {
+		t.Run(mode, func(t *testing.T) {
+			config := &dto.SillyTavernPresetConfig{Preset: preset, PostProcessing: mode}
+			compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.NotEmpty(t, compiled.Messages)
+		})
+	}
+}
+
+func TestSillyTavernSingleUserPrefixesSpeakersOnlyOnce(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{
+		Preset: []byte(`{"prompts":[{"identifier":"main","content":"policy"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`),
+		User:   "Alice", Char: "Bob", PostProcessing: "single_user",
+	}
+	request := &dto.GeneralOpenAIRequest{
+		Model: "test",
+		Messages: []dto.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "Bob: welcome"},
+		},
+	}
+	compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, compiled.Messages, 1)
+	assert.Equal(t, "user", compiled.Messages[0].Role)
+	assert.Equal(t, "policy\n\nAlice: hello\n\nBob: welcome", compiled.Messages[0].Content)
+	assert.Equal(t, "hello", request.Messages[0].Content)
+}
+
+func TestSillyTavernToolTextAddsOnlyDeclarativeTransportTool(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model:    "test",
+		Messages: []dto.Message{{Role: "user", Content: "hello"}},
+		Tools: []dto.ToolCallRequest{{
+			Type:     "function",
+			Function: dto.FunctionRequest{Name: "lookup"},
+		}},
+	}
+	config := &dto.SillyTavernPresetConfig{
+		ToolText: &dto.SillyTavernToolText{Enabled: true, Name: "newapi_text", Argument: "display_stream"},
+		Preset:   []byte(`{"prompts":[{"identifier":"main","content":"policy"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`),
+	}
+	compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, compiled.Tools, 2)
+	assert.Equal(t, "lookup", compiled.Tools[0].Function.Name)
+	assert.Equal(t, "newapi_text", compiled.Tools[1].Function.Name)
+	assert.NotNil(t, compiled.Tools[1].Function.Parameters)
+	assert.Nil(t, compiled.ToolChoice)
+	assert.Len(t, request.Tools, 1, "compilation must not mutate client tools")
+}
+
+func TestSillyTavernExternalPresetCompatibility(t *testing.T) {
+	path := os.Getenv("ST_COMPAT_PRESET_PATH")
+	if path == "" {
+		t.Skip("ST_COMPAT_PRESET_PATH is required")
+	}
+	preset, err := os.ReadFile(path)
+	require.NoError(t, err)
+	config := &dto.SillyTavernPresetConfig{Preset: preset, User: "User", Char: "Assistant"}
+	request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	before := string(config.Preset)
+	for _, mode := range []string{"none", "merge", "semi_strict", "strict", "single_user"} {
+		t.Run(mode, func(t *testing.T) {
+			config.PostProcessing = mode
+			compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.NotEmpty(t, compiled.Messages)
+			assert.Contains(t, trace.Warnings, "Browser scripts are preserved but not executed; use native declarative features for server-side compatibility")
+			assert.Equal(t, "hello", request.Messages[0].Content)
+			assert.Equal(t, before, string(config.Preset))
+		})
+	}
+}
+
+func TestSillyTavernToolTextDoesNotOverrideExplicitToolChoice(t *testing.T) {
+	choice := "required"
+	request := &dto.GeneralOpenAIRequest{Model: "test", ToolChoice: &choice, Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	config := &dto.SillyTavernPresetConfig{
+		ToolText: &dto.SillyTavernToolText{Enabled: true, Name: "newapi_text", Argument: "display_stream"},
+		Preset:   []byte(`{"prompts":[{"identifier":"main","content":"policy"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`),
+	}
+	_, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.ErrorContains(t, err, "explicit client tool_choice")
 }
 
 // ST_ORACLE_CAPTURE_URL points at a local mock provider that has captured a

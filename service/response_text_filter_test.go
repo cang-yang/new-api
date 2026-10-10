@@ -4,13 +4,137 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestSillyTavernNativeToolTextJSONAndStream(t *testing.T) {
+	var preset dto.SillyTavernPresetConfig
+	require.NoError(t, common.Unmarshal([]byte(`{
+		"tool_text":{"enabled":true,"name":"newapi_text","argument":"display_stream"},
+		"preset":{"prompts":[{"identifier":"main","content":"hi"}],
+		"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}
+	}`), &preset))
+	cases := []struct {
+		name, body string
+		stream     bool
+	}{
+		{"json", `{"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"keep","tool_calls":[{"id":"transport","type":"function","function":{"name":"newapi_text","arguments":"{\"display_stream\":\"正文\\n😀\"}"}},{"id":"client","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":42}}`, false},
+		{"stream", "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"keep\",\"tool_calls\":[{\"index\":0,\"id\":\"transport\",\"function\":{\"name\":\"newapi_text\",\"arguments\":\"{\\\"display_stream\\\":\\\"正文\\\\n\"}},{\"index\":1,\"id\":\"client\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"😀\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":42}}\n\n" +
+			"data: [DONE]\n\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			writer := BeginResponseTextFilterWithPreset(context, nil, &preset, "model")
+			require.NotNil(t, writer, "native transport must work without regex rules")
+			if tc.stream {
+				context.Writer.Header().Set("Content-Type", "text/event-stream")
+			}
+			_, err := context.Writer.WriteString(tc.body)
+			require.NoError(t, err)
+			require.NoError(t, writer.Finish(context, true))
+			output := recorder.Body.String()
+			assert.Contains(t, output, `"content":"正文\n😀"`)
+			assert.Contains(t, output, `"reasoning_content":"keep"`)
+			assert.Contains(t, output, `"total_tokens":42`)
+			assert.Contains(t, output, `"name":"lookup"`)
+			assert.Contains(t, output, `"finish_reason":"tool_calls"`)
+			assert.NotContains(t, output, `"name":"newapi_text"`)
+			if tc.stream {
+				assert.True(t, strings.HasSuffix(output, "data: [DONE]\n\n"))
+			}
+		})
+	}
+}
+
+func TestSillyTavernNativeToolTextIsolationAndValidation(t *testing.T) {
+	tool := &dto.SillyTavernToolText{Enabled: true, Name: "newapi_text", Argument: "display_stream"}
+	body := []byte(`{"choices":[
+		{"index":0,"message":{"content":"prefix","tool_calls":[{"function":{"name":"newapi_text","arguments":"{\"display_stream\":\"first\"}"}},{"function":{"name":"newapi_text","arguments":"{\"display_stream\":\"second\"}"}}]},"finish_reason":"tool_calls"},
+		{"index":1,"message":{"tool_calls":[{"function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}
+	],"usage":{"total_tokens":9007199254740993}}`)
+	restored, err := restorePresetToolText(body, false, tool, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, "prefixfirstsecond", gjson.GetBytes(restored, "choices.0.message.content").String())
+	assert.Equal(t, "stop", gjson.GetBytes(restored, "choices.0.finish_reason").String())
+	assert.Equal(t, "tool_calls", gjson.GetBytes(restored, "choices.1.finish_reason").String())
+	assert.Equal(t, "9007199254740993", gjson.GetBytes(restored, "usage.total_tokens").Raw)
+	for _, arguments := range []string{`{"display_stream":null}`, `{}`, `{"display_stream":42}`, `{"display_stream":"unfinished`} {
+		encoded, err := common.Marshal(arguments)
+		require.NoError(t, err)
+		invalid := []byte(`{"choices":[{"message":{"tool_calls":[{"function":{"name":"newapi_text","arguments":` + string(encoded) + `}}]}}]}`)
+		_, err = restorePresetToolText(invalid, false, tool, time.Time{})
+		require.Error(t, err)
+	}
+	unchanged := []byte(`{"choices":[{"message":{"content":"ordinary","tool_calls":[{"function":{"name":"newapi_text_other","arguments":"{}"}}]}}]}`)
+	result, err := restorePresetToolText(unchanged, false, tool, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, unchanged, result)
+}
+
+func TestSillyTavernNativeToolTextRunsBeforeRegexAndHonorsModels(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{
+		Models:   []string{"chosen"},
+		Preset:   []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`),
+		ToolText: &dto.SillyTavernToolText{Enabled: true, Name: "text", Argument: "display_stream"},
+	}
+	require.Nil(t, BeginResponseTextFilterWithPreset(newFilterTestContext(), nil, preset, "other"))
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	filter := &dto.ResponseTextFilter{Mode: "tag_extract", StartTag: "<正文>", EndTag: "</正文>"}
+	writer := BeginResponseTextFilterWithPreset(context, filter, preset, "chosen")
+	require.NotNil(t, writer)
+	_, err := writer.WriteString(`{"choices":[{"message":{"tool_calls":[{"function":{"name":"text","arguments":"{\"display_stream\":\"hidden<正文>hello</正文>\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, writer.Finish(context, true))
+	assert.Equal(t, "hello", gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+	assert.NotContains(t, recorder.Body.String(), "hidden")
+}
+
+func newFilterTestContext() *gin.Context {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	return context
+}
+
+func TestSillyTavernNativeToolTextFailureDoesNotLeakArguments(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{
+		Preset:   []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`),
+		ToolText: &dto.SillyTavernToolText{Enabled: true, Name: "text", Argument: "display_stream"},
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writer := BeginResponseTextFilterWithPreset(context, nil, preset, "model")
+	require.NotNil(t, writer)
+	_, err := writer.WriteString(`{"choices":[{"message":{"tool_calls":[{"function":{"name":"text","arguments":"{\"display_stream\":\"unfinished"}}]}}]}`)
+	require.NoError(t, err)
+	require.Error(t, writer.Finish(context, true))
+	assert.Empty(t, recorder.Body.String())
+}
+
+func TestSillyTavernNativeToolTextRepeatedStreamNameAndSSEMetadata(t *testing.T) {
+	config := &dto.SillyTavernToolText{Enabled: true, Name: "text", Argument: "body"}
+	body := []byte("event: chunk\nid: 7\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"text\",\"arguments\":\"{\\\"body\\\":\\\"hi\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"prefix\",\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"text\",\"arguments\":\"\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\nretry: 100\n\n" +
+		"data: [DONE]\n\n")
+	output, err := restorePresetToolText(body, true, config, time.Time{})
+	require.NoError(t, err)
+	assert.Contains(t, string(output), "event: chunk\n")
+	assert.Contains(t, string(output), "id: 7\n")
+	assert.Contains(t, string(output), "retry: 100\n")
+	assert.Contains(t, string(output), `"content":"prefixhi"`)
+	assert.Contains(t, string(output), `"finish_reason":"stop"`)
+	assert.NotContains(t, string(output), "tool_calls")
+	assert.True(t, strings.HasSuffix(string(output), "data: [DONE]\n\n"))
+}
 
 func TestResponseTextFilterPreservesProtocolMetadata(t *testing.T) {
 	config := &dto.ResponseTextFilter{Mode: "tag_extract", StartTag: "<主体>", EndTag: "</主体>"}

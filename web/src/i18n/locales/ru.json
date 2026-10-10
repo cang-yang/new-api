@@ -7359,6 +7359,16 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Merge consecutive same-role messages": "Объединять последовательные сообщения одной роли",
+    "Semi-strict: allow one leading system message": "Полустрогий режим: сохранить начальное системное сообщение",
+    "Single user message: flatten all text": "Одно сообщение пользователя: объединить весь текст",
+    "Choose how the compiled preset messages are normalized before the upstream request. Structured content is rejected only by the text-only modes.": "Выберите обработку сообщений перед отправкой. Текстовые режимы не поддерживают структурированный контент.",
+    "Native tool-text transport": "Нативная передача текста через инструмент",
+    "Enable native tool-text transport": "Включить передачу текста через инструмент",
+    "Transport tool name": "Имя инструмента передачи",
+    "Transport text argument": "Аргумент с текстом",
+    "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "Добавляет декларативный инструмент для провайдеров, возвращающих текст в строке JSON. Скрипты браузера сохраняются, но не выполняются New API.",
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Скрипты браузера сохраняются без выполнения. Настройте нативную совместимость в редакторе пресетов."
   }
 }

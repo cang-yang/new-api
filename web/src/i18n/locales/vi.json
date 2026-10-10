@@ -7359,6 +7359,16 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Merge consecutive same-role messages": "Gộp các tin nhắn liên tiếp cùng vai trò",
+    "Semi-strict: allow one leading system message": "Bán nghiêm ngặt: giữ tin nhắn hệ thống đầu tiên",
+    "Single user message: flatten all text": "Một tin nhắn người dùng: gộp toàn bộ văn bản",
+    "Choose how the compiled preset messages are normalized before the upstream request. Structured content is rejected only by the text-only modes.": "Chọn cách xử lý tin nhắn trước khi gửi. Các chế độ chỉ văn bản không hỗ trợ nội dung có cấu trúc.",
+    "Native tool-text transport": "Truyền văn bản qua công cụ gốc",
+    "Enable native tool-text transport": "Bật truyền văn bản qua công cụ gốc",
+    "Transport tool name": "Tên công cụ truyền",
+    "Transport text argument": "Tham số chứa văn bản",
+    "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "Thêm công cụ khai báo cho nhà cung cấp trả văn bản trong chuỗi JSON. Mã trình duyệt được giữ lại nhưng New API không thực thi.",
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Mã trình duyệt chỉ được giữ lại. Hãy cấu hình khả năng tương thích gốc trong trình sửa mẫu."
   }
 }

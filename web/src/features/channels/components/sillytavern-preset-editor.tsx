@@ -86,6 +86,21 @@ export function SillyTavernPresetEditor(props: Props) {
       : ''
   const presetName = typeof preset?.name === 'string' ? preset.name.trim() : ''
   const displayName = presetName || sourceFileName || t('Unnamed preset')
+  const extensions = preset?.extensions as Record<string, unknown> | undefined
+  const helper = extensions?.tavern_helper as
+    | Record<string, unknown>
+    | undefined
+  const hasBrowserScripts =
+    Array.isArray(helper?.scripts) &&
+    helper.scripts.some(
+      (script: unknown) =>
+        script !== null &&
+        typeof script === 'object' &&
+        'type' in script &&
+        script.type === 'script' &&
+        'enabled' in script &&
+        script.enabled === true
+    )
   return (
     <>
       <div className='bg-muted/20 flex flex-wrap items-center gap-3 rounded-xl border p-4'>
@@ -114,6 +129,13 @@ export function SillyTavernPresetEditor(props: Props) {
               </>
             )}
           </div>
+          {hasBrowserScripts && (
+            <p className='text-xs text-amber-600 dark:text-amber-400'>
+              {t(
+                'Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.'
+              )}
+            </p>
+          )}
         </div>
         <Button
           type='button'

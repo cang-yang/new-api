@@ -120,6 +120,50 @@ test('embedded sending stays off by default and independently enables prompt-onl
   expect(saved.enable_embedded_regex).toBeUndefined()
 })
 
+test('native tool transport is opt-in and preserves embedded browser scripts', async () => {
+  const user = userEvent.setup()
+  const scriptedPreset = {
+    ...preset,
+    extensions: {
+      ...preset.extensions,
+      tavern_helper: {
+        scripts: [{ type: 'script', enabled: true, content: 'window.fetch' }],
+      },
+    },
+  }
+  render(<Editor initialValue={JSON.stringify({ preset: scriptedPreset })} />)
+  expect(
+    screen.getByText(
+      'Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.'
+    )
+  ).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  await user.click(screen.getByRole('tab', { name: 'Macro values and time' }))
+  const toggle = screen.getByRole('switch', {
+    name: 'Enable native tool-text transport',
+  })
+  expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await user.click(toggle)
+  expect(screen.getByLabelText('Transport tool name')).toHaveValue(
+    'newapi_text'
+  )
+  expect(screen.getByLabelText('Transport text argument')).toHaveValue(
+    'display_stream'
+  )
+  await user.clear(screen.getByLabelText('Transport tool name'))
+  await user.type(screen.getByLabelText('Transport tool name'), 'custom_text')
+  await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
+  const saved = JSON.parse(
+    screen.getByLabelText('Saved config').textContent || '{}'
+  )
+  expect(saved.tool_text).toEqual({
+    enabled: true,
+    name: 'custom_text',
+    argument: 'display_stream',
+  })
+  expect(saved.preset).toEqual(scriptedPreset)
+})
+
 const preset = {
   prompts: [
     {

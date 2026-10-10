@@ -16,11 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldSet,
+} from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 type Props = {
@@ -31,6 +39,7 @@ type Props = {
 
 export function SillyTavernMacroEditor(props: Props) {
   const { t } = useTranslation()
+  const transportId = useId()
   const [name, setName] = useState('')
   const values = (props.config.macro_values || {}) as Record<string, string>
   const normalizedName = name
@@ -38,6 +47,24 @@ export function SillyTavernMacroEditor(props: Props) {
     .replaceAll(/^\{\{|\}\}$/g, '')
     .trim()
   const nameExists = Object.hasOwn(values, normalizedName)
+  const toolText =
+    props.config.tool_text &&
+    typeof props.config.tool_text === 'object' &&
+    !Array.isArray(props.config.tool_text)
+      ? (props.config.tool_text as Record<string, unknown>)
+      : {}
+  const toolTextEnabled = toolText.enabled === true
+  const updateToolText = (changes: Record<string, unknown>) =>
+    props.onChange({
+      ...props.config,
+      tool_text: {
+        enabled: toolTextEnabled,
+        name: 'newapi_text',
+        argument: 'display_stream',
+        ...toolText,
+        ...changes,
+      },
+    })
 
   return (
     <section
@@ -52,6 +79,59 @@ export function SillyTavernMacroEditor(props: Props) {
           )}
         </p>
       </div>
+      <FieldSet className='rounded-lg border p-3' disabled={props.disabled}>
+        <Field orientation='horizontal'>
+          <div>
+            <FieldLabel htmlFor={transportId}>
+              {t('Enable native tool-text transport')}
+            </FieldLabel>
+            <FieldDescription>
+              {t(
+                'Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.'
+              )}
+            </FieldDescription>
+          </div>
+          <Switch
+            id={transportId}
+            checked={toolTextEnabled}
+            disabled={props.disabled}
+            aria-label={t('Enable native tool-text transport')}
+            onCheckedChange={(checked) => updateToolText({ enabled: checked })}
+          />
+        </Field>
+        {toolTextEnabled && (
+          <FieldGroup className='grid gap-3 sm:grid-cols-2'>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${transportId}-name`}>
+                {t('Transport tool name')}
+              </FieldLabel>
+              <Input
+                id={`${transportId}-name`}
+                value={typeof toolText.name === 'string' ? toolText.name : ''}
+                disabled={props.disabled}
+                onChange={(event) =>
+                  updateToolText({ name: event.target.value })
+                }
+              />
+            </Field>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${transportId}-argument`}>
+                {t('Transport text argument')}
+              </FieldLabel>
+              <Input
+                id={`${transportId}-argument`}
+                value={
+                  typeof toolText.argument === 'string' ? toolText.argument : ''
+                }
+                disabled={props.disabled}
+                onChange={(event) =>
+                  updateToolText({ argument: event.target.value })
+                }
+              />
+            </Field>
+          </FieldGroup>
+        )}
+      </FieldSet>
       <label className='block space-y-2'>
         <span className='text-xs font-medium'>{t('Preset time zone')}</span>
         <Input

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type ResponseTextFilterWriter struct {
 	pattern       *regexp.Regexp
 	regexes       []presetResponseRegex
 	hasFilter     bool
+	toolText      *dto.SillyTavernToolText
 	strictFailure bool
 	status        int
 	buffer        bytes.Buffer
@@ -72,11 +74,18 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 		logger.LogWarn(c, "Preset response regex compatibility validation failed; the entire rule chain follows the failure policy")
 	}
 	hasFilter := config != nil && config.Mode != "rules"
-	if !hasFilter && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
+	var toolText *dto.SillyTavernToolText
+	if preset != nil && preset.ToolText != nil && preset.ToolText.Enabled && (len(preset.Models) == 0 || slices.Contains(preset.Models, model)) {
+		toolText = preset.ToolText
+		if _, err := preset.ParseAndValidate(); err != nil {
+			setupErr = err
+		}
+	}
+	if !hasFilter && toolText == nil && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
 		return nil
 	}
-	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, status: c.Writer.Status()}
-	w.strictFailure = textRegexRequiresStrictFailure(config, preset, model, false)
+	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, toolText: toolText, status: c.Writer.Status()}
+	w.strictFailure = toolText != nil || textRegexRequiresStrictFailure(config, preset, model, false)
 	if len(warnings) > 0 {
 		w.transformErr = fmt.Errorf("preset regex compatibility failure")
 	}
@@ -169,12 +178,19 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		w.deadline = time.Now().Add(2 * time.Second)
 		var filtered []byte
 		var err error
+		stream := strings.Contains(w.Header().Get("Content-Type"), "text/event-stream")
+		prepared := body
+		if w.transformErr == nil {
+			prepared, err = restorePresetToolText(body, stream, w.toolText, w.deadline)
+		}
 		if w.transformErr != nil {
 			err = w.transformErr
-		} else if strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
-			filtered, err = w.filterSSE(body)
-		} else {
-			filtered, err = w.filterJSON(body)
+		} else if err == nil {
+			if stream {
+				filtered, err = w.filterSSE(prepared)
+			} else {
+				filtered, err = w.filterJSON(prepared)
+			}
 		}
 		if w.transformErr != nil {
 			err = w.transformErr

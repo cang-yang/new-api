@@ -7380,6 +7380,16 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Merge consecutive same-role messages": "合併連續的同角色訊息",
+    "Semi-strict: allow one leading system message": "半嚴格：保留首條系統訊息",
+    "Single user message: flatten all text": "單一使用者訊息：合併全部文字",
+    "Choose how the compiled preset messages are normalized before the upstream request. Structured content is rejected only by the text-only modes.": "選擇發送前的預設訊息處理方式；純文字模式不接受結構化內容。",
+    "Native tool-text transport": "原生工具文字傳輸",
+    "Enable native tool-text transport": "啟用原生工具文字傳輸",
+    "Transport tool name": "傳輸工具名稱",
+    "Transport text argument": "傳輸文字參數",
+    "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "為將正文放在 JSON 字串中的上游新增宣告式函式工具。瀏覽器腳本僅保留，New API 不會執行它們。",
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "瀏覽器腳本僅保留，不會執行。可在預設編輯器設定原生相容功能。"
   }
 }

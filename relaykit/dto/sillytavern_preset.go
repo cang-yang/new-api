@@ -31,6 +31,15 @@ type SillyTavernPresetConfig struct {
 	RegexOverrides      map[string]bool          `json:"regex_overrides,omitempty"`
 	MacroValues         map[string]string        `json:"macro_values,omitempty"`
 	TimeZone            string                   `json:"time_zone,omitempty"`
+	ToolText            *SillyTavernToolText     `json:"tool_text,omitempty"`
+}
+
+// SillyTavernToolText is a declarative transport, not an executable preset
+// script. Only the exact configured tool and JSON string argument are restored.
+type SillyTavernToolText struct {
+	Enabled  bool   `json:"enabled"`
+	Name     string `json:"name"`
+	Argument string `json:"argument"`
 }
 
 // SillyTavernPresetPatch is an explicit literal edit to a preset prompt,
@@ -89,6 +98,12 @@ type SillyTavernPreset struct {
 	WorldInfoFormat      string                   `json:"wi_format,omitempty"`
 	Extensions           struct {
 		RegexScripts []SillyTavernRegexScript `json:"regex_scripts,omitempty"`
+		TavernHelper struct {
+			Scripts []struct {
+				Type    string `json:"type"`
+				Enabled bool   `json:"enabled"`
+			} `json:"scripts"`
+		} `json:"tavern_helper"`
 	} `json:"extensions,omitempty"`
 }
 
@@ -115,6 +130,18 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 	if c == nil {
 		return nil, nil
 	}
+	if c.ToolText != nil && c.ToolText.Enabled {
+		for _, value := range []string{c.ToolText.Name, c.ToolText.Argument} {
+			if len(value) == 0 || len(value) > 64 {
+				return nil, fmt.Errorf("preset tool_text identifiers require 1 to 64 ASCII letters, digits, underscores, or hyphens")
+			}
+			for _, ch := range value {
+				if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+					return nil, fmt.Errorf("preset tool_text identifiers require 1 to 64 ASCII letters, digits, underscores, or hyphens")
+				}
+			}
+		}
+	}
 	if c.RegexFailurePolicy != "" && c.RegexFailurePolicy != "passthrough" && c.RegexFailurePolicy != "error" {
 		return nil, fmt.Errorf("preset regex_failure_policy must be passthrough or error")
 	}
@@ -125,9 +152,9 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 		return nil, fmt.Errorf("sillytavern_preset parameter_policy must be preset or client")
 	}
 	switch c.PostProcessing {
-	case "", "none", "merge", "semi_strict", "strict", "single_user":
+	case "", "none", "merge", "claude", "semi", "semi_strict", "strict", "single", "single_user":
 	default:
-		return nil, fmt.Errorf("sillytavern_preset post_processing must be none, merge, semi_strict, strict, or single_user")
+		return nil, fmt.Errorf("sillytavern_preset post_processing must be none, merge/claude, semi/semi_strict, strict, or single/single_user")
 	}
 	if c.ReferenceSource != "" && c.ReferenceSource != "newapi" && c.ReferenceSource != "custom" && c.ReferenceSource != "openai" {
 		return nil, fmt.Errorf("sillytavern_preset reference_source must be newapi, custom, or openai")
