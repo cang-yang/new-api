@@ -777,15 +777,15 @@ func (m *presetMacroContext) expand(input string, depth int) string {
 		}
 		body := input[:end]
 		input = input[end+2:]
-		name, args, hasSeparator := strings.Cut(body, "::")
-		if !hasSeparator {
-			trimmedBody := strings.TrimSpace(body)
-			if fields := strings.Fields(trimmedBody); len(fields) > 1 && !strings.Contains(fields[0], ":") {
-				name, args = fields[0], strings.TrimSpace(strings.TrimPrefix(trimmedBody, fields[0]))
-			} else if colon := strings.IndexByte(trimmedBody, ':'); colon > 0 {
-				name, args = trimmedBody[:colon], trimmedBody[colon+1:]
-			} else {
-				name = trimmedBody
+		name, args := strings.TrimLeft(body, " \t\r\n"), ""
+		// Parse only the header: an argument's nested macro may itself contain
+		// "::", which must not be mistaken for the outer macro separator.
+		if separator := strings.IndexAny(name, ": \t\r\n"); separator >= 0 {
+			name, args = name[:separator], strings.TrimLeft(name[separator:], " \t\r\n")
+			if rest, ok := strings.CutPrefix(args, "::"); ok {
+				args = rest
+			} else if rest, ok := strings.CutPrefix(args, ":"); ok {
+				args = rest
 			}
 		}
 		if value, ok := m.manual[strings.TrimSpace(name)]; ok && args == "" {
