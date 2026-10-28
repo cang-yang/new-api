@@ -21,6 +21,124 @@ import { describe, expect, test } from 'vitest'
 import { parseBodyAuditResponse } from '../body-audit-response'
 
 describe('body audit readable response parsing', () => {
+  const eventStream = (...events: unknown[]) =>
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
+
+  test.each([
+    {
+      name: 'does not duplicate Responses done snapshots',
+      body: eventStream(
+        { type: 'response.output_text.delta', delta: 'Hello', output_index: 0, content_index: 0 },
+        { type: 'response.output_text.done', text: 'Hello', output_index: 0, content_index: 0 }
+      ),
+      expected: 'Hello',
+    },
+    {
+      name: 'reads a terminal-only Responses snapshot',
+      body: eventStream({
+        type: 'response.completed',
+        response: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Hello' }] }] },
+      }),
+      expected: 'Hello',
+    },
+    {
+      name: 'parses multiline SSE data',
+      body: 'data: {"choices":\ndata: [{"delta":{"content":"Hello"}}]}\n\n',
+      expected: 'Hello',
+    },
+    {
+      name: 'parses CR-only SSE framing',
+      body: 'data: {"choices":[{"delta":{"content":"Hello"}}]}\r\r',
+      expected: 'Hello',
+    },
+    {
+      name: 'keeps tool argument deltas out of prose',
+      body: eventStream(
+        { type: 'response.function_call_arguments.delta', delta: '{"city":"Paris"}', output_index: 1 },
+        { type: 'response.output_text.delta', delta: 'Hello', output_index: 0 }
+      ),
+      expected: 'Hello',
+    },
+  ])('$name', ({ body, expected }) => {
+    expect(parseBodyAuditResponse({ body, encoding: 'utf-8', contentType: 'text/event-stream' }).text).toBe(expected)
+  })
+
+  test('separates Gemini thoughts from answer parts', () => {
+    const result = parseBodyAuditResponse({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ thought: true, text: 'analysis' }, { text: 'answer' }] } }] }),
+      encoding: 'utf-8',
+      contentType: 'application/json',
+    })
+    expect(result.text).toBe('answer')
+    expect(result.reasoning).toBe('analysis')
+  })
+
+  test('reads Anthropic thinking-only content', () => {
+    const result = parseBodyAuditResponse({
+      body: JSON.stringify({ content: [{ type: 'thinking', thinking: 'analysis' }] }),
+      encoding: 'utf-8',
+      contentType: 'application/json',
+    })
+    expect(result.text).toBe('analysis')
+    expect(result.reasoningOnly).toBe(true)
+  })
+
+  test('preserves explicit plain text containing data lines and literal escapes', () => {
+    const body = 'Example:\ndata: not SSE\nC:\\temp\\notes'
+    expect(parseBodyAuditResponse({ body, encoding: 'utf-8', contentType: 'text/plain' }).text).toBe(body)
+  })
+
+  test('assembles tool arguments by index without hiding them behind reasoning', () => {
+    const result = parseBodyAuditResponse({
+      body: eventStream(
+        { choices: [{ index: 0, delta: { reasoning_content: 'analysis', tool_calls: [{ index: 0, id: 'a', function: { name: 'submit_image_plan', arguments: '{"images":' } }] } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: 'b', function: { name: 'other', arguments: '{"x":1}' } }] } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '[]}' } }] }, finish_reason: 'tool_calls' }] }
+      ),
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+    expect(result.kind).toBe('tools')
+    expect(result.text).toBe('')
+    expect(result.reasoning).toBe('analysis')
+    expect(result.toolCalls).toEqual([
+      expect.objectContaining({ id: 'a', name: 'submit_image_plan', arguments: '{"images":[]}', valid: true }),
+      expect.objectContaining({ id: 'b', name: 'other', arguments: '{"x":1}', valid: true }),
+    ])
+  })
+
+  test('preserves malformed upstream arguments and reports invalid JSON', () => {
+    const args = '{"images":[}'
+    const result = parseBodyAuditResponse({
+      body: JSON.stringify({ choices: [{ message: { tool_calls: [{ id: 'a', function: { name: 'submit_image_plan', arguments: args } }] } }] }),
+      encoding: 'utf-8',
+    })
+    expect(result.toolCalls?.[0]).toMatchObject({ arguments: args, valid: false })
+  })
+
+  test('reports output length limits and malformed stream events while keeping valid text', () => {
+    const result = parseBodyAuditResponse({
+      body: eventStream({ choices: [{ delta: { content: 'partial' }, finish_reason: 'length' }] }) + 'data: {broken}\n\n',
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+    expect(result.text).toBe('partial')
+    expect(result.warnings).toEqual(expect.arrayContaining(['length', 'malformed-event']))
+  })
+
+  test('keeps independent choices separate instead of interleaving their tokens', () => {
+    const result = parseBodyAuditResponse({
+      body: eventStream(
+        { choices: [{ index: 1, delta: { content: 'B' } }, { index: 0, delta: { content: 'A' } }] },
+        { choices: [{ index: 0, delta: { content: '1' } }, { index: 1, delta: { content: '2' } }] }
+      ),
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+    expect(result.text).toBe('A1\n\nB2')
+    expect(result.outputs?.map((output) => output.text)).toEqual(['A1', 'B2'])
+  })
+
   const textCases: Array<{
     name: string
     body: string

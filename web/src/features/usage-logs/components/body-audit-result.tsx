@@ -16,6 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useTranslation } from 'react-i18next'
+
+import { CopyButton } from '@/components/copy-button'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import type { ParsedBodyAuditResponse } from '../lib/body-audit-response'
 
 interface BodyAuditResultContentProps {
@@ -25,6 +29,58 @@ interface BodyAuditResultContentProps {
 }
 
 export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
+  const { t } = useTranslation()
+  const tools = props.result.toolCalls ?? []
+  const hasDetails = tools.length > 0 || (!!props.result.reasoning && !props.result.reasoningOnly) || (props.result.warnings?.length ?? 0) > 0 || (props.result.outputs?.length ?? 0) > 1
+  const warningLabels = {
+    length: t('Generation stopped at the output limit'),
+    'upstream-error': t('Upstream reported a response error'),
+    'malformed-event': t('Some stream events could not be parsed'),
+  }
+  if (hasDetails) {
+    return (
+      <div className='flex min-w-0 flex-col gap-4 [overflow-wrap:anywhere]'>
+        {props.result.warnings?.map(warning => (
+          <Alert key={warning}><AlertDescription>
+            {warningLabels[warning]}
+          </AlertDescription></Alert>
+        ))}
+        {(props.result.outputs?.length ?? 0) > 1 ? props.result.outputs?.map(output => (
+          <section key={output.index} className='min-w-0'>
+            <h4 className='mb-2 text-xs font-medium'>{t('Response choice')} {output.index + 1}</h4>
+            <div className='text-sm leading-7 whitespace-pre-wrap'>{output.text}</div>
+          </section>
+        )) : props.result.text && !props.result.reasoningOnly && (
+          <div className='text-sm leading-7 whitespace-pre-wrap'>{props.result.text}</div>
+        )}
+        {tools.map(tool => {
+          let argumentsText = tool.arguments
+          if (tool.valid) argumentsText = JSON.stringify(JSON.parse(tool.arguments), null, 2)
+          return (
+            <section key={tool.key} className='min-w-0 border-t pt-3'>
+              <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
+                <h4 className='min-w-0 text-sm font-medium'>{tool.name || t('Tool call')}</h4>
+                <CopyButton value={tool.arguments} size='sm' tooltip={t('Copy tool arguments')} />
+              </div>
+              {!tool.valid && <Alert><AlertDescription>{t('Tool arguments are not valid JSON')}</AlertDescription></Alert>}
+              <pre className='mt-2 font-mono text-xs leading-6 whitespace-pre-wrap'>{argumentsText}</pre>
+            </section>
+          )
+        })}
+        {props.result.reasoning && (
+          <details open={props.result.reasoningOnly}>
+            <summary className='cursor-pointer text-xs font-medium'>{t('Reasoning')}</summary>
+            <div className='mt-2 text-sm leading-7 whitespace-pre-wrap'>{props.result.reasoning}</div>
+          </details>
+        )}
+        {props.result.kind === 'structured' && (
+          <pre className='font-mono text-xs whitespace-pre-wrap'>
+            {typeof props.result.structured === 'string' ? props.result.structured : JSON.stringify(props.result.structured, null, 2)}
+          </pre>
+        )}
+      </div>
+    )
+  }
   if (props.result.kind === 'text') {
     return (
       <div className='text-sm leading-7 break-words whitespace-pre-wrap'>

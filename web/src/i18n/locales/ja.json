@@ -1,5 +1,18 @@
 {
   "translation": {
+    "Copy original": "原文をコピー",
+    "Formatted JSON": "整形表示",
+    "Readable content": "読みやすい表示",
+    "Original payload": "元のデータ",
+    "Generation stopped at the output limit": "出力上限に達したため生成が停止しました",
+    "Upstream reported a response error": "上流から応答エラーが返されました",
+    "Some stream events could not be parsed": "一部のストリームイベントを解析できませんでした",
+    "Response choice": "応答候補",
+    "Tool call": "ツール呼び出し",
+    "Copy tool arguments": "ツール引数をコピー",
+    "Tool arguments are not valid JSON": "ツール引数は有効な JSON ではありません",
+    "Partial capture: this result may be incomplete": "記録が切り詰められています。結果は不完全な可能性があります",
+    "Preview shortened for performance. Copy original retains the entire captured body.": "性能維持のためプレビューを短縮しています。原文のコピーには記録済みの全内容が含まれます。",
     "Built-in macros run automatically": "組み込みマクロは自動で動作します",
     "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "有効なプリセット項目では、送信前に roll、random、テキスト、時刻、履歴、リクエスト内変数のマクロが自動展開されます。別のスイッチは不要です。",
     "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "ブラウザーの状態や永続的なグローバル書き込みを必要とするマクロは再現しません。不足するコンテキストは実行トレースに表示されます。取得できないデータは下のテキスト値で補えます。",

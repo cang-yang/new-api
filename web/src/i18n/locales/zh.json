@@ -1,5 +1,18 @@
 {
   "translation": {
+    "Copy original": "复制原文",
+    "Formatted JSON": "格式化视图",
+    "Readable content": "可读内容",
+    "Original payload": "原始数据",
+    "Generation stopped at the output limit": "生成因达到输出上限而停止",
+    "Upstream reported a response error": "上游返回了响应错误",
+    "Some stream events could not be parsed": "部分流式事件无法解析",
+    "Response choice": "候选回复",
+    "Tool call": "工具调用",
+    "Copy tool arguments": "复制工具参数",
+    "Tool arguments are not valid JSON": "工具参数不是有效的 JSON",
+    "Partial capture: this result may be incomplete": "采集已截断：此结果可能不完整",
+    "Preview shortened for performance. Copy original retains the entire captured body.": "为保证性能，已缩短预览。复制原文仍会保留全部已采集内容。",
     "Built-in macros run automatically": "内置宏自动生效",
     "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "已启用的预设条目会在发送前自动展开 roll、random、文本、时间、历史消息及请求内变量宏，不需要额外打开开关。",
     "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "不会模拟依赖浏览器状态或持久化全局写入的宏。缺少的上下文会在执行过程里提示；可通过下方文本值补充无法获取的数据。",

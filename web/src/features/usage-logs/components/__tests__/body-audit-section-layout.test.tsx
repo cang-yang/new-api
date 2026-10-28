@@ -1,3 +1,21 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -159,6 +177,58 @@ describe('body audit attempt actions', () => {
     expect(
       screen.getByText('New API 实际返回给客户端的原始正文')
     ).toBeInTheDocument()
+  })
+
+  test('reads decoded request messages without unescaping literal backslashes', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      request_body: '{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}',
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
+    const content = screen.getByText(/first second "quoted"/)
+    expect(content.textContent).toContain('first\nsecond "quoted" C:\\temp')
+    await user.click(screen.getByRole('button', { name: '复制原文' }))
+    expect(await navigator.clipboard.readText()).toBe('{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}')
+  })
+
+  test('shows a retryable error instead of claiming the audit is missing', async () => {
+    getAudit.mockRejectedValue(new Error('network unavailable'))
+    renderAudit()
+    expect(await screen.findByRole('button', { name: '重试' })).toBeInTheDocument()
+    expect(screen.queryByText('此请求未存储正文审计')).not.toBeInTheDocument()
+  })
+
+  test('shows tool results and invalid arguments instead of only reasoning', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: JSON.stringify({
+        choices: [{ message: {
+          reasoning_content: 'analysis',
+          tool_calls: [{ id: 'call-1', function: { name: 'submit_image_plan', arguments: '{"images":[}' } }],
+        } }],
+      }),
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    expect(screen.getByText('submit_image_plan')).toBeInTheDocument()
+    expect(screen.getByText('工具参数不是有效的 JSON')).toBeInTheDocument()
+    expect(screen.getByText('{"images":[}')).toBeInTheDocument()
+  })
+
+  test('warns in final result when a capture is truncated even if client writes succeeded', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: '{"choices":[{"message":{"content":"partial"}}]}',
+      client_response_body_truncated: true,
+      client_response_complete: true,
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    expect(screen.getByText('采集已截断：此结果可能不完整')).toBeInTheDocument()
   })
 
   test('distinguishes an interrupted client write from a complete upstream capture', async () => {

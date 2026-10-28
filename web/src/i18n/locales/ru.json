@@ -1,5 +1,18 @@
 {
   "translation": {
+    "Copy original": "Копировать оригинал",
+    "Formatted JSON": "Форматированный вид",
+    "Readable content": "Читаемое содержимое",
+    "Original payload": "Исходные данные",
+    "Generation stopped at the output limit": "Генерация остановлена из-за лимита вывода",
+    "Upstream reported a response error": "Провайдер вернул ошибку ответа",
+    "Some stream events could not be parsed": "Некоторые события потока не удалось разобрать",
+    "Response choice": "Вариант ответа",
+    "Tool call": "Вызов инструмента",
+    "Copy tool arguments": "Копировать аргументы",
+    "Tool arguments are not valid JSON": "Аргументы инструмента не являются корректным JSON",
+    "Partial capture: this result may be incomplete": "Запись обрезана: результат может быть неполным",
+    "Preview shortened for performance. Copy original retains the entire captured body.": "Предпросмотр сокращён для быстродействия. Копирование оригинала сохраняет всё записанное содержимое.",
     "Built-in macros run automatically": "Встроенные макросы выполняются автоматически",
     "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "Включённые элементы пресета автоматически раскрывают макросы roll, random, текста, времени, истории и переменных запроса перед отправкой. Отдельный переключатель не нужен.",
     "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "Макросы, требующие состояния браузера или постоянной записи глобальных переменных, не эмулируются. Недостающий контекст отмечается в трассировке; текстовые значения ниже позволяют задать недоступные данные.",

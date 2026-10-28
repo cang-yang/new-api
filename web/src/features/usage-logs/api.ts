@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api, type ApiRequestConfig } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { buildQueryParams } from './lib/query-params'
 import { parseTaskArtifactsResponse } from './lib/task-artifacts'
@@ -101,9 +102,9 @@ export async function getBodyAudit(
       validateStatus: (status) => status === 200 || status === 404,
     }
   )
-  if (res.status === 404 || !res.data?.success || !res.data?.data) {
-    return null
-  }
+  if (res.status === 404) return null
+  requireServerSuccess(res.data)
+  if (!res.data?.data) throw new Error('Invalid body audit response')
   return res.data.data as BodyAudit
 }
 

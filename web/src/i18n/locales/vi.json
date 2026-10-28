@@ -1,5 +1,18 @@
 {
   "translation": {
+    "Copy original": "Sao chép bản gốc",
+    "Formatted JSON": "Chế độ xem định dạng",
+    "Readable content": "Nội dung dễ đọc",
+    "Original payload": "Dữ liệu gốc",
+    "Generation stopped at the output limit": "Đã dừng tạo do đạt giới hạn đầu ra",
+    "Upstream reported a response error": "Nhà cung cấp trả về lỗi phản hồi",
+    "Some stream events could not be parsed": "Không thể phân tích một số sự kiện luồng",
+    "Response choice": "Phương án phản hồi",
+    "Tool call": "Lệnh gọi công cụ",
+    "Copy tool arguments": "Sao chép tham số công cụ",
+    "Tool arguments are not valid JSON": "Tham số công cụ không phải JSON hợp lệ",
+    "Partial capture: this result may be incomplete": "Bản ghi bị cắt: kết quả có thể không đầy đủ",
+    "Preview shortened for performance. Copy original retains the entire captured body.": "Bản xem trước được rút ngắn để đảm bảo hiệu năng. Sao chép bản gốc vẫn giữ toàn bộ nội dung đã ghi.",
     "Built-in macros run automatically": "Macro tích hợp tự động hoạt động",
     "Enabled preset entries automatically expand roll, random, text, time, history and request-local variable macros before sending. No separate switch is needed.": "Các mục preset được bật tự động mở rộng macro roll, random, văn bản, thời gian, lịch sử và biến trong yêu cầu trước khi gửi. Không cần công tắc riêng.",
     "Macros that need browser state or persistent global writes are not emulated. Missing context is reported in the execution trace; literal values below can supply unavailable data.": "Không mô phỏng macro cần trạng thái trình duyệt hoặc ghi toàn cục lâu dài. Ngữ cảnh thiếu được báo trong dấu vết thực thi; giá trị văn bản bên dưới có thể bổ sung dữ liệu không có sẵn.",

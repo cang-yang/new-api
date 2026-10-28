@@ -18,7 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import {
-  AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
   Check,
@@ -35,6 +34,8 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
+import { ErrorState } from '@/components/error-state'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -53,103 +54,13 @@ import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import { diffJsonText } from '../../lib/json-diff'
 import type { AuditAttempt, BodyAudit } from '../../types'
 import { BodyAuditResultContent } from '../body-audit-result'
+import { PayloadPanel } from '../body-audit-payload'
 import { AuditReplayDialog } from './audit-replay-dialog'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-function formatBody(body: string, encoding: 'utf-8' | 'base64'): string {
-  if (!body || encoding === 'base64') return body
-  const trimmed = body.trim()
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return body
-  try {
-    return JSON.stringify(JSON.parse(body), null, 2)
-  } catch {
-    return body
-  }
-}
-
-function PayloadPanel(props: {
-  title: string
-  body: string
-  encoding: 'utf-8' | 'base64'
-  size: number
-  truncated: boolean
-  incomplete?: boolean
-  contentType?: string
-  icon: React.ReactNode
-}) {
-  const { t } = useTranslation()
-  const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
-  const formattedBody = useMemo(
-    () => formatBody(props.body, props.encoding),
-    [props.body, props.encoding]
-  )
-  const copied = copiedText === formattedBody
-  let warning: string | null = null
-  if (props.truncated) {
-    warning = t('The body exceeded the audit size limit and was truncated')
-  } else if (props.incomplete) {
-    warning = t(
-      'Client response write was interrupted; only the bytes written before the failure were captured, possibly ending inside a character.'
-    )
-  } else if (props.encoding === 'base64') {
-    warning = t('Binary body is displayed as Base64')
-  }
-
-  return (
-    <div className='border-border bg-background overflow-hidden rounded-lg border shadow-sm'>
-      <div className='bg-muted/35 flex min-h-10 items-center justify-between gap-3 border-b px-3 py-2'>
-        <div className='flex min-w-0 items-center gap-2'>
-          <span className='text-muted-foreground'>{props.icon}</span>
-          <span className='truncate text-xs font-medium'>{props.title}</span>
-          <StatusBadge
-            label={formatBytes(props.size)}
-            variant='neutral'
-            size='sm'
-            copyable={false}
-          />
-          {props.contentType && (
-            <span className='text-muted-foreground hidden truncate font-mono text-[10px] sm:inline'>
-              {props.contentType}
-            </span>
-          )}
-        </div>
-        <Button
-          variant='ghost'
-          size='sm'
-          className='h-7 shrink-0 gap-1.5 px-2'
-          onClick={() => copyToClipboard(formattedBody)}
-          aria-label={t('Copy to clipboard')}
-        >
-          {copied ? (
-            <Check className='size-3.5 text-emerald-600 dark:text-emerald-400' />
-          ) : (
-            <Copy className='size-3.5' />
-          )}
-          <span className='text-xs'>{copied ? t('Copied') : t('Copy')}</span>
-        </Button>
-      </div>
-      {warning && (
-        <div className='flex items-center gap-2 border-b border-amber-400/30 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:bg-amber-950/20 dark:text-amber-300'>
-          <AlertTriangle className='size-3.5 shrink-0' aria-hidden='true' />
-          {warning}
-        </div>
-      )}
-      <pre
-        className={cn(
-          'scrollbar-thin min-h-44 max-h-[min(44dvh,440px)] overflow-auto p-4',
-          'font-mono text-[12px] leading-[1.65] text-foreground selection:bg-blue-500/25',
-          'whitespace-pre-wrap break-words'
-        )}
-      >
-        {formattedBody || t('Empty body')}
-      </pre>
-    </div>
-  )
 }
 
 function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
@@ -176,6 +87,7 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
     [hasClientResponse, props.audit, props.requestPath]
   )
   const copyText = useMemo(() => {
+    if (result.toolCalls?.length) return JSON.stringify(result.toolCalls, null, 2)
     if (result.kind === 'text') return result.text
     if (result.media.length > 0) {
       return result.media.map((item) => item.source).join('\n')
@@ -251,6 +163,13 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
               </Button>
             </div>
             <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4'>
+              {(hasClientResponse
+                ? props.audit.client_response_body_truncated
+                : props.audit.response_body_truncated) && (
+                <Alert className='mb-3'>
+                  <AlertDescription>{t('Partial capture: this result may be incomplete')}</AlertDescription>
+                </Alert>
+              )}
               <BodyAuditResultContent
                 result={result}
                 emptyLabel={t('No readable text was extracted')}
@@ -709,9 +628,10 @@ export function BodyAuditSection(props: {
         </div>
       )}
       {!query.isLoading && query.data && (
-        <AuditContent audit={query.data} requestPath={props.requestPath} />
+        <AuditContent key={props.requestId} audit={query.data} requestPath={props.requestPath} />
       )}
-      {!query.isLoading && !query.data && (
+      {query.isError && <ErrorState onRetry={() => void query.refetch()} className='min-h-32' />}
+      {!query.isLoading && !query.isError && !query.data && (
         <div className='bg-muted/30 text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-xs'>
           {t('No body audit was stored for this request')}
         </div>

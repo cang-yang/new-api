@@ -16,6 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import {
+  readAuditContent,
+  readAuditStream,
+  type AuditContent,
+  type AuditOutput,
+  type AuditToolCall,
+  type AuditWarning,
+} from './body-audit-content'
 
 export interface BodyAuditMediaItem {
   kind: 'image' | 'audio' | 'video'
@@ -24,12 +32,16 @@ export interface BodyAuditMediaItem {
 }
 
 export interface ParsedBodyAuditResponse {
-  kind: 'text' | 'image' | 'audio' | 'video' | 'structured' | 'empty'
+  kind: 'text' | 'tools' | 'image' | 'audio' | 'video' | 'structured' | 'empty'
   text: string
   media: BodyAuditMediaItem[]
   structured: unknown | null
   isStream: boolean
   reasoningOnly?: boolean
+  reasoning?: string
+  toolCalls?: AuditToolCall[]
+  outputs?: AuditOutput[]
+  warnings?: AuditWarning[]
 }
 
 interface ParseBodyAuditResponseInput {
@@ -37,130 +49,6 @@ interface ParseBodyAuditResponseInput {
   encoding: 'utf-8' | 'base64'
   contentType?: string
   requestPath?: string
-}
-
-function stringContent(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (!Array.isArray(value)) return ''
-
-  return value
-    .map((item) => {
-      if (typeof item === 'string') return item
-      if (!item || typeof item !== 'object') return ''
-      const part = item as Record<string, unknown>
-      return (
-        stringContent(part.text) ||
-        stringContent(part.content) ||
-        stringContent(part.output_text)
-      )
-    })
-    .join('')
-}
-
-function extractResponseText(value: unknown, depth = 0): string {
-  if (!value || typeof value !== 'object' || depth > 12) return ''
-  const data = value as Record<string, unknown>
-
-  if (typeof data.delta === 'string') return data.delta
-  if (typeof data.text === 'string') return data.text
-  if (typeof data.completion === 'string') return data.completion
-  if (typeof data.output_text === 'string') return data.output_text
-
-  if (data.delta && typeof data.delta === 'object') {
-    const deltaText = extractResponseText(data.delta, depth + 1)
-    if (deltaText) return deltaText
-  }
-
-  if (Array.isArray(data.choices)) {
-    return data.choices
-      .map((choice) => {
-        if (!choice || typeof choice !== 'object') return ''
-        const item = choice as Record<string, unknown>
-        if (item.delta && typeof item.delta === 'object') {
-          return extractResponseText(item.delta, depth + 1)
-        }
-        if (item.message && typeof item.message === 'object') {
-          return extractResponseText(item.message, depth + 1)
-        }
-        return stringContent(item.text)
-      })
-      .join('')
-  }
-
-  if (Array.isArray(data.output)) {
-    return data.output
-      .map((item) => extractResponseText(item, depth + 1))
-      .join('')
-  }
-
-  if (Array.isArray(data.candidates)) {
-    return data.candidates
-      .map((candidate) => extractResponseText(candidate, depth + 1))
-      .join('')
-  }
-
-  const contentText = stringContent(data.content)
-  if (contentText) return contentText
-
-  const partsText = stringContent(data.parts)
-  if (partsText) return partsText
-
-  for (const key of ['message', 'content', 'data', 'response']) {
-    const nested = data[key]
-    if (nested && typeof nested === 'object') {
-      const nestedText = extractResponseText(nested, depth + 1)
-      if (nestedText) return nestedText
-    }
-  }
-  return ''
-}
-
-function extractReasoningText(value: unknown, depth = 0): string {
-  if (!value || typeof value !== 'object' || depth > 12) return ''
-  const data = value as Record<string, unknown>
-
-  if (typeof data.reasoning_content === 'string' && data.reasoning_content) {
-    return data.reasoning_content
-  }
-  if (typeof data.reasoning === 'string' && data.reasoning) {
-    return data.reasoning
-  }
-  if (Array.isArray(data.reasoning_details)) {
-    const details = data.reasoning_details
-      .map((item) => {
-        if (!item || typeof item !== 'object') return ''
-        return stringContent((item as Record<string, unknown>).text)
-      })
-      .join('')
-    if (details) return details
-  }
-
-  if (Array.isArray(data.choices)) {
-    return data.choices
-      .map((choice) => extractReasoningText(choice, depth + 1))
-      .join('')
-  }
-  for (const key of ['delta', 'message', 'data', 'response']) {
-    const nested = data[key]
-    if (nested && typeof nested === 'object') {
-      const text = extractReasoningText(nested, depth + 1)
-      if (text) return text
-    }
-  }
-  return ''
-}
-
-function streamEventText(value: unknown): string {
-  if (!value || typeof value !== 'object') return ''
-  const data = value as Record<string, unknown>
-  if (
-    data.type === 'response.completed' ||
-    data.type === 'message_stop' ||
-    data.type === 'content_block_stop'
-  ) {
-    return ''
-  }
-  return extractResponseText(value)
 }
 
 function parsedResult(
@@ -174,7 +62,24 @@ function parsedResult(
     structured: options?.structured ?? null,
     isStream: options?.isStream ?? false,
     reasoningOnly: options?.reasoningOnly ?? false,
+    reasoning: options?.reasoning ?? '',
+    toolCalls: options?.toolCalls ?? [],
+    outputs: options?.outputs ?? [],
+    warnings: options?.warnings ?? [],
   }
+}
+
+function contentResult(content: AuditContent, structured: unknown, isStream: boolean): ParsedBodyAuditResponse {
+  const answer = content.outputs.map(output => output.text).filter(Boolean).join('\n\n')
+  const reasoning = content.outputs.map(output => output.reasoning).filter(Boolean).join('\n\n')
+  const reasoningOnly = !answer && !content.toolCalls.length && !!reasoning
+  let kind: ParsedBodyAuditResponse['kind'] = 'structured'
+  if (answer || reasoningOnly) kind = 'text'
+  else if (content.toolCalls.length) kind = 'tools'
+  return parsedResult(kind, {
+    ...content, text: reasoningOnly ? reasoning : answer,
+    reasoning, reasoningOnly, structured, isStream,
+  })
 }
 
 function requestedMediaKind(
@@ -264,38 +169,12 @@ export function parseBodyAuditResponse(
     })
   }
 
-  const dataLines = input.body
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).trim())
-    .filter((line) => line && line !== '[DONE]')
   const isStream =
-    contentType.includes('text/event-stream') || dataLines.length > 0
+    contentType.includes('text/event-stream') ||
+    (!contentType && /^(?:\uFEFF)?(?:data:|event:|:)/.test(input.body))
 
   if (isStream) {
-    let text = ''
-    let reasoning = ''
-    for (const line of dataLines) {
-      try {
-        const event: unknown = JSON.parse(line)
-        text += streamEventText(event)
-        reasoning += extractReasoningText(event)
-      } catch {
-        // Malformed events remain available in the raw response tabs.
-      }
-    }
-    if (text) return parsedResult('text', { text, isStream: true })
-    if (reasoning) {
-      return parsedResult('text', {
-        text: reasoning,
-        isStream: true,
-        reasoningOnly: true,
-      })
-    }
-    return parsedResult('structured', {
-      structured: input.body,
-      isStream: true,
-    })
+    return contentResult(readAuditStream(input.body), input.body, true)
   }
 
   const trimmed = input.body.trim()
@@ -308,17 +187,8 @@ export function parseBodyAuditResponse(
         return parsedResult(mediaKind, { media, structured })
       }
     }
-    const text = extractResponseText(structured)
-    if (text) return parsedResult('text', { text, structured })
-    const reasoning = extractReasoningText(structured)
-    if (reasoning) {
-      return parsedResult('text', {
-        text: reasoning,
-        structured,
-        reasoningOnly: true,
-      })
-    }
-    return parsedResult('structured', { structured })
+    if (typeof structured === 'string') return parsedResult('text', { text: structured, structured })
+    return contentResult(readAuditContent(structured), structured, false)
   } catch {
     return parsedResult('text', { text: input.body })
   }
