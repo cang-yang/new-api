@@ -514,18 +514,22 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 				return nil, trace, fmt.Errorf("preset tool_text tool name conflicts with a client tool")
 			}
 		}
+		parameters, err := common.Marshal(map[string]any{
+			"type": "object",
+			"properties": map[string]any{config.ToolText.Argument: map[string]any{
+				"type": "string", "description": "The complete user-visible response text.",
+			}},
+			"required": []string{config.ToolText.Argument},
+		})
+		if err != nil {
+			return nil, trace, fmt.Errorf("encode preset tool parameters: %w", err)
+		}
 		compiled.Tools = append(compiled.Tools, dto.ToolCallRequest{
 			Type: "function",
 			Function: dto.FunctionRequest{
 				Name:        config.ToolText.Name,
 				Description: "Return the assistant's user-visible response text. This transport does not execute an external action.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{config.ToolText.Argument: map[string]any{
-						"type": "string", "description": "The complete user-visible response text.",
-					}},
-					"required": []string{config.ToolText.Argument},
-				},
+				Parameters:  parameters,
 			},
 		})
 	}

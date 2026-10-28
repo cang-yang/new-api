@@ -24,12 +24,122 @@ describe('body audit readable response parsing', () => {
   const eventStream = (...events: unknown[]) =>
     events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
 
+  test('retains empty tool input when a stream closes without argument deltas', () => {
+    const result = parseBodyAuditResponse({
+      body: eventStream(
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'call',
+            name: 'get_time',
+            input: {},
+          },
+        },
+        { type: 'content_block_stop', index: 0 }
+      ),
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+    expect(result.toolCalls?.[0]).toMatchObject({
+      arguments: '{}',
+      valid: true,
+    })
+  })
+
+  test('replaces placeholder tool input with actual JSON deltas', () => {
+    const result = parseBodyAuditResponse({
+      body: eventStream(
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'call',
+            name: 'lookup',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"city":' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '"Paris"}' },
+        },
+        { type: 'content_block_stop', index: 0 }
+      ),
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+    expect(result.toolCalls?.[0]).toMatchObject({
+      arguments: '{"city":"Paris"}',
+      valid: true,
+    })
+  })
+
+  test('reads the response.done terminal snapshot used by compatible providers', () => {
+    const result = parseBodyAuditResponse({
+      body: eventStream({
+        type: 'response.done',
+        response: {
+          output: [
+            {
+              type: 'message',
+              content: [{ type: 'output_text', text: 'finished' }],
+            },
+          ],
+        },
+      }),
+      encoding: 'utf-8',
+      contentType: 'text/event-stream',
+    })
+    expect(result.text).toBe('finished')
+  })
+
+  test('does not mislabel a filtered incomplete response as an output limit', () => {
+    const result = parseBodyAuditResponse({
+      body: JSON.stringify({
+        status: 'incomplete',
+        incomplete_details: { reason: 'content_filter' },
+        output: [],
+      }),
+      encoding: 'utf-8',
+    })
+    expect(result.warnings).not.toContain('length')
+    expect(result.warnings).toContain('incomplete')
+  })
+
+  test('preserves unknown binary captures instead of presenting an empty result', () => {
+    const result = parseBodyAuditResponse({
+      body: '/w==',
+      encoding: 'base64',
+      contentType: 'application/octet-stream',
+    })
+    expect(result.kind).toBe('structured')
+    expect(result.structured).toEqual({ encoding: 'base64', body: '/w==' })
+  })
+
   test.each([
     {
       name: 'does not duplicate Responses done snapshots',
       body: eventStream(
-        { type: 'response.output_text.delta', delta: 'Hello', output_index: 0, content_index: 0 },
-        { type: 'response.output_text.done', text: 'Hello', output_index: 0, content_index: 0 }
+        {
+          type: 'response.output_text.delta',
+          delta: 'Hello',
+          output_index: 0,
+          content_index: 0,
+        },
+        {
+          type: 'response.output_text.done',
+          text: 'Hello',
+          output_index: 0,
+          content_index: 0,
+        }
       ),
       expected: 'Hello',
     },
@@ -37,7 +147,14 @@ describe('body audit readable response parsing', () => {
       name: 'reads a terminal-only Responses snapshot',
       body: eventStream({
         type: 'response.completed',
-        response: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Hello' }] }] },
+        response: {
+          output: [
+            {
+              type: 'message',
+              content: [{ type: 'output_text', text: 'Hello' }],
+            },
+          ],
+        },
       }),
       expected: 'Hello',
     },
@@ -54,18 +171,36 @@ describe('body audit readable response parsing', () => {
     {
       name: 'keeps tool argument deltas out of prose',
       body: eventStream(
-        { type: 'response.function_call_arguments.delta', delta: '{"city":"Paris"}', output_index: 1 },
+        {
+          type: 'response.function_call_arguments.delta',
+          delta: '{"city":"Paris"}',
+          output_index: 1,
+        },
         { type: 'response.output_text.delta', delta: 'Hello', output_index: 0 }
       ),
       expected: 'Hello',
     },
   ])('$name', ({ body, expected }) => {
-    expect(parseBodyAuditResponse({ body, encoding: 'utf-8', contentType: 'text/event-stream' }).text).toBe(expected)
+    expect(
+      parseBodyAuditResponse({
+        body,
+        encoding: 'utf-8',
+        contentType: 'text/event-stream',
+      }).text
+    ).toBe(expected)
   })
 
   test('separates Gemini thoughts from answer parts', () => {
     const result = parseBodyAuditResponse({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ thought: true, text: 'analysis' }, { text: 'answer' }] } }] }),
+      body: JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ thought: true, text: 'analysis' }, { text: 'answer' }],
+            },
+          },
+        ],
+      }),
       encoding: 'utf-8',
       contentType: 'application/json',
     })
@@ -75,7 +210,9 @@ describe('body audit readable response parsing', () => {
 
   test('reads Anthropic thinking-only content', () => {
     const result = parseBodyAuditResponse({
-      body: JSON.stringify({ content: [{ type: 'thinking', thinking: 'analysis' }] }),
+      body: JSON.stringify({
+        content: [{ type: 'thinking', thinking: 'analysis' }],
+      }),
       encoding: 'utf-8',
       contentType: 'application/json',
     })
@@ -85,15 +222,65 @@ describe('body audit readable response parsing', () => {
 
   test('preserves explicit plain text containing data lines and literal escapes', () => {
     const body = 'Example:\ndata: not SSE\nC:\\temp\\notes'
-    expect(parseBodyAuditResponse({ body, encoding: 'utf-8', contentType: 'text/plain' }).text).toBe(body)
+    expect(
+      parseBodyAuditResponse({
+        body,
+        encoding: 'utf-8',
+        contentType: 'text/plain',
+      }).text
+    ).toBe(body)
   })
 
   test('assembles tool arguments by index without hiding them behind reasoning', () => {
     const result = parseBodyAuditResponse({
       body: eventStream(
-        { choices: [{ index: 0, delta: { reasoning_content: 'analysis', tool_calls: [{ index: 0, id: 'a', function: { name: 'submit_image_plan', arguments: '{"images":' } }] } }] },
-        { choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: 'b', function: { name: 'other', arguments: '{"x":1}' } }] } }] },
-        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '[]}' } }] }, finish_reason: 'tool_calls' }] }
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                reasoning_content: 'analysis',
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'a',
+                    function: {
+                      name: 'submit_image_plan',
+                      arguments: '{"images":',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 1,
+                    id: 'b',
+                    function: { name: 'other', arguments: '{"x":1}' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ index: 0, function: { arguments: '[]}' } }],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }
       ),
       encoding: 'utf-8',
       contentType: 'text/event-stream',
@@ -102,35 +289,76 @@ describe('body audit readable response parsing', () => {
     expect(result.text).toBe('')
     expect(result.reasoning).toBe('analysis')
     expect(result.toolCalls).toEqual([
-      expect.objectContaining({ id: 'a', name: 'submit_image_plan', arguments: '{"images":[]}', valid: true }),
-      expect.objectContaining({ id: 'b', name: 'other', arguments: '{"x":1}', valid: true }),
+      expect.objectContaining({
+        id: 'a',
+        name: 'submit_image_plan',
+        arguments: '{"images":[]}',
+        valid: true,
+      }),
+      expect.objectContaining({
+        id: 'b',
+        name: 'other',
+        arguments: '{"x":1}',
+        valid: true,
+      }),
     ])
   })
 
   test('preserves malformed upstream arguments and reports invalid JSON', () => {
     const args = '{"images":[}'
     const result = parseBodyAuditResponse({
-      body: JSON.stringify({ choices: [{ message: { tool_calls: [{ id: 'a', function: { name: 'submit_image_plan', arguments: args } }] } }] }),
+      body: JSON.stringify({
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  id: 'a',
+                  function: { name: 'submit_image_plan', arguments: args },
+                },
+              ],
+            },
+          },
+        ],
+      }),
       encoding: 'utf-8',
     })
-    expect(result.toolCalls?.[0]).toMatchObject({ arguments: args, valid: false })
+    expect(result.toolCalls?.[0]).toMatchObject({
+      arguments: args,
+      valid: false,
+    })
   })
 
   test('reports output length limits and malformed stream events while keeping valid text', () => {
     const result = parseBodyAuditResponse({
-      body: eventStream({ choices: [{ delta: { content: 'partial' }, finish_reason: 'length' }] }) + 'data: {broken}\n\n',
+      body:
+        `${eventStream({
+          choices: [{ delta: { content: 'partial' }, finish_reason: 'length' }],
+        })  }data: {broken}\n\n`,
       encoding: 'utf-8',
       contentType: 'text/event-stream',
     })
     expect(result.text).toBe('partial')
-    expect(result.warnings).toEqual(expect.arrayContaining(['length', 'malformed-event']))
+    expect(result.warnings).toEqual(
+      expect.arrayContaining(['length', 'malformed-event'])
+    )
   })
 
   test('keeps independent choices separate instead of interleaving their tokens', () => {
     const result = parseBodyAuditResponse({
       body: eventStream(
-        { choices: [{ index: 1, delta: { content: 'B' } }, { index: 0, delta: { content: 'A' } }] },
-        { choices: [{ index: 0, delta: { content: '1' } }, { index: 1, delta: { content: '2' } }] }
+        {
+          choices: [
+            { index: 1, delta: { content: 'B' } },
+            { index: 0, delta: { content: 'A' } },
+          ],
+        },
+        {
+          choices: [
+            { index: 0, delta: { content: '1' } },
+            { index: 1, delta: { content: '2' } },
+          ],
+        }
       ),
       encoding: 'utf-8',
       contentType: 'text/event-stream',

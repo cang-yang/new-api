@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { beforeEach, expect, test, vi } from 'vitest'
 
-import { getBodyAudit } from './api'
+import { getBodyAudit } from '../api'
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('@/lib/api', () => ({ api: { get } }))
@@ -28,7 +28,10 @@ beforeEach(() => vi.clearAllMocks())
 test('only treats a missing audit record as absent', async () => {
   get.mockResolvedValueOnce({ status: 404 })
   expect(await getBodyAudit('missing')).toBeNull()
-  get.mockResolvedValueOnce({ status: 200, data: { success: false, message: 'denied' } })
+  get.mockResolvedValueOnce({
+    status: 200,
+    data: { success: false, message: 'denied' },
+  })
   await expect(getBodyAudit('denied')).rejects.toThrow('denied')
   get.mockResolvedValueOnce({ status: 200, data: { success: true } })
   await expect(getBodyAudit('malformed')).rejects.toThrow()
@@ -38,7 +41,10 @@ test('encodes request identifiers and returns successful audit data unchanged', 
   const data = { request_id: 'req/a', response_body: '{"text":"a\\nb"}' }
   get.mockResolvedValueOnce({ status: 200, data: { success: true, data } })
   expect(await getBodyAudit('req/a', true)).toBe(data)
-  expect(get).toHaveBeenCalledWith('/api/log/body-audit/req%2Fa', expect.objectContaining({
-    params: { include_attempt_bodies: true },
-  }))
+  expect(get).toHaveBeenCalledWith(
+    '/api/log/body-audit/req%2Fa',
+    expect.objectContaining({
+      params: { include_attempt_bodies: true },
+    })
+  )
 })

@@ -33,7 +33,11 @@ export interface AuditOutput {
   reasoning: string
 }
 
-export type AuditWarning = 'length' | 'malformed-event' | 'upstream-error'
+export type AuditWarning =
+  | 'length'
+  | 'malformed-event'
+  | 'upstream-error'
+  | 'incomplete'
 
 export interface AuditContent {
   outputs: AuditOutput[]
@@ -59,6 +63,7 @@ function index(value: unknown, fallback = 0): number {
 class AuditContentAccumulator {
   private blocks = new Map<string, AuditOutput>()
   private tools = new Map<string, AuditToolCall>()
+  private initialToolInputs = new Map<string, unknown>()
   private warnings = new Set<AuditWarning>()
 
   warn(warning: AuditWarning) {
@@ -74,9 +79,19 @@ class AuditContentAccumulator {
     return block
   }
 
-  private tool(key: string, value: Record<string, unknown>, choiceIndex: number, append: boolean) {
+  private tool(
+    key: string,
+    value: Record<string, unknown>,
+    choiceIndex: number,
+    append: boolean
+  ) {
     const existing = this.tools.get(key) ?? {
-      key, id: '', name: '', arguments: '', valid: false, choiceIndex,
+      key,
+      id: '',
+      name: '',
+      arguments: '',
+      valid: false,
+      choiceIndex,
     }
     const fn = record(value.function)
     const name = text(fn.name || value.name)
@@ -90,9 +105,15 @@ class AuditContentAccumulator {
     this.tools.set(key, existing)
   }
 
-  private parts(value: unknown, key: string, choiceIndex: number, append: boolean) {
+  private parts(
+    value: unknown,
+    key: string,
+    choiceIndex: number,
+    append: boolean
+  ) {
     const block = this.block(key, choiceIndex)
-    let answer = '', reasoning = ''
+    let answer = '',
+      reasoning = ''
     if (typeof value === 'string') answer = value
     if (Array.isArray(value)) {
       value.forEach((item, partIndex) => {
@@ -101,13 +122,27 @@ class AuditContentAccumulator {
           return
         }
         const part = record(item)
-        if (part.thought === true || part.type === 'thinking' || part.type === 'reasoning') {
+        if (
+          part.thought === true ||
+          part.type === 'thinking' ||
+          part.type === 'reasoning'
+        ) {
           reasoning += text(part.thinking || part.text)
         } else if (part.type === 'tool_use' || part.type === 'function_call') {
           this.tool(`${key}:tool:${partIndex}`, part, choiceIndex, append)
         } else if (part.functionCall) {
-          this.tool(`${key}:tool:${partIndex}`, record(part.functionCall), choiceIndex, false)
-        } else if (!part.type || ['text', 'output_text', 'refusal', 'summary_text'].includes(text(part.type))) {
+          this.tool(
+            `${key}:tool:${partIndex}`,
+            record(part.functionCall),
+            choiceIndex,
+            false
+          )
+        } else if (
+          !part.type ||
+          ['text', 'output_text', 'refusal', 'summary_text'].includes(
+            text(part.type)
+          )
+        ) {
           answer += text(part.text || part.refusal)
         }
       })
@@ -120,9 +155,18 @@ class AuditContentAccumulator {
     if (depth > 12) return
     const data = record(value)
     if (data.error) this.warn('upstream-error')
-    if (data.status === 'incomplete' || data.stop_reason === 'max_tokens') this.warn('length')
+    if (data.status === 'incomplete') {
+      this.warn(
+        record(data.incomplete_details).reason === 'max_output_tokens'
+          ? 'length'
+          : 'incomplete'
+      )
+    }
+    if (data.stop_reason === 'max_tokens') this.warn('length')
     if (Array.isArray(data.choices)) {
-      data.choices.forEach((choice, position) => this.chat(record(choice), position))
+      data.choices.forEach((choice, position) =>
+        this.chat(record(choice), position)
+      )
       return
     }
     if (Array.isArray(data.candidates)) {
@@ -135,15 +179,23 @@ class AuditContentAccumulator {
       return
     }
     if (Array.isArray(data.output)) {
-      data.output.forEach((item, position) => this.responseItem(record(item), position))
+      data.output.forEach((item, position) =>
+        this.responseItem(record(item), position)
+      )
       return
     }
     if (Array.isArray(data.content) || typeof data.content === 'string') {
       this.parts(data.content, 'message', 0, false)
       return
     }
-    if (typeof data.output_text === 'string' || typeof data.completion === 'string' || typeof data.text === 'string') {
-      this.block('message').text = text(data.output_text ?? data.completion ?? data.text)
+    if (
+      typeof data.output_text === 'string' ||
+      typeof data.completion === 'string' ||
+      typeof data.text === 'string'
+    ) {
+      this.block('message').text = text(
+        data.output_text ?? data.completion ?? data.text
+      )
       return
     }
     for (const key of ['data', 'response', 'message']) {
@@ -170,16 +222,25 @@ class AuditContentAccumulator {
     }
     let reasoning = text(message.reasoning_content || message.reasoning)
     if (!reasoning && Array.isArray(message.reasoning_details)) {
-      reasoning = message.reasoning_details.map(item => text(record(item).text)).join('')
+      reasoning = message.reasoning_details
+        .map((item) => text(record(item).text))
+        .join('')
     }
-    if (reasoning) block.reasoning = append ? block.reasoning + reasoning : reasoning
+    if (reasoning)
+      {block.reasoning = append ? block.reasoning + reasoning : reasoning}
     if (Array.isArray(message.tool_calls)) {
       message.tool_calls.forEach((call, toolIndex) => {
         const tool = record(call)
-        this.tool(`${key}:tool:${index(tool.index, toolIndex)}`, tool, n, append)
+        this.tool(
+          `${key}:tool:${index(tool.index, toolIndex)}`,
+          tool,
+          n,
+          append
+        )
       })
     }
-    if (message.function_call) this.tool(`${key}:legacy`, record(message.function_call), n, append)
+    if (message.function_call)
+      {this.tool(`${key}:legacy`, record(message.function_call), n, append)}
     if (choice.finish_reason === 'length') this.warn('length')
   }
 
@@ -189,11 +250,17 @@ class AuditContentAccumulator {
     } else if (item.type === 'reasoning') {
       const summary = Array.isArray(item.summary) ? item.summary : []
       summary.forEach((part, partIndex) => {
-        this.block(`response:${outputIndex}:reasoning:${partIndex}`).reasoning = text(record(part).text)
+        this.block(`response:${outputIndex}:reasoning:${partIndex}`).reasoning =
+          text(record(part).text)
       })
     } else if (Array.isArray(item.content)) {
       item.content.forEach((part, partIndex) => {
-        this.parts([part], `response:${outputIndex}:text:${partIndex}`, 0, false)
+        this.parts(
+          [part],
+          `response:${outputIndex}:text:${partIndex}`,
+          0,
+          false
+        )
       })
     }
   }
@@ -201,32 +268,80 @@ class AuditContentAccumulator {
   event(value: unknown, eventName?: string) {
     const data = record(value)
     const type = text(data.type) || eventName || ''
-    if (data.error || type === 'error' || type === 'response.failed') this.warn('upstream-error')
-    if (type === 'response.incomplete') this.warn('length')
+    if (data.error || type === 'error' || type === 'response.failed')
+      {this.warn('upstream-error')}
+    if (type === 'response.incomplete') {
+      this.warn(
+        record(record(data.response).incomplete_details).reason ===
+          'max_output_tokens'
+          ? 'length'
+          : 'incomplete'
+      )
+    }
     if (type.startsWith('response.')) {
       const n = index(data.output_index)
-      if (['response.completed', 'response.incomplete', 'response.failed'].includes(type)) {
+      if (
+        [
+          'response.completed',
+          'response.done',
+          'response.incomplete',
+          'response.failed',
+        ].includes(type)
+      ) {
         // Only a real final output snapshot replaces accumulated blocks.
-        if (Array.isArray(record(data.response).output) && (record(data.response).output as unknown[]).length > 0) {
+        if (
+          Array.isArray(record(data.response).output) &&
+          (record(data.response).output as unknown[]).length > 0
+        ) {
           this.blocks.clear()
           this.tools.clear()
           this.snapshot(data.response)
         }
-      } else if (type === 'response.output_item.done' || type === 'response.output_item.added') {
+      } else if (
+        type === 'response.output_item.done' ||
+        type === 'response.output_item.added'
+      ) {
         this.responseItem(record(data.item), n)
-      } else if (type === 'response.content_part.done' || type === 'response.content_part.added') {
-        this.parts([data.part], `response:${n}:text:${index(data.content_index)}`, 0, false)
-      } else if (type === 'response.output_text.delta' || type === 'response.output_text.done' ||
-        type === 'response.refusal.delta' || type === 'response.refusal.done') {
-        const block = this.block(`response:${n}:text:${index(data.content_index)}`)
+      } else if (
+        type === 'response.content_part.done' ||
+        type === 'response.content_part.added'
+      ) {
+        this.parts(
+          [data.part],
+          `response:${n}:text:${index(data.content_index)}`,
+          0,
+          false
+        )
+      } else if (
+        type === 'response.output_text.delta' ||
+        type === 'response.output_text.done' ||
+        type === 'response.refusal.delta' ||
+        type === 'response.refusal.done'
+      ) {
+        const block = this.block(
+          `response:${n}:text:${index(data.content_index)}`
+        )
         if (type.endsWith('.delta')) block.text += text(data.delta)
         else block.text = text(data.text ?? data.refusal)
-      } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_summary_text.done') {
-        const block = this.block(`response:${n}:reasoning:${index(data.summary_index)}`)
+      } else if (
+        type === 'response.reasoning_summary_text.delta' ||
+        type === 'response.reasoning_summary_text.done'
+      ) {
+        const block = this.block(
+          `response:${n}:reasoning:${index(data.summary_index)}`
+        )
         if (type.endsWith('.delta')) block.reasoning += text(data.delta)
         else block.reasoning = text(data.text)
-      } else if (type === 'response.function_call_arguments.delta' || type === 'response.function_call_arguments.done') {
-        this.tool(`response:${n}:tool`, { arguments: data.delta ?? data.arguments }, 0, type.endsWith('.delta'))
+      } else if (
+        type === 'response.function_call_arguments.delta' ||
+        type === 'response.function_call_arguments.done'
+      ) {
+        this.tool(
+          `response:${n}:tool`,
+          { arguments: data.delta ?? data.arguments },
+          0,
+          type.endsWith('.delta')
+        )
       }
       return
     }
@@ -236,6 +351,7 @@ class AuditContentAccumulator {
       if (block.type === 'tool_use') {
         // Streaming starts with an empty placeholder input before JSON deltas.
         this.tool(`${key}:tool`, { id: block.id, name: block.name }, 0, false)
+        this.initialToolInputs.set(`${key}:tool`, block.input)
       } else this.parts([block], key, 0, false)
       return
     }
@@ -243,15 +359,27 @@ class AuditContentAccumulator {
       const delta = record(data.delta)
       const key = `anthropic:${index(data.index)}`
       if (delta.type === 'text_delta') this.block(key).text += text(delta.text)
-      if (delta.type === 'thinking_delta') this.block(key).reasoning += text(delta.thinking)
-      if (delta.type === 'input_json_delta') this.tool(`${key}:tool`, { arguments: delta.partial_json }, 0, true)
+      if (delta.type === 'thinking_delta')
+        {this.block(key).reasoning += text(delta.thinking)}
+      if (delta.type === 'input_json_delta') {
+        this.initialToolInputs.delete(`${key}:tool`)
+        this.tool(`${key}:tool`, { arguments: delta.partial_json }, 0, true)
+      }
       return
     }
     if (type === 'message_delta') {
       if (record(data.delta).stop_reason === 'max_tokens') this.warn('length')
       return
     }
-    if (type === 'message_start' || type === 'message_stop' || type === 'content_block_stop') return
+    if (type === 'content_block_stop') {
+      const key = `anthropic:${index(data.index)}:tool`
+      if (this.initialToolInputs.has(key)) {
+        this.tool(key, { input: this.initialToolInputs.get(key) }, 0, false)
+        this.initialToolInputs.delete(key)
+      }
+      return
+    }
+    if (type === 'message_start' || type === 'message_stop') return
     if (Array.isArray(data.candidates)) {
       data.candidates.forEach((candidate, position) => {
         const item = record(candidate)
@@ -267,15 +395,22 @@ class AuditContentAccumulator {
   result(): AuditContent {
     const outputs = new Map<number, AuditOutput>()
     for (const block of this.blocks.values()) {
-      const output = outputs.get(block.index) ?? { index: block.index, text: '', reasoning: '' }
+      const output = outputs.get(block.index) ?? {
+        index: block.index,
+        text: '',
+        reasoning: '',
+      }
       output.text += block.text
       output.reasoning += block.reasoning
       outputs.set(block.index, output)
     }
-    const toolCalls = [...this.tools.values()].map(tool => {
+    const toolCalls = [...this.tools.values()].map((tool) => {
       try {
         const args: unknown = JSON.parse(tool.arguments)
-        return { ...tool, valid: !!args && typeof args === 'object' && !Array.isArray(args) }
+        return {
+          ...tool,
+          valid: !!args && typeof args === 'object' && !Array.isArray(args),
+        }
       } catch {
         return { ...tool, valid: false }
       }

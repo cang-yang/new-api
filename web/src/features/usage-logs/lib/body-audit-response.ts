@@ -69,16 +69,30 @@ function parsedResult(
   }
 }
 
-function contentResult(content: AuditContent, structured: unknown, isStream: boolean): ParsedBodyAuditResponse {
-  const answer = content.outputs.map(output => output.text).filter(Boolean).join('\n\n')
-  const reasoning = content.outputs.map(output => output.reasoning).filter(Boolean).join('\n\n')
+function contentResult(
+  content: AuditContent,
+  structured: unknown,
+  isStream: boolean
+): ParsedBodyAuditResponse {
+  const answer = content.outputs
+    .map((output) => output.text)
+    .filter(Boolean)
+    .join('\n\n')
+  const reasoning = content.outputs
+    .map((output) => output.reasoning)
+    .filter(Boolean)
+    .join('\n\n')
   const reasoningOnly = !answer && !content.toolCalls.length && !!reasoning
   let kind: ParsedBodyAuditResponse['kind'] = 'structured'
   if (answer || reasoningOnly) kind = 'text'
   else if (content.toolCalls.length) kind = 'tools'
   return parsedResult(kind, {
-    ...content, text: reasoningOnly ? reasoning : answer,
-    reasoning, reasoningOnly, structured, isStream,
+    ...content,
+    text: reasoningOnly ? reasoning : answer,
+    reasoning,
+    reasoningOnly,
+    structured,
+    isStream,
   })
 }
 
@@ -158,7 +172,11 @@ export function parseBodyAuditResponse(
   const requestPath = input.requestPath?.toLowerCase() ?? ''
   const mediaKind = requestedMediaKind(contentType, requestPath)
   if (input.encoding === 'base64') {
-    if (!mediaKind || !contentType) return parsedResult('empty')
+    if (!mediaKind || !contentType) {
+      return parsedResult('structured', {
+        structured: { encoding: input.encoding, body: input.body },
+      })
+    }
     return parsedResult(mediaKind, {
       media: [
         {
@@ -187,7 +205,8 @@ export function parseBodyAuditResponse(
         return parsedResult(mediaKind, { media, structured })
       }
     }
-    if (typeof structured === 'string') return parsedResult('text', { text: structured, structured })
+    if (typeof structured === 'string')
+      {return parsedResult('text', { text: structured, structured })}
     return contentResult(readAuditContent(structured), structured, false)
   } catch {
     return parsedResult('text', { text: input.body })

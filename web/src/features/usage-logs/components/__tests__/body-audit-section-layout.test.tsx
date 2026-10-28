@@ -183,21 +183,45 @@ describe('body audit attempt actions', () => {
     const user = userEvent.setup()
     getAudit.mockResolvedValue({
       ...audit,
-      request_body: '{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}',
+      request_body:
+        '{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}',
     })
     renderAudit()
     await user.click(await screen.findByRole('tab', { name: '可读内容' }))
     const content = screen.getByText(/first second "quoted"/)
     expect(content.textContent).toContain('first\nsecond "quoted" C:\\temp')
     await user.click(screen.getByRole('button', { name: '复制原文' }))
-    expect(await navigator.clipboard.readText()).toBe('{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}')
+    expect(await navigator.clipboard.readText()).toBe(
+      '{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}'
+    )
   })
 
   test('shows a retryable error instead of claiming the audit is missing', async () => {
     getAudit.mockRejectedValue(new Error('network unavailable'))
     renderAudit()
-    expect(await screen.findByRole('button', { name: '重试' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('button', { name: '重试' })
+    ).toBeInTheDocument()
     expect(screen.queryByText('此请求未存储正文审计')).not.toBeInTheDocument()
+  })
+
+  test('reads Responses string input and instructions without hiding the request text', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      request_body: JSON.stringify({
+        instructions: 'Please answer\nbriefly',
+        input: 'First line\nSecond line',
+      }),
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
+    expect(screen.getByText(/Please answer briefly/).textContent).toContain(
+      'Please answer\nbriefly'
+    )
+    expect(screen.getByText(/First line Second line/).textContent).toContain(
+      'First line\nSecond line'
+    )
   })
 
   test('shows tool results and invalid arguments instead of only reasoning', async () => {
@@ -205,10 +229,22 @@ describe('body audit attempt actions', () => {
     getAudit.mockResolvedValue({
       ...audit,
       client_response_body: JSON.stringify({
-        choices: [{ message: {
-          reasoning_content: 'analysis',
-          tool_calls: [{ id: 'call-1', function: { name: 'submit_image_plan', arguments: '{"images":[}' } }],
-        } }],
+        choices: [
+          {
+            message: {
+              reasoning_content: 'analysis',
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  function: {
+                    name: 'submit_image_plan',
+                    arguments: '{"images":[}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
       }),
     })
     renderAudit()

@@ -283,7 +283,7 @@ func TestSillyTavernToolTextAddsOnlyDeclarativeTransportTool(t *testing.T) {
 	require.Len(t, compiled.Tools, 2)
 	assert.Equal(t, "lookup", compiled.Tools[0].Function.Name)
 	assert.Equal(t, "newapi_text", compiled.Tools[1].Function.Name)
-	assert.NotNil(t, compiled.Tools[1].Function.Parameters)
+	assert.JSONEq(t, `{"type":"object","properties":{"display_stream":{"type":"string","description":"The complete user-visible response text."}},"required":["display_stream"]}`, string(compiled.Tools[1].Function.Parameters))
 	assert.Nil(t, compiled.ToolChoice)
 	assert.Len(t, request.Tools, 1, "compilation must not mutate client tools")
 }
