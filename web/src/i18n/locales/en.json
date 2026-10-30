@@ -1,5 +1,11 @@
 {
   "translation": {
+    "Copy readable field": "Copy readable field",
+    "Expand long text": "Expand long text",
+    "Upstream stopped generation due to content filtering": "Upstream stopped generation due to content filtering",
+    "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.": "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.",
+    "Only reasoning was returned; no answer or tool call was received.": "Only reasoning was returned; no answer or tool call was received.",
+    "Client response was not captured. Showing upstream content; delivery to the client is unverified.": "Client response was not captured. Showing upstream content; delivery to the client is unverified.",
     "Copy original": "Copy original",
     "Formatted JSON": "Formatted view",
     "Readable content": "Readable content",

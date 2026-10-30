@@ -20,9 +20,48 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
+import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import { BodyAuditResultContent } from '../body-audit-result'
 
 describe('body audit result content', () => {
+  test('shows decoded tool text with its field name without executing HTML', () => {
+    const result = parseBodyAuditResponse({
+      encoding: 'utf-8',
+      body: JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: 'Answer',
+              tool_calls: [
+                {
+                  function: {
+                    name: 'game_content',
+                    arguments: JSON.stringify({
+                      content:
+                        'First line\nSecond line\n<script>alert(1)</script>',
+                      path: String.raw`C:\new\file`,
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    })
+    const markup = renderToStaticMarkup(
+      createElement(BodyAuditResultContent, {
+        result,
+        emptyLabel: 'Empty',
+        imageAlt: 'Image',
+      })
+    )
+    expect(markup).toContain('First line\nSecond line\n&lt;script&gt;')
+    expect(markup).toContain('content')
+    expect(markup).toContain(String.raw`C:\new\file`)
+    expect(markup).not.toContain('<script>')
+  })
+
   test('renders image results with an accessible preview and caption', () => {
     const markup = renderToStaticMarkup(
       createElement(BodyAuditResultContent, {

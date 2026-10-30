@@ -1,5 +1,11 @@
 {
   "translation": {
+    "Copy readable field": "Копировать текст поля",
+    "Expand long text": "Развернуть длинный текст",
+    "Upstream stopped generation due to content filtering": "Сервис остановил генерацию из-за фильтрации содержимого",
+    "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.": "Некорректный или неполный JSON ответа. Проверьте исходные данные; это не окончательный ответ.",
+    "Only reasoning was returned; no answer or tool call was received.": "Получены только рассуждения, без ответа или вызова инструмента.",
+    "Client response was not captured. Showing upstream content; delivery to the client is unverified.": "Ответ клиенту не записан. Показаны данные сервиса; доставка клиенту не подтверждена.",
     "Copy original": "Копировать оригинал",
     "Formatted JSON": "Форматированный вид",
     "Readable content": "Читаемое содержимое",

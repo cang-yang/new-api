@@ -26,6 +26,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 import zhCN from '@/i18n/locales/zh.json'
 
 import type { BodyAudit } from '../../types'
+import { BodyAuditJsonContent } from '../body-audit-json-content'
 import { BodyAuditSection } from '../dialogs/body-audit-section'
 
 const { getAudit, previewReplay } = vi.hoisted(() => ({
@@ -221,6 +222,59 @@ describe('body audit attempt actions', () => {
     )
     expect(screen.getByText(/First line Second line/).textContent).toContain(
       'First line\nSecond line'
+    )
+  })
+
+  test('includes tool descriptions and parameters in readable request context', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      request_body: JSON.stringify({
+        messages: [{ role: 'user', content: 'Continue' }],
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'game_content',
+              description: 'World context\nHistorical context',
+              parameters: {
+                type: 'object',
+                properties: { content: { type: 'string' } },
+              },
+            },
+          },
+        ],
+        temperature: 0.7,
+      }),
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
+    expect(
+      screen.getByText(/World context Historical context/).textContent
+    ).toBe('World context\nHistorical context')
+    expect(screen.getByText('game_content')).toBeInTheDocument()
+    expect(screen.getByText('0.7')).toBeInTheDocument()
+  })
+
+  test('can reveal fields beyond the initial preview and expand long text', async () => {
+    const user = userEvent.setup()
+    const longText = `${'Long context\n'.repeat(400)}Context ending`
+    render(
+      <I18nextProvider i18n={testI18n}>
+        <BodyAuditJsonContent
+          value={{
+            messages: Array.from({ length: 260 }, (_, i) => `Message ${i}`),
+            description: longText,
+          }}
+        />
+      </I18nextProvider>
+    )
+    expect(screen.queryByText('$["description"]')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^展开 ·/ }))
+    expect(screen.getByText('$["description"]')).toBeInTheDocument()
+    await user.click(screen.getByText('展开长文本'))
+    await waitFor(() =>
+      expect(screen.getByText(/Context ending/).textContent).toBe(longText)
     )
   })
 

@@ -1,5 +1,11 @@
 {
   "translation": {
+    "Copy readable field": "复制字段文本",
+    "Expand long text": "展开长文本",
+    "Upstream stopped generation due to content filtering": "上游因内容过滤停止了生成",
+    "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.": "响应 JSON 无效或不完整。可查看原始数据，但这不是完整正文。",
+    "Only reasoning was returned; no answer or tool call was received.": "仅收到推理内容，未收到正文或工具调用。",
+    "Client response was not captured. Showing upstream content; delivery to the client is unverified.": "未采集到客户端响应。当前展示上游内容，无法确认客户端实际收到了什么。",
     "Copy original": "复制原文",
     "Formatted JSON": "格式化视图",
     "Readable content": "可读内容",

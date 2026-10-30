@@ -22,6 +22,7 @@ import { CopyButton } from '@/components/copy-button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 
 import type { ParsedBodyAuditResponse } from '../lib/body-audit-response'
+import { BodyAuditJsonContent } from './body-audit-json-content'
 
 interface BodyAuditResultContentProps {
   result: ParsedBodyAuditResponse
@@ -34,6 +35,7 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
   const tools = props.result.toolCalls ?? []
   const hasDetails =
     tools.length > 0 ||
+    props.result.reasoningOnly ||
     (!!props.result.reasoning && !props.result.reasoningOnly) ||
     (props.result.warnings?.length ?? 0) > 0 ||
     (props.result.outputs?.length ?? 0) > 1
@@ -42,10 +44,23 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
     'upstream-error': t('Upstream reported a response error'),
     'malformed-event': t('Some stream events could not be parsed'),
     incomplete: t('Incomplete'),
+    'content-filter': t('Upstream stopped generation due to content filtering'),
+    'invalid-json': t(
+      'Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.'
+    ),
   }
   if (hasDetails) {
     return (
       <div className='flex min-w-0 flex-col gap-4 [overflow-wrap:anywhere]'>
+        {props.result.reasoningOnly && (
+          <Alert>
+            <AlertDescription>
+              {t(
+                'Only reasoning was returned; no answer or tool call was received.'
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
         {props.result.warnings?.map((warning) => (
           <Alert key={warning}>
             <AlertDescription>{warningLabels[warning]}</AlertDescription>
@@ -69,9 +84,6 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
               </div>
             )}
         {tools.map((tool) => {
-          let argumentsText = tool.arguments
-          if (tool.valid)
-            {argumentsText = JSON.stringify(JSON.parse(tool.arguments), null, 2)}
           return (
             <section key={tool.key} className='min-w-0 border-t pt-3'>
               <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
@@ -91,9 +103,13 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
                   </AlertDescription>
                 </Alert>
               )}
-              <pre className='mt-2 font-mono text-xs leading-6 whitespace-pre-wrap'>
-                {argumentsText}
-              </pre>
+              {tool.valid ? (
+                <BodyAuditJsonContent value={JSON.parse(tool.arguments)} />
+              ) : (
+                <pre className='mt-2 font-mono text-xs leading-6 whitespace-pre-wrap'>
+                  {tool.arguments}
+                </pre>
+              )}
             </section>
           )
         })}
@@ -108,11 +124,16 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
           </details>
         )}
         {props.result.kind === 'structured' && (
-          <pre className='font-mono text-xs whitespace-pre-wrap'>
-            {typeof props.result.structured === 'string'
-              ? props.result.structured
-              : JSON.stringify(props.result.structured, null, 2)}
-          </pre>
+          <details>
+            <summary className='cursor-pointer text-xs'>
+              {t('Original payload')}
+            </summary>
+            <pre className='mt-2 font-mono text-xs whitespace-pre-wrap'>
+              {typeof props.result.structured === 'string'
+                ? props.result.structured
+                : JSON.stringify(props.result.structured, null, 2)}
+            </pre>
+          </details>
         )}
       </div>
     )

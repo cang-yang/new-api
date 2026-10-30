@@ -1,5 +1,11 @@
 {
   "translation": {
+    "Copy readable field": "Copier le texte du champ",
+    "Expand long text": "Développer le texte long",
+    "Upstream stopped generation due to content filtering": "Le service amont a arrêté la génération en raison du filtrage de contenu",
+    "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.": "Réponse JSON invalide ou incomplète. Consultez les données originales ; ce n’est pas une réponse finale.",
+    "Only reasoning was returned; no answer or tool call was received.": "Seul le raisonnement a été reçu, sans réponse ni appel d’outil.",
+    "Client response was not captured. Showing upstream content; delivery to the client is unverified.": "La réponse client n’a pas été enregistrée. Le contenu amont est affiché ; sa réception par le client n’est pas confirmée.",
     "Copy original": "Copier l’original",
     "Formatted JSON": "Vue formatée",
     "Readable content": "Contenu lisible",

@@ -205,10 +205,17 @@ export function parseBodyAuditResponse(
         return parsedResult(mediaKind, { media, structured })
       }
     }
-    if (typeof structured === 'string')
-      {return parsedResult('text', { text: structured, structured })}
+    if (typeof structured === 'string') {
+      return parsedResult('text', { text: structured, structured })
+    }
     return contentResult(readAuditContent(structured), structured, false)
   } catch {
+    if (contentType.includes('json')) {
+      return parsedResult('structured', {
+        structured: input.body,
+        warnings: ['invalid-json'],
+      })
+    }
     return parsedResult('text', { text: input.body })
   }
 }

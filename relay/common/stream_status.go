@@ -268,6 +268,11 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	response := s.response
 	incompleteReason := s.incompleteReason
 	s.mu.Unlock()
+	switch s.EndReason {
+	case StreamEndReasonClientGone, StreamEndReasonTimeout, StreamEndReasonScannerErr,
+		StreamEndReasonPanic, StreamEndReasonPingFail, StreamEndReasonUpstreamFailed, StreamEndReasonHandlerStop:
+		return false
+	}
 	// Reaching the caller's requested output limit is a valid protocol terminal,
 	// not a broken transport. Keep its distinct incomplete outcome for diagnostics.
 	outputLimit := response == ResponseOutcomeIncomplete && incompleteReason == "max_output_tokens"

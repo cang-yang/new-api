@@ -33,8 +33,8 @@ import {
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { StatusBadge } from '@/components/status-badge'
 import { ErrorState } from '@/components/error-state'
+import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -50,11 +50,12 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { cn } from '@/lib/utils'
 
 import { getBodyAudit } from '../../api'
+import { auditReadableCopy } from '../../lib/body-audit-reading'
 import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import { diffJsonText } from '../../lib/json-diff'
 import type { AuditAttempt, BodyAudit } from '../../types'
-import { BodyAuditResultContent } from '../body-audit-result'
 import { PayloadPanel } from '../body-audit-payload'
+import { BodyAuditResultContent } from '../body-audit-result'
 import { AuditReplayDialog } from './audit-replay-dialog'
 
 function formatBytes(bytes: number): string {
@@ -86,16 +87,7 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
       }),
     [hasClientResponse, props.audit, props.requestPath]
   )
-  const copyText = useMemo(() => {
-    if (result.toolCalls?.length) return JSON.stringify(result.toolCalls, null, 2)
-    if (result.kind === 'text') return result.text
-    if (result.media.length > 0) {
-      return result.media.map((item) => item.source).join('\n')
-    }
-    if (result.structured == null) return ''
-    if (typeof result.structured === 'string') return result.structured
-    return JSON.stringify(result.structured, null, 2)
-  }, [result])
+  const copyText = useMemo(() => auditReadableCopy(result), [result])
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const copied = copiedText === copyText
 
@@ -119,14 +111,6 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
         {result.isStream && result.kind === 'text' && (
           <StatusBadge
             label={t('Stream merged')}
-            variant='blue'
-            size='sm'
-            copyable={false}
-          />
-        )}
-        {result.reasoningOnly && (
-          <StatusBadge
-            label={t('Reasoning')}
             variant='blue'
             size='sm'
             copyable={false}
@@ -163,11 +147,31 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
               </Button>
             </div>
             <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4'>
+              {hasClientResponse && !props.audit.client_response_complete && (
+                <Alert className='mb-3'>
+                  <AlertDescription>
+                    {t(
+                      'Client response write was interrupted; only the bytes written before the failure were captured, possibly ending inside a character.'
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+              {!hasClientResponse && (
+                <Alert className='mb-3'>
+                  <AlertDescription>
+                    {t(
+                      'Client response was not captured. Showing upstream content; delivery to the client is unverified.'
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
               {(hasClientResponse
                 ? props.audit.client_response_body_truncated
                 : props.audit.response_body_truncated) && (
                 <Alert className='mb-3'>
-                  <AlertDescription>{t('Partial capture: this result may be incomplete')}</AlertDescription>
+                  <AlertDescription>
+                    {t('Partial capture: this result may be incomplete')}
+                  </AlertDescription>
                 </Alert>
               )}
               <BodyAuditResultContent
@@ -628,9 +632,15 @@ export function BodyAuditSection(props: {
         </div>
       )}
       {!query.isLoading && query.data && (
-        <AuditContent key={props.requestId} audit={query.data} requestPath={props.requestPath} />
+        <AuditContent
+          key={props.requestId}
+          audit={query.data}
+          requestPath={props.requestPath}
+        />
       )}
-      {query.isError && <ErrorState onRetry={() => void query.refetch()} className='min-h-32' />}
+      {query.isError && (
+        <ErrorState onRetry={() => void query.refetch()} className='min-h-32' />
+      )}
       {!query.isLoading && !query.isError && !query.data && (
         <div className='bg-muted/30 text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-xs'>
           {t('No body audit was stored for this request')}

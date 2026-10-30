@@ -25,6 +25,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { parseBodyAuditResponse } from '../lib/body-audit-response'
+import { BodyAuditJsonContent } from './body-audit-json-content'
 import { BodyAuditResultContent } from './body-audit-result'
 
 interface PayloadPanelProps {
@@ -44,52 +45,22 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function requestReading(value: unknown): string | null {
+function requestReading(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object') return null
   const data = value as Record<string, unknown>
-  const input = data.messages ?? data.contents ?? data.input
-  const messages =
-    typeof input === 'string' ? [{ role: 'user', content: input }] : input
-  if (!Array.isArray(messages)) return null
-  const sections: string[] = []
-  if (typeof data.instructions === 'string')
-    {sections.push(`[instructions]\n${data.instructions}`)}
-  if (typeof data.system === 'string') sections.push(`[system]\n${data.system}`)
-  sections.push(
-    ...messages.map((value, i) => {
-      const message = value as Record<string, unknown>
-      if (!message || typeof message !== 'object') return String(value)
-      const content = message.content ?? message.parts ?? message.text
-      let body = ''
-      if (typeof content === 'string') body = content
-      else if (Array.isArray(content)) {
-        body = content
-          .map((part) => {
-            if (typeof part === 'string') return part
-            if (
-              part &&
-              typeof part === 'object' &&
-              typeof part.text === 'string'
-            )
-              {return part.text}
-            return JSON.stringify(part, null, 2)
-          })
-          .join('\n\n')
-      } else body = JSON.stringify(message, null, 2)
-      if (message.tool_calls)
-        {body += `\n\n${JSON.stringify(message.tool_calls, null, 2)}`}
-      return `[${i + 1} · ${message.role ?? message.type ?? 'message'}]\n${body}`
-    })
-  )
-  return sections.join('\n\n')
+  // Keep every field, including tool descriptions, system content blocks and
+  // provider options. These can carry most of the actual request context.
+  if ('messages' in data || 'contents' in data || 'input' in data) return data
+  return null
 }
 
 export function PayloadPanel(props: PayloadPanelProps) {
   const { t } = useTranslation()
   const [view, setView] = useState('formatted')
   const parsed = useMemo(() => {
-    if (props.encoding !== 'utf-8')
-      {return { formatted: props.body, request: null }}
+    if (props.encoding !== 'utf-8') {
+      return { formatted: props.body, request: null }
+    }
     try {
       const json: unknown = JSON.parse(props.body)
       return {
@@ -112,18 +83,17 @@ export function PayloadPanel(props: PayloadPanelProps) {
     [view, parsed.request, props.body, props.encoding, props.contentType]
   )
   let warning: string | undefined
-  if (props.truncated)
-    {warning = t('The body exceeded the audit size limit and was truncated')}
-  else if (props.incomplete)
-    {warning = t(
+  if (props.truncated) {
+    warning = t('The body exceeded the audit size limit and was truncated')
+  } else if (props.incomplete) {
+    warning = t(
       'Client response write was interrupted; only the bytes written before the failure were captured, possibly ending inside a character.'
-    )}
-  else if (props.encoding === 'base64')
-    {warning = t('Binary body is displayed as Base64')}
+    )
+  } else if (props.encoding === 'base64') {
+    warning = t('Binary body is displayed as Base64')
+  }
   let visibleText = parsed.formatted
   if (view === 'raw') visibleText = props.body
-  if (view === 'readable' && parsed.request !== null)
-    {visibleText = parsed.request}
   const previewLimit = 128 * 1024
   const previewLimited = visibleText.length > previewLimit
 
@@ -170,19 +140,23 @@ export function PayloadPanel(props: PayloadPanelProps) {
         </Tabs>
       )}
       <div className='max-h-[min(44dvh,440px)] min-h-44 min-w-0 scrollbar-thin overflow-auto p-4 [overflow-wrap:anywhere]'>
-        {view === 'readable' && result ? (
+        {view === 'readable' && parsed.request !== null && (
+          <BodyAuditJsonContent value={parsed.request} />
+        )}
+        {view === 'readable' && result && (
           <BodyAuditResultContent
             result={result}
             emptyLabel={t('No readable text was extracted')}
             imageAlt={t('Generated image')}
           />
-        ) : (
+        )}
+        {view !== 'readable' && (
           <pre className='font-mono text-xs leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap'>
             {visibleText.slice(0, previewLimit) || t('Empty body')}
           </pre>
         )}
       </div>
-      {previewLimited && !result && (
+      {previewLimited && view !== 'readable' && (
         <p className='text-muted-foreground border-t px-3 py-2 text-xs'>
           {t(
             'Preview shortened for performance. Copy original retains the entire captured body.'

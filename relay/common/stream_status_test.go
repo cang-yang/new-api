@@ -191,6 +191,17 @@ func TestStreamStatusProtocolCompleteOverridesTransportEOF(t *testing.T) {
 	assert.False(t, s.IsNormalEnd())
 }
 
+func TestStreamStatusTerminalDoesNotHideTransportFailure(t *testing.T) {
+	for _, reason := range []StreamEndReason{StreamEndReasonScannerErr, StreamEndReasonClientGone, StreamEndReasonTimeout, StreamEndReasonHandlerStop} {
+		s := NewStreamStatus()
+		s.MarkCompleted()
+		s.SetEndReason(reason, fmt.Errorf("transport failed"))
+		assert.False(t, s.IsNormalEnd(), "reason=%s", reason)
+		// Keep the existing output/billing outcome separate from diagnostics.
+		assert.Equal(t, StreamResultComplete, s.Outcome(2), "reason=%s", reason)
+	}
+}
+
 func TestStreamStatus_IsNormalEnd_NilSafe(t *testing.T) {
 	t.Parallel()
 	var s *StreamStatus

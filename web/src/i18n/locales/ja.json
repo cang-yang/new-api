@@ -1,5 +1,11 @@
 {
   "translation": {
+    "Copy readable field": "フィールドのテキストをコピー",
+    "Expand long text": "長いテキストを展開",
+    "Upstream stopped generation due to content filtering": "上流がコンテンツフィルタリングにより生成を停止しました",
+    "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.": "応答 JSON が無効または不完全です。元のデータを確認してください。これは完成した回答ではありません。",
+    "Only reasoning was returned; no answer or tool call was received.": "推論内容のみ受信しました。回答やツール呼び出しはありません。",
+    "Client response was not captured. Showing upstream content; delivery to the client is unverified.": "クライアント応答は記録されていません。上流の内容を表示していますが、クライアントへの配信は未確認です。",
     "Copy original": "原文をコピー",
     "Formatted JSON": "整形表示",
     "Readable content": "読みやすい表示",

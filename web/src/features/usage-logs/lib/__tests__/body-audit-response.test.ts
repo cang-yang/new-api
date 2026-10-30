@@ -18,9 +18,75 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
+import { auditReadableCopy, auditReadingFields } from '../body-audit-reading'
 import { parseBodyAuditResponse } from '../body-audit-response'
 
 describe('body audit readable response parsing', () => {
+  test('copies mixed answer, decoded tool fields and reasoning without internal parser metadata', () => {
+    const result = parseBodyAuditResponse({
+      encoding: 'utf-8',
+      body: JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: 'Answer',
+              reasoning: 'Analysis',
+              tool_calls: [
+                {
+                  function: {
+                    name: 'game_content',
+                    arguments: JSON.stringify({
+                      content: 'Line one\nLine two',
+                      path: String.raw`C:\new`,
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    })
+    const copy = auditReadableCopy(result)
+    expect(copy).toContain('Answer')
+    expect(copy).toContain('Line one\nLine two')
+    expect(copy).toContain(String.raw`C:\new`)
+    expect(copy).toContain('[reasoning]\nAnalysis')
+    expect(copy).not.toContain('choiceIndex')
+    expect(
+      auditReadingFields({ 'a.b': 'one', a: { b: 'two' } }).map(
+        (field) => field.path
+      )
+    ).toEqual(['$["a.b"]', '$["a"]["b"]'])
+  })
+
+  test('does not present a truncated JSON protocol as an answer', () => {
+    const result = parseBodyAuditResponse({
+      body: '{"choices":[{"message":{"content":"unfinished',
+      encoding: 'utf-8',
+      contentType: 'application/json; charset=utf-8',
+    })
+    expect(result.kind).toBe('structured')
+    expect(result.text).toBe('')
+    expect(result.warnings).toContain('invalid-json')
+  })
+
+  test('distinguishes a filtered reasoning-only response from an answer', () => {
+    const result = parseBodyAuditResponse({
+      body: JSON.stringify({
+        choices: [
+          {
+            message: { reasoning_content: 'Analysis' },
+            finish_reason: 'content_filter',
+          },
+        ],
+      }),
+      encoding: 'utf-8',
+    })
+    expect(result.warnings).toContain('content-filter')
+    expect(result.reasoningOnly).toBe(true)
+  })
+
   const eventStream = (...events: unknown[]) =>
     events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
 
@@ -331,10 +397,9 @@ describe('body audit readable response parsing', () => {
 
   test('reports output length limits and malformed stream events while keeping valid text', () => {
     const result = parseBodyAuditResponse({
-      body:
-        `${eventStream({
-          choices: [{ delta: { content: 'partial' }, finish_reason: 'length' }],
-        })  }data: {broken}\n\n`,
+      body: `${eventStream({
+        choices: [{ delta: { content: 'partial' }, finish_reason: 'length' }],
+      })}data: {broken}\n\n`,
       encoding: 'utf-8',
       contentType: 'text/event-stream',
     })

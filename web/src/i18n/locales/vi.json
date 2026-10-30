@@ -1,5 +1,11 @@
 {
   "translation": {
+    "Copy readable field": "Sao chép văn bản trường",
+    "Expand long text": "Mở rộng văn bản dài",
+    "Upstream stopped generation due to content filtering": "Dịch vụ thượng nguồn đã dừng tạo do bộ lọc nội dung",
+    "Invalid or incomplete JSON response. Inspect the original payload; it is not a final answer.": "JSON phản hồi không hợp lệ hoặc chưa đầy đủ. Hãy xem dữ liệu gốc; đây không phải câu trả lời hoàn chỉnh.",
+    "Only reasoning was returned; no answer or tool call was received.": "Chỉ nhận được suy luận, chưa có câu trả lời hoặc lệnh gọi công cụ.",
+    "Client response was not captured. Showing upstream content; delivery to the client is unverified.": "Chưa ghi lại phản hồi cho máy khách. Đang hiển thị nội dung thượng nguồn; chưa xác nhận máy khách đã nhận được.",
     "Copy original": "Sao chép bản gốc",
     "Formatted JSON": "Chế độ xem định dạng",
     "Readable content": "Nội dung dễ đọc",

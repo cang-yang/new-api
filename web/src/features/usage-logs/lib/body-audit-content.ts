@@ -38,6 +38,8 @@ export type AuditWarning =
   | 'malformed-event'
   | 'upstream-error'
   | 'incomplete'
+  | 'content-filter'
+  | 'invalid-json'
 
 export interface AuditContent {
   outputs: AuditOutput[]
@@ -226,8 +228,9 @@ class AuditContentAccumulator {
         .map((item) => text(record(item).text))
         .join('')
     }
-    if (reasoning)
-      {block.reasoning = append ? block.reasoning + reasoning : reasoning}
+    if (reasoning) {
+      block.reasoning = append ? block.reasoning + reasoning : reasoning
+    }
     if (Array.isArray(message.tool_calls)) {
       message.tool_calls.forEach((call, toolIndex) => {
         const tool = record(call)
@@ -239,9 +242,11 @@ class AuditContentAccumulator {
         )
       })
     }
-    if (message.function_call)
-      {this.tool(`${key}:legacy`, record(message.function_call), n, append)}
+    if (message.function_call) {
+      this.tool(`${key}:legacy`, record(message.function_call), n, append)
+    }
     if (choice.finish_reason === 'length') this.warn('length')
+    if (choice.finish_reason === 'content_filter') this.warn('content-filter')
   }
 
   private responseItem(item: Record<string, unknown>, outputIndex: number) {
@@ -268,8 +273,9 @@ class AuditContentAccumulator {
   event(value: unknown, eventName?: string) {
     const data = record(value)
     const type = text(data.type) || eventName || ''
-    if (data.error || type === 'error' || type === 'response.failed')
-      {this.warn('upstream-error')}
+    if (data.error || type === 'error' || type === 'response.failed') {
+      this.warn('upstream-error')
+    }
     if (type === 'response.incomplete') {
       this.warn(
         record(record(data.response).incomplete_details).reason ===
@@ -359,8 +365,9 @@ class AuditContentAccumulator {
       const delta = record(data.delta)
       const key = `anthropic:${index(data.index)}`
       if (delta.type === 'text_delta') this.block(key).text += text(delta.text)
-      if (delta.type === 'thinking_delta')
-        {this.block(key).reasoning += text(delta.thinking)}
+      if (delta.type === 'thinking_delta') {
+        this.block(key).reasoning += text(delta.thinking)
+      }
       if (delta.type === 'input_json_delta') {
         this.initialToolInputs.delete(`${key}:tool`)
         this.tool(`${key}:tool`, { arguments: delta.partial_json }, 0, true)

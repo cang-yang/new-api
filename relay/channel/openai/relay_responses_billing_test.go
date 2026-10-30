@@ -115,6 +115,7 @@ func TestOaiResponsesStreamHandlerCompletionLifecycle(t *testing.T) {
 		name              string
 		event             string
 		responseStatus    string
+		incompleteReason  string
 		cancel            bool
 		cancelBeforeFlush bool
 		closeEOF          bool
@@ -140,10 +141,14 @@ func TestOaiResponsesStreamHandlerCompletionLifecycle(t *testing.T) {
 		{name: "protocol error before completion", event: "response.completed", responseStatus: "completed", priorError: true, cancel: true, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
 		{name: "upstream read failure before handler returns", event: "response.completed", responseStatus: "completed", scannerError: true, wantEnd: relaycommon.StreamEndReasonScannerErr, wantError: true},
 		{name: "done with failed response", event: "response.done", responseStatus: "failed", eof: true, wantEnd: relaycommon.StreamEndReasonEOF, wantError: true},
-		{name: "done with incomplete response", event: "response.done", responseStatus: "incomplete", eof: true, wantEnd: relaycommon.StreamEndReasonEOF},
+		{name: "done with incomplete response", event: "response.done", responseStatus: "incomplete", eof: true, wantEnd: relaycommon.StreamEndReasonEOF, wantError: true},
+		{name: "done at requested output limit", event: "response.done", responseStatus: "incomplete", incompleteReason: "max_output_tokens", eof: true, wantEnd: relaycommon.StreamEndReasonEOF},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := fmt.Sprintf(`{"type":%q,"response":{"status":%q,"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12},"output":[{"id":"img_1","type":"image_generation_call","status":"completed","result":"image-data"}]}}`, tc.event, tc.responseStatus)
+			if tc.incompleteReason != "" {
+				payload = strings.Replace(payload, `"usage":`, fmt.Sprintf(`"incomplete_details":{"reason":%q},"usage":`, tc.incompleteReason), 1)
+			}
 			if tc.responseStatus == "" {
 				payload = `{"type":"response.output_text.delta","delta":"hello"}`
 			}
