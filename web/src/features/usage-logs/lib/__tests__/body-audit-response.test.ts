@@ -18,10 +18,23 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import { auditReadableCopy, auditReadingFields } from '../body-audit-reading'
+import { auditReadableCopy, auditRequestSections } from '../body-audit-reading'
 import { parseBodyAuditResponse } from '../body-audit-response'
 
 describe('body audit readable response parsing', () => {
+  test('request sections retain unknown keys, empty collections and malformed roles', () => {
+    const value = JSON.parse(
+      '{"messages":[],"__proto__":{"kept":true},"input":[{"type":"function_call","role":null,"arguments":"{}"}],"system":false,"tools":[]}'
+    )
+    const sections = auditRequestSections(value)
+    expect(sections?.parameters.messages).toEqual([])
+    expect(Object.hasOwn(sections?.parameters ?? {}, '__proto__')).toBe(true)
+    expect(sections?.parameters.__proto__).toEqual({ kept: true })
+    expect(sections?.messages[0].role).not.toBe('user')
+    expect(sections?.messages[0].value).toEqual(value.input[0])
+    expect(sections?.context.system).toBe(false)
+    expect(sections?.tools.tools).toEqual([])
+  })
   test('copies mixed answer, decoded tool fields and reasoning without internal parser metadata', () => {
     const result = parseBodyAuditResponse({
       encoding: 'utf-8',
@@ -49,15 +62,14 @@ describe('body audit readable response parsing', () => {
     })
     const copy = auditReadableCopy(result)
     expect(copy).toContain('Answer')
-    expect(copy).toContain('Line one\nLine two')
-    expect(copy).toContain(String.raw`C:\new`)
+    expect(copy).toContain(JSON.stringify('Line one\nLine two'))
+    expect(copy).toContain(JSON.stringify(String.raw`C:\new`))
+    expect(copy).not.toContain('$["')
     expect(copy).toContain('[reasoning]\nAnalysis')
     expect(copy).not.toContain('choiceIndex')
     expect(
-      auditReadingFields({ 'a.b': 'one', a: { b: 'two' } }).map(
-        (field) => field.path
-      )
-    ).toEqual(['$["a.b"]', '$["a"]["b"]'])
+      auditRequestSections({ 'a.b': 'one', a: { b: 'two' } })?.parameters
+    ).toEqual({ 'a.b': 'one', a: { b: 'two' } })
   })
 
   test('does not present a truncated JSON protocol as an answer', () => {

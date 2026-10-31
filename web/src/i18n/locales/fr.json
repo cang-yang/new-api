@@ -7499,6 +7499,23 @@
     "Transport tool name": "Nom de l'outil de transport",
     "Transport text argument": "Argument contenant le texte",
     "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "Ajoute un outil déclaratif pour les fournisseurs renvoyant le texte visible dans une chaîne JSON. Les scripts de navigateur sont conservés, jamais exécutés par New API.",
-    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Les scripts de navigateur sont conservés sans être exécutés. Configurez la compatibilité native dans l'éditeur."
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Les scripts de navigateur sont conservés sans être exécutés. Configurez la compatibilité native dans l'éditeur.",
+    "Message": "Message",
+    "Load more": "Charger plus",
+    "View nested content": "Voir le contenu imbriqué",
+    "Reading section": "Section de lecture",
+    "Messages and context": "Messages et contexte",
+    "Tool definitions": "Définitions des outils",
+    "Request parameters": "Paramètres de requête",
+    "System message": "Message système",
+    "Developer message": "Message développeur",
+    "User message": "Message utilisateur",
+    "Assistant message": "Message assistant",
+    "Tool message": "Message outil",
+    "Copy message": "Copier le message",
+    "Copy readable content": "Copier le contenu lisible",
+    "Copy formatted data": "Copier les données formatées",
+    "Tool call arguments, not an execution result.": "Arguments d’appel renvoyés par le modèle, pas un résultat d’exécution.",
+    "Reconstructed result. Original payload preserves the captured response.": "Résultat reconstruit. Les données originales conservent la réponse capturée."
   }
 }

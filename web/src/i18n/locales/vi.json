@@ -7499,6 +7499,23 @@
     "Transport tool name": "Tên công cụ truyền",
     "Transport text argument": "Tham số chứa văn bản",
     "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "Thêm công cụ khai báo cho nhà cung cấp trả văn bản trong chuỗi JSON. Mã trình duyệt được giữ lại nhưng New API không thực thi.",
-    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Mã trình duyệt chỉ được giữ lại. Hãy cấu hình khả năng tương thích gốc trong trình sửa mẫu."
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Mã trình duyệt chỉ được giữ lại. Hãy cấu hình khả năng tương thích gốc trong trình sửa mẫu.",
+    "Message": "Tin nhắn",
+    "Load more": "Tải thêm",
+    "View nested content": "Xem nội dung lồng nhau",
+    "Reading section": "Phần nội dung",
+    "Messages and context": "Tin nhắn và ngữ cảnh",
+    "Tool definitions": "Định nghĩa công cụ",
+    "Request parameters": "Tham số yêu cầu",
+    "System message": "Tin nhắn hệ thống",
+    "Developer message": "Tin nhắn nhà phát triển",
+    "User message": "Tin nhắn người dùng",
+    "Assistant message": "Tin nhắn trợ lý",
+    "Tool message": "Tin nhắn công cụ",
+    "Copy message": "Sao chép tin nhắn",
+    "Copy readable content": "Sao chép nội dung dễ đọc",
+    "Copy formatted data": "Sao chép dữ liệu định dạng",
+    "Tool call arguments, not an execution result.": "Đây là đối số gọi công cụ do mô hình trả về, không phải kết quả thực thi.",
+    "Reconstructed result. Original payload preserves the captured response.": "Kết quả được tái cấu trúc. Dữ liệu gốc giữ nguyên phản hồi đã thu thập."
   }
 }

@@ -249,14 +249,22 @@ describe('body audit attempt actions', () => {
     })
     renderAudit()
     await user.click(await screen.findByRole('tab', { name: '可读内容' }))
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '阅读分区' }),
+      'tools'
+    )
     expect(
       screen.getByText(/World context Historical context/).textContent
     ).toBe('World context\nHistorical context')
     expect(screen.getByText('game_content')).toBeInTheDocument()
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '阅读分区' }),
+      'parameters'
+    )
     expect(screen.getByText('0.7')).toBeInTheDocument()
   })
 
-  test('can reveal fields beyond the initial preview and expand long text', async () => {
+  test('keeps objects grouped and reveals array pages without hiding sibling text', async () => {
     const user = userEvent.setup()
     const longText = `${'Long context\n'.repeat(400)}Context ending`
     render(
@@ -269,13 +277,211 @@ describe('body audit attempt actions', () => {
         />
       </I18nextProvider>
     )
-    expect(screen.queryByText('$["description"]')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /^展开 ·/ }))
-    expect(screen.getByText('$["description"]')).toBeInTheDocument()
-    await user.click(screen.getByText('展开长文本'))
-    await waitFor(() =>
-      expect(screen.getByText(/Context ending/).textContent).toBe(longText)
+    expect(screen.getByText(/Context ending/).textContent).toBe(longText)
+    expect(screen.queryByText('Message 259')).not.toBeInTheDocument()
+    for (let i = 0; i < 5; i++) {
+      await user.click(screen.getByRole('button', { name: /加载更多/ }))
+    }
+    expect(screen.getByText('Message 259')).toBeInTheDocument()
+    expect(screen.queryByText(/\$\["/)).not.toBeInTheDocument()
+  })
+
+  test('groups request messages by role and keeps unknown metadata accessible', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      request_body: JSON.stringify({
+        model: 'demo',
+        messages: [
+          { role: 'system', content: 'System instructions' },
+          { role: 'user', content: 'Question', custom: { retained: false } },
+        ],
+        custom_provider: { retained: 0 },
+      }),
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
+    expect(
+      screen.getByRole('heading', { name: /系统消息/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: /用户消息/ })
+    ).toBeInTheDocument()
+    expect(screen.getByText('Question')).toBeInTheDocument()
+    expect(screen.queryByText(/\$\["/)).not.toBeInTheDocument()
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '阅读分区' }),
+      'parameters'
     )
+    expect(screen.getByText('custom_provider')).toBeInTheDocument()
+    expect(screen.getByText('0')).toBeInTheDocument()
+  })
+
+  test('requests without messages open their parameters instead of a blank reading section', async () => {
+    getAudit.mockResolvedValue({
+      ...audit,
+      request_body: '{"model":"example","unknown":{"value":false}}',
+    })
+    renderAudit()
+    expect(
+      await screen.findByRole('tab', { name: '可读内容' })
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('combobox', { name: '阅读分区' })).toHaveValue(
+      'parameters'
+    )
+    expect(screen.getByText('example')).toBeInTheDocument()
+    expect(screen.getByText('false')).toBeInTheDocument()
+  })
+
+  test('unknown role names cannot resolve inherited properties or crash the reader', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      request_body: JSON.stringify({
+        messages: [{ role: '__proto__', content: 'Safe unknown role' }],
+      }),
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
+    expect(
+      screen.getByRole('heading', { name: /__proto__/ })
+    ).toBeInTheDocument()
+    expect(screen.getByText('Safe unknown role')).toBeInTheDocument()
+  })
+
+  test('binary audio keeps the playable final view and exact Base64 copy', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: 'SUQzBAAAAAA=',
+      client_response_body_encoding: 'base64',
+      client_response_content_type: 'audio/mpeg',
+    })
+    const { container } = renderAudit()
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    expect(container.querySelector('audio')).toHaveAttribute(
+      'src',
+      'data:audio/mpeg;base64,SUQzBAAAAAA='
+    )
+    await user.click(screen.getByRole('tab', { name: '原始数据' }))
+    await user.click(screen.getByRole('button', { name: '复制原文' }))
+    expect(await navigator.clipboard.readText()).toBe('SUQzBAAAAAA=')
+  })
+
+  test('final modes separate readable, reconstructed and exact captured data', async () => {
+    const user = userEvent.setup()
+    const body =
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n'
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: body,
+      client_response_content_type: 'text/event-stream',
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    expect(screen.getByRole('tab', { name: '可读内容' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(screen.getByText('Hello')).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '格式化视图' }))
+    expect(screen.getByText(/"text": "Hello"/)).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '原始数据' }))
+    expect(screen.getByText(/data: \{"choices"/).textContent).toBe(body)
+    await user.click(screen.getByRole('button', { name: '复制原文' }))
+    expect(await navigator.clipboard.readText()).toBe(body)
+  })
+
+  test('formatted SSE makes event JSON readable without changing the raw capture', async () => {
+    const user = userEvent.setup()
+    const body =
+      'event: message\r\ndata: {"content":"Line\\nnext","n":0}\r\n\r\ndata: broken\r\n\r\ndata: [DONE]\r\n\r\n'
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: body,
+      client_response_content_type: 'text/event-stream',
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    await user.click(screen.getByRole('tab', { name: '客户端原文' }))
+    expect(screen.getByText(/event: message/).textContent).toContain(
+      'data: {\n  "content": "Line\\nnext",\n  "n": 0\n}'
+    )
+    expect(screen.getByText(/event: message/).textContent).toContain(
+      'data: broken'
+    )
+    await user.click(screen.getByRole('tab', { name: '原始数据' }))
+    expect(screen.getByText(/event: message/).textContent).toBe(body)
+  })
+
+  test('unknown tool schemas retain nested groups and selectable reasoning', async () => {
+    const user = userEvent.setup()
+    getAudit.mockResolvedValue({
+      ...audit,
+      client_response_body: JSON.stringify({
+        choices: [
+          {
+            message: {
+              reasoning_content: 'Private analysis',
+              tool_calls: [
+                {
+                  function: {
+                    name: 'never_seen_before',
+                    arguments: JSON.stringify({
+                      batches: [
+                        {
+                          name: 'A',
+                          fields: {
+                            enabled: false,
+                            count: 0,
+                            note: 'line\nnext',
+                          },
+                        },
+                      ],
+                      empty: [],
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    })
+    renderAudit()
+    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
+    expect(screen.getByText('batches')).toBeInTheDocument()
+    expect(screen.getByText('fields')).toBeInTheDocument()
+    expect(screen.getByText('false')).toBeInTheDocument()
+    expect(screen.queryByText(/\$\["/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Private analysis')).not.toBeInTheDocument()
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '阅读分区' }),
+      'reasoning-0'
+    )
+    expect(screen.getByRole('combobox', { name: '阅读分区' })).toHaveFocus()
+    expect(screen.getByText('Private analysis')).toBeInTheDocument()
+    expect(screen.queryByText('batches')).not.toBeInTheDocument()
+  })
+
+  test('deep unknown structures can be opened and long captured text remains reachable', async () => {
+    const user = userEvent.setup()
+    let nested: unknown = { value: 'Deep ending', empty: {}, absent: null }
+    for (let i = 0; i < 7; i++) nested = { nested }
+    const longText = `${'A'.repeat(128 * 1024)}\nText ending`
+    render(
+      <I18nextProvider i18n={testI18n}>
+        <BodyAuditJsonContent value={{ nested, text: longText }} />
+      </I18nextProvider>
+    )
+    expect(screen.queryByText('Deep ending')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看嵌套内容' }))
+    expect(screen.getByText('Deep ending')).toBeInTheDocument()
+    expect(screen.getByText('{}')).toBeInTheDocument()
+    expect(screen.getByText('null')).toBeInTheDocument()
+    expect(screen.queryByText(/Text ending/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '加载更多' }))
+    expect(screen.getByText(/Text ending/).textContent).toBe(longText)
   })
 
   test('shows tool results and invalid arguments instead of only reasoning', async () => {
@@ -303,7 +509,9 @@ describe('body audit attempt actions', () => {
     })
     renderAudit()
     await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(screen.getByText('submit_image_plan')).toBeInTheDocument()
+    expect(
+      screen.getByRole('option', { name: /submit_image_plan/ })
+    ).toBeInTheDocument()
     expect(screen.getByText('工具参数不是有效的 JSON')).toBeInTheDocument()
     expect(screen.getByText('{"images":[}')).toBeInTheDocument()
   })

@@ -7499,6 +7499,23 @@
     "Transport tool name": "Имя инструмента передачи",
     "Transport text argument": "Аргумент с текстом",
     "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "Добавляет декларативный инструмент для провайдеров, возвращающих текст в строке JSON. Скрипты браузера сохраняются, но не выполняются New API.",
-    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Скрипты браузера сохраняются без выполнения. Настройте нативную совместимость в редакторе пресетов."
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "Скрипты браузера сохраняются без выполнения. Настройте нативную совместимость в редакторе пресетов.",
+    "Message": "Сообщение",
+    "Load more": "Загрузить ещё",
+    "View nested content": "Показать вложенные данные",
+    "Reading section": "Раздел просмотра",
+    "Messages and context": "Сообщения и контекст",
+    "Tool definitions": "Определения инструментов",
+    "Request parameters": "Параметры запроса",
+    "System message": "Системное сообщение",
+    "Developer message": "Сообщение разработчика",
+    "User message": "Сообщение пользователя",
+    "Assistant message": "Сообщение ассистента",
+    "Tool message": "Сообщение инструмента",
+    "Copy message": "Копировать сообщение",
+    "Copy readable content": "Копировать читаемый текст",
+    "Copy formatted data": "Копировать форматированные данные",
+    "Tool call arguments, not an execution result.": "Это аргументы вызова от модели, а не результат выполнения инструмента.",
+    "Reconstructed result. Original payload preserves the captured response.": "Восстановленная структура результата. Исходные данные сохраняют записанный ответ."
   }
 }

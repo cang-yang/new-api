@@ -16,95 +16,137 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 
-import { auditReadingFields } from '../lib/body-audit-reading'
-
-const previewLimit = 128 * 1024
-
-function ReadingField(props: { path: string; text: string }) {
+// Strings are already decoded. Never recursively parse/unescape model text.
+export function AuditText(props: { text: string; code?: boolean }) {
   const { t } = useTranslation()
-  const [expanded, setExpanded] = useState(false)
-  const long = props.text.length > 4000
+  const [limit, setLimit] = useState(128 * 1024)
   return (
-    <section className='min-w-0'>
-      <div className='mb-1 flex items-start justify-between gap-2'>
-        <h5 className='text-muted-foreground min-w-0 font-mono text-xs [overflow-wrap:anywhere]'>
-          {props.path}
-        </h5>
-        <CopyButton
-          value={props.text}
-          size='sm'
-          tooltip={t('Copy readable field')}
-        />
-      </div>
-      {long && !expanded && (
-        <pre className='font-sans text-sm leading-7 [overflow-wrap:anywhere] whitespace-pre-wrap'>
-          {props.text.slice(0, 320)}…
-        </pre>
-      )}
-      {long ? (
-        <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
-          <summary className='cursor-pointer text-xs'>
-            {t('Expand long text')}
-          </summary>
-          {expanded && (
-            <pre className='mt-2 font-sans text-sm leading-7 [overflow-wrap:anywhere] whitespace-pre-wrap'>
-              {props.text.slice(0, previewLimit)}
-            </pre>
-          )}
-        </details>
-      ) : (
-        <pre className='font-sans text-sm leading-7 [overflow-wrap:anywhere] whitespace-pre-wrap'>
-          {props.text || '""'}
-        </pre>
-      )}
-      {expanded && props.text.length > previewLimit && (
-        <p className='text-muted-foreground text-xs'>
-          {t(
-            'Preview shortened for performance. Copy original retains the entire captured body.'
-          )}
-        </p>
-      )}
-    </section>
-  )
-}
-
-// Shared by request context and tool arguments. React renders all text literally;
-// HTML, Markdown directives and tool definitions are never executed here.
-export function BodyAuditJsonContent(props: { value: unknown }) {
-  const { t } = useTranslation()
-  const fields = useMemo(() => auditReadingFields(props.value), [props.value])
-  const [showJson, setShowJson] = useState(false)
-  const [visibleFields, setVisibleFields] = useState(256)
-  return (
-    <div className='flex min-w-0 flex-col gap-4'>
-      {fields.slice(0, visibleFields).map((field) => (
-        <ReadingField key={field.path} {...field} />
-      ))}
-      {fields.length > visibleFields && (
+    <div className='min-w-0'>
+      <pre
+        className={
+          props.code
+            ? 'font-mono text-xs leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap'
+            : 'max-w-[80ch] font-sans text-sm leading-7 [overflow-wrap:anywhere] whitespace-pre-wrap'
+        }
+      >
+        {props.text.slice(0, limit) || '""'}
+      </pre>
+      {props.text.length > limit && (
         <Button
           variant='outline'
           size='sm'
-          onClick={() => setVisibleFields((count) => count + 256)}
+          className='mt-3'
+          onClick={() => setLimit((count) => count + 128 * 1024)}
         >
-          {t('Expand')} · {visibleFields} / {fields.length}
+          {t('Load more')}
         </Button>
       )}
-      <details onToggle={(event) => setShowJson(event.currentTarget.open)}>
-        <summary className='cursor-pointer text-xs font-medium'>
-          {t('Formatted JSON')}
-        </summary>
-        {showJson && (
-          <pre className='mt-2 font-mono text-xs leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap'>
-            {JSON.stringify(props.value, null, 2).slice(0, previewLimit)}
-          </pre>
-        )}
-      </details>
     </div>
   )
+}
+
+function StructuredValue(props: {
+  value: unknown
+  depth: number
+  budget: number
+}) {
+  const { t } = useTranslation()
+  const [visible, setVisible] = useState(50)
+  const [expanded, setExpanded] = useState(false)
+  const value = props.value
+  if (value === null || typeof value !== 'object') {
+    if (typeof value !== 'string') {
+      return (
+        <code className='bg-muted rounded px-1 py-0.5 text-xs'>
+          {JSON.stringify(value) ?? 'null'}
+        </code>
+      )
+    }
+    return (
+      <AuditText
+        text={
+          /^(?:true|false|null|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|\{\}|\[\])$/i.test(
+            value
+          )
+            ? JSON.stringify(value)
+            : value
+        }
+      />
+    )
+  }
+  const entries = Object.entries(value)
+  const array = Array.isArray(value)
+  if (!entries.length) {
+    return <span className='font-mono text-sm'>{array ? '[]' : '{}'}</span>
+  }
+  // Bound breadth and depth; deferred subtrees remain independently accessible.
+  if (!expanded && (props.depth >= 5 || props.budget < 2)) {
+    return (
+      <Button variant='outline' size='sm' onClick={() => setExpanded(true)}>
+        {t('View nested content')}
+      </Button>
+    )
+  }
+  const depth = expanded ? 0 : props.depth
+  const budget = expanded ? 400 : props.budget
+  const childBudget = Math.max(
+    1,
+    Math.floor((budget - 1) / Math.min(visible, entries.length))
+  )
+  return (
+    <div className='min-w-0 space-y-2'>
+      {entries.slice(0, visible).map(([key, nested]) => {
+        const compact =
+          !array &&
+          (nested === null || typeof nested !== 'object') &&
+          (typeof nested !== 'string' ||
+            (nested.length < 160 && !nested.includes('\n')))
+        return (
+          <section
+            key={key}
+            className={
+              compact
+                ? 'grid min-w-0 grid-cols-1 gap-x-4 sm:grid-cols-[minmax(7rem,10rem)_minmax(0,1fr)]'
+                : 'min-w-0 space-y-2 border-t pt-3 first:border-t-0 first:pt-0'
+            }
+          >
+            <h5 className='text-muted-foreground min-w-0 text-xs leading-7 font-medium [overflow-wrap:anywhere]'>
+              {array ? `#${Number(key) + 1}` : key}
+            </h5>
+            <div
+              className={
+                !compact && nested !== null && typeof nested === 'object'
+                  ? 'min-w-0 border-l pl-3'
+                  : 'min-w-0'
+              }
+            >
+              <StructuredValue
+                value={nested}
+                depth={depth + 1}
+                budget={childBudget}
+              />
+            </div>
+          </section>
+        )
+      })}
+      {entries.length > visible && (
+        <Button
+          variant='outline'
+          size='sm'
+          onClick={() => setVisible((count) => count + 50)}
+        >
+          {t('Load more')}
+        </Button>
+      )}
+    </div>
+  )
+}
+
+export function BodyAuditJsonContent(props: { value: unknown }) {
+  return <StructuredValue value={props.value} depth={0} budget={400} />
 }

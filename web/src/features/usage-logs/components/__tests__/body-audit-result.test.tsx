@@ -21,9 +21,21 @@ For commercial licensing, please contact support@quantumnous.com
 import { describe, expect, test } from 'vitest'
 
 import { parseBodyAuditResponse } from '../../lib/body-audit-response'
+import { BodyAuditJsonContent } from '../body-audit-json-content'
 import { BodyAuditResultContent } from '../body-audit-result'
 
 describe('body audit result content', () => {
+  test('distinguishes strings from primitive JSON values in the readable view', () => {
+    for (const value of [false, 0, null]) {
+      const scalar = renderToStaticMarkup(
+        createElement(BodyAuditJsonContent, { value })
+      )
+      const text = renderToStaticMarkup(
+        createElement(BodyAuditJsonContent, { value: String(value) })
+      )
+      expect(scalar).not.toBe(text)
+    }
+  })
   test('shows decoded tool text with its field name without executing HTML', () => {
     const result = parseBodyAuditResponse({
       encoding: 'utf-8',
@@ -31,7 +43,6 @@ describe('body audit result content', () => {
         choices: [
           {
             message: {
-              content: 'Answer',
               tool_calls: [
                 {
                   function: {
@@ -147,7 +158,9 @@ describe('body audit result content', () => {
     )
 
     expect(markup).toMatch(/<pre/)
-    expect(markup).toMatch(/&quot;status&quot;: &quot;completed&quot;/)
-    expect(markup).toMatch(/&quot;result&quot;: \[/)
+    expect(markup).toContain('>status</h5>')
+    expect(markup).toContain('>completed</pre>')
+    expect(markup).toContain('>result</h5>')
+    expect(markup).not.toContain('$[')
   })
 })

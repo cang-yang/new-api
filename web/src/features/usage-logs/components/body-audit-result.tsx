@@ -16,13 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import type { ParsedBodyAuditResponse } from '../lib/body-audit-response'
-import { BodyAuditJsonContent } from './body-audit-json-content'
+import { AuditText, BodyAuditJsonContent } from './body-audit-json-content'
 
 interface BodyAuditResultContentProps {
   result: ParsedBodyAuditResponse
@@ -32,7 +34,49 @@ interface BodyAuditResultContentProps {
 
 export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
   const { t } = useTranslation()
+  const [selected, setSelected] = useState('')
   const tools = props.result.toolCalls ?? []
+  const outputs = props.result.outputs?.length
+    ? props.result.outputs
+    : [
+        {
+          index: 0,
+          text: props.result.reasoningOnly ? '' : props.result.text,
+          reasoning: props.result.reasoning || '',
+        },
+      ]
+  const sections = [
+    ...outputs
+      .filter((output) => output.text)
+      .map((output) => ({
+        key: `answer-${output.index}`,
+        label:
+          outputs.length > 1
+            ? `${t('Response choice')} ${output.index + 1}`
+            : t('Answer'),
+        text: output.text,
+        tool: null,
+      })),
+    ...tools.map((tool, index) => ({
+      key: `tool-${tool.key}`,
+      label: `${t('Tool call')} ${index + 1} · ${tool.name || tool.id}`,
+      text: tool.arguments,
+      tool,
+    })),
+    ...outputs
+      .filter((output) => output.reasoning)
+      .map((output) => ({
+        key: `reasoning-${output.index}`,
+        label:
+          outputs.length > 1
+            ? `${t('Reasoning')} · ${output.index + 1}`
+            : t('Reasoning'),
+        text: output.reasoning,
+        tool: null,
+      })),
+  ]
+  const active =
+    sections.find((section) => section.key === selected) ?? sections[0]
   const hasDetails =
     tools.length > 0 ||
     props.result.reasoningOnly ||
@@ -66,84 +110,65 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
             <AlertDescription>{warningLabels[warning]}</AlertDescription>
           </Alert>
         ))}
-        {(props.result.outputs?.length ?? 0) > 1
-          ? props.result.outputs?.map((output) => (
-              <section key={output.index} className='min-w-0'>
-                <h4 className='mb-2 text-xs font-medium'>
-                  {t('Response choice')} {output.index + 1}
-                </h4>
-                <div className='text-sm leading-7 whitespace-pre-wrap'>
-                  {output.text}
-                </div>
-              </section>
-            ))
-          : props.result.text &&
-            !props.result.reasoningOnly && (
-              <div className='text-sm leading-7 whitespace-pre-wrap'>
-                {props.result.text}
-              </div>
-            )}
-        {tools.map((tool) => {
-          return (
-            <section key={tool.key} className='min-w-0 border-t pt-3'>
-              <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
-                <h4 className='min-w-0 text-sm font-medium'>
-                  {tool.name || t('Tool call')}
-                </h4>
-                <CopyButton
-                  value={tool.arguments}
-                  size='sm'
-                  tooltip={t('Copy tool arguments')}
-                />
-              </div>
-              {!tool.valid && (
-                <Alert>
-                  <AlertDescription>
-                    {t('Tool arguments are not valid JSON')}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {tool.valid ? (
-                <BodyAuditJsonContent value={JSON.parse(tool.arguments)} />
-              ) : (
-                <pre className='mt-2 font-mono text-xs leading-6 whitespace-pre-wrap'>
-                  {tool.arguments}
-                </pre>
-              )}
-            </section>
-          )
-        })}
-        {props.result.reasoning && (
-          <details open={props.result.reasoningOnly}>
-            <summary className='cursor-pointer text-xs font-medium'>
-              {t('Reasoning')}
-            </summary>
-            <div className='mt-2 text-sm leading-7 whitespace-pre-wrap'>
-              {props.result.reasoning}
+        {active && (
+          <section className='min-w-0 space-y-4'>
+            <div className='bg-background sticky top-0 z-10 flex min-w-0 items-center justify-between gap-2 pb-2'>
+              <NativeSelect
+                aria-label={t('Reading section')}
+                value={active.key}
+                onChange={(event) => setSelected(event.target.value)}
+                className='max-w-full min-w-0 flex-1'
+              >
+                {sections.map((section) => (
+                  <NativeSelectOption key={section.key} value={section.key}>
+                    {section.label}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <CopyButton
+                value={active.text}
+                size='sm'
+                tooltip={
+                  active.tool
+                    ? t('Copy tool arguments')
+                    : t('Copy readable content')
+                }
+              />
             </div>
-          </details>
+            {active.tool && (
+              <p className='text-muted-foreground text-xs'>
+                {t('Tool call arguments, not an execution result.')}
+              </p>
+            )}
+            {active.tool && !active.tool.valid && (
+              <Alert>
+                <AlertDescription>
+                  {t('Tool arguments are not valid JSON')}
+                </AlertDescription>
+              </Alert>
+            )}
+            {active.tool?.valid ? (
+              <BodyAuditJsonContent
+                key={active.key}
+                value={JSON.parse(active.tool.arguments)}
+              />
+            ) : (
+              <AuditText
+                key={active.key}
+                text={active.text}
+                code={!!active.tool}
+              />
+            )}
+          </section>
         )}
-        {props.result.kind === 'structured' && (
-          <details>
-            <summary className='cursor-pointer text-xs'>
-              {t('Original payload')}
-            </summary>
-            <pre className='mt-2 font-mono text-xs whitespace-pre-wrap'>
-              {typeof props.result.structured === 'string'
-                ? props.result.structured
-                : JSON.stringify(props.result.structured, null, 2)}
-            </pre>
-          </details>
+        {!active && props.result.kind === 'structured' && (
+          <BodyAuditJsonContent value={props.result.structured} />
         )}
       </div>
     )
   }
   if (props.result.kind === 'text') {
-    return (
-      <div className='text-sm leading-7 break-words whitespace-pre-wrap'>
-        {props.result.text}
-      </div>
-    )
+    return <AuditText text={props.result.text} />
   }
 
   if (props.result.kind === 'image') {
@@ -206,15 +231,7 @@ export function BodyAuditResultContent(props: BodyAuditResultContentProps) {
   }
 
   if (props.result.kind === 'structured') {
-    const formatted =
-      typeof props.result.structured === 'string'
-        ? props.result.structured
-        : JSON.stringify(props.result.structured, null, 2)
-    return (
-      <pre className='font-mono text-xs leading-6 break-words whitespace-pre-wrap'>
-        {formatted}
-      </pre>
-    )
+    return <BodyAuditJsonContent value={props.result.structured} />
   }
 
   return <div className='text-muted-foreground text-sm'>{props.emptyLabel}</div>

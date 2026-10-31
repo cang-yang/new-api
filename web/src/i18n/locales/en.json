@@ -7694,6 +7694,23 @@
     "Receive scripts process upstream content before it reaches the client. Only applicable enabled receive scripts buffer streaming responses. Send scripts are off by default and do not buffer responses.": "Receive scripts process upstream content before it reaches the client. Only applicable enabled receive scripts buffer streaming responses. Send scripts are off by default and do not buffer responses.",
     "Send-side": "Send-side",
     "Unsupported placement · preserved only": "Unsupported placement · preserved only",
-    "Replace, delete or extract text with ordered regex rules. Receive rules preserve reasoning, tool calls and usage. Send-side processing is optional and off by default.": "Replace, delete or extract text with ordered regex rules. Receive rules preserve reasoning, tool calls and usage. Send-side processing is optional and off by default."
+    "Replace, delete or extract text with ordered regex rules. Receive rules preserve reasoning, tool calls and usage. Send-side processing is optional and off by default.": "Replace, delete or extract text with ordered regex rules. Receive rules preserve reasoning, tool calls and usage. Send-side processing is optional and off by default.",
+    "Message": "Message",
+    "Load more": "Load more",
+    "View nested content": "View nested content",
+    "Reading section": "Reading section",
+    "Messages and context": "Messages and context",
+    "Tool definitions": "Tool definitions",
+    "Request parameters": "Request parameters",
+    "System message": "System message",
+    "Developer message": "Developer message",
+    "User message": "User message",
+    "Assistant message": "Assistant message",
+    "Tool message": "Tool message",
+    "Copy message": "Copy message",
+    "Copy readable content": "Copy readable content",
+    "Copy formatted data": "Copy formatted data",
+    "Tool call arguments, not an execution result.": "Tool call arguments, not an execution result.",
+    "Reconstructed result. Original payload preserves the captured response.": "Reconstructed result. Original payload preserves the captured response."
   }
 }

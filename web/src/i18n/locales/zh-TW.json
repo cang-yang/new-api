@@ -7520,6 +7520,23 @@
     "Transport tool name": "傳輸工具名稱",
     "Transport text argument": "傳輸文字參數",
     "Adds one declarative function tool for providers that return the visible response in a JSON string. Browser scripts are preserved but never executed by New API.": "為將正文放在 JSON 字串中的上游新增宣告式函式工具。瀏覽器腳本僅保留，New API 不會執行它們。",
-    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "瀏覽器腳本僅保留，不會執行。可在預設編輯器設定原生相容功能。"
+    "Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.": "瀏覽器腳本僅保留，不會執行。可在預設編輯器設定原生相容功能。",
+    "Message": "訊息",
+    "Load more": "載入更多",
+    "View nested content": "查看巢狀內容",
+    "Reading section": "閱讀分區",
+    "Messages and context": "訊息與上下文",
+    "Tool definitions": "工具定義",
+    "Request parameters": "請求參數",
+    "System message": "系統訊息",
+    "Developer message": "開發者訊息",
+    "User message": "使用者訊息",
+    "Assistant message": "助手訊息",
+    "Tool message": "工具訊息",
+    "Copy message": "複製訊息",
+    "Copy readable content": "複製可讀內容",
+    "Copy formatted data": "複製格式化資料",
+    "Tool call arguments, not an execution result.": "以下是模型傳回的工具呼叫參數，不代表工具已執行。",
+    "Reconstructed result. Original payload preserves the captured response.": "這是整理後的結果結構；原始資料保留擷取到的回應。"
   }
 }

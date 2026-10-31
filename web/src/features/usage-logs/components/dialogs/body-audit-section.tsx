@@ -20,8 +20,6 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
-  Check,
-  Copy,
   FileJson2,
   FileText,
   GitBranch,
@@ -46,16 +44,13 @@ import {
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { cn } from '@/lib/utils'
 
 import { getBodyAudit } from '../../api'
-import { auditReadableCopy } from '../../lib/body-audit-reading'
 import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import { diffJsonText } from '../../lib/json-diff'
 import type { AuditAttempt, BodyAudit } from '../../types'
 import { PayloadPanel } from '../body-audit-payload'
-import { BodyAuditResultContent } from '../body-audit-result'
 import { AuditReplayDialog } from './audit-replay-dialog'
 
 function formatBytes(bytes: number): string {
@@ -87,9 +82,6 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
       }),
     [hasClientResponse, props.audit, props.requestPath]
   )
-  const copyText = useMemo(() => auditReadableCopy(result), [result])
-  const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
-  const copied = copiedText === copyText
 
   return (
     <Tabs value={activeView} onValueChange={setActiveView} className='gap-2'>
@@ -119,68 +111,57 @@ function ResponsePanel(props: { audit: BodyAudit; requestPath?: string }) {
       </div>
       <TabsContent value='result'>
         {activeView === 'result' && (
-          <div className='border-border bg-background overflow-hidden rounded-lg border shadow-sm'>
-            <div className='bg-muted/35 flex min-h-10 items-center justify-between gap-3 border-b px-3 py-2'>
-              <div className='flex items-center gap-2 text-xs font-medium'>
-                <FileText
-                  className='text-muted-foreground size-3.5'
-                  aria-hidden='true'
-                />
-                {t('Readable final response')}
-              </div>
-              <Button
-                variant='ghost'
-                size='sm'
-                className='h-7 gap-1.5 px-2'
-                disabled={!copyText}
-                onClick={() => copyToClipboard(copyText)}
-                aria-label={t('Copy to clipboard')}
-              >
-                {copied ? (
-                  <Check className='size-3.5 text-emerald-600 dark:text-emerald-400' />
-                ) : (
-                  <Copy className='size-3.5' />
+          <PayloadPanel
+            title={t('Readable final response')}
+            finalResult={result}
+            body={
+              hasClientResponse
+                ? props.audit.client_response_body
+                : props.audit.response_body
+            }
+            encoding={
+              hasClientResponse
+                ? props.audit.client_response_body_encoding
+                : props.audit.response_body_encoding
+            }
+            size={
+              hasClientResponse
+                ? props.audit.client_response_body_size
+                : props.audit.response_body_size
+            }
+            contentType={
+              hasClientResponse
+                ? props.audit.client_response_content_type
+                : props.audit.response_content_type
+            }
+            truncated={false}
+            incomplete={
+              hasClientResponse && !props.audit.client_response_complete
+            }
+            icon={<FileText className='size-3.5' aria-hidden='true' />}
+            notice={
+              <>
+                {!hasClientResponse && (
+                  <Alert className='mb-3'>
+                    <AlertDescription>
+                      {t(
+                        'Client response was not captured. Showing upstream content; delivery to the client is unverified.'
+                      )}
+                    </AlertDescription>
+                  </Alert>
                 )}
-                <span className='text-xs'>
-                  {copied ? t('Copied') : t('Copy')}
-                </span>
-              </Button>
-            </div>
-            <div className='max-h-[min(44dvh,440px)] min-h-44 scrollbar-thin overflow-auto p-4'>
-              {hasClientResponse && !props.audit.client_response_complete && (
-                <Alert className='mb-3'>
-                  <AlertDescription>
-                    {t(
-                      'Client response write was interrupted; only the bytes written before the failure were captured, possibly ending inside a character.'
-                    )}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {!hasClientResponse && (
-                <Alert className='mb-3'>
-                  <AlertDescription>
-                    {t(
-                      'Client response was not captured. Showing upstream content; delivery to the client is unverified.'
-                    )}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {(hasClientResponse
-                ? props.audit.client_response_body_truncated
-                : props.audit.response_body_truncated) && (
-                <Alert className='mb-3'>
-                  <AlertDescription>
-                    {t('Partial capture: this result may be incomplete')}
-                  </AlertDescription>
-                </Alert>
-              )}
-              <BodyAuditResultContent
-                result={result}
-                emptyLabel={t('No readable text was extracted')}
-                imageAlt={t('Generated image')}
-              />
-            </div>
-          </div>
+                {(hasClientResponse
+                  ? props.audit.client_response_body_truncated
+                  : props.audit.response_body_truncated) && (
+                  <Alert className='mb-3'>
+                    <AlertDescription>
+                      {t('Partial capture: this result may be incomplete')}
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </>
+            }
+          />
         )}
       </TabsContent>
       <TabsContent value='client'>
@@ -396,6 +377,7 @@ function AttemptTimeline(props: {
             <TabsContent value='attempt-request'>
               {activeView === 'attempt-request' && (
                 <PayloadPanel
+                  request
                   title={t('Exact payload sent in this attempt')}
                   body={selected.request_body}
                   encoding={selected.request_body_encoding}
@@ -564,6 +546,7 @@ function AuditContent(props: { audit: BodyAudit; requestPath?: string }) {
         <TabsContent value='request'>
           {activeView === 'request' && (
             <PayloadPanel
+              request
               title={t('Final request sent to upstream')}
               body={props.audit.request_body}
               encoding={props.audit.request_body_encoding}

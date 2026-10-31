@@ -22,10 +22,19 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-import { parseBodyAuditResponse } from '../lib/body-audit-response'
-import { BodyAuditJsonContent } from './body-audit-json-content'
+import {
+  auditReadableCopy,
+  auditResultDocument,
+  formatAuditStream,
+} from '../lib/body-audit-reading'
+import {
+  parseBodyAuditResponse,
+  type ParsedBodyAuditResponse,
+} from '../lib/body-audit-response'
+import { AuditText } from './body-audit-json-content'
+import { BodyAuditRequestContent } from './body-audit-request'
 import { BodyAuditResultContent } from './body-audit-result'
 
 interface PayloadPanelProps {
@@ -37,6 +46,9 @@ interface PayloadPanelProps {
   incomplete?: boolean
   contentType?: string
   icon: ReactNode
+  request?: boolean
+  finalResult?: ParsedBodyAuditResponse
+  notice?: ReactNode
 }
 
 function formatBytes(bytes: number): string {
@@ -45,18 +57,13 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function requestReading(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object') return null
-  const data = value as Record<string, unknown>
-  // Keep every field, including tool descriptions, system content blocks and
-  // provider options. These can carry most of the actual request context.
-  if ('messages' in data || 'contents' in data || 'input' in data) return data
-  return null
-}
-
 export function PayloadPanel(props: PayloadPanelProps) {
   const { t } = useTranslation()
-  const [view, setView] = useState('formatted')
+  const [view, setView] = useState(
+    props.finalResult || props.request ? 'readable' : 'formatted'
+  )
+  const hasViews = props.encoding === 'utf-8' || !!props.finalResult
+  const activeView = hasViews ? view : 'raw'
   const parsed = useMemo(() => {
     if (props.encoding !== 'utf-8') {
       return { formatted: props.body, request: null }
@@ -65,22 +72,30 @@ export function PayloadPanel(props: PayloadPanelProps) {
       const json: unknown = JSON.parse(props.body)
       return {
         formatted: JSON.stringify(json, null, 2),
-        request: requestReading(json),
+        request: props.request ? json : null,
       }
     } catch {
-      return { formatted: props.body, request: null }
+      return { formatted: formatAuditStream(props.body), request: null }
     }
-  }, [props.body, props.encoding])
+  }, [props.body, props.encoding, props.request])
   const result = useMemo(
     () =>
-      view === 'readable' && parsed.request === null
+      props.finalResult ??
+      (activeView === 'readable' && !props.request
         ? parseBodyAuditResponse({
             body: props.body,
             encoding: props.encoding,
             contentType: props.contentType,
           })
-        : null,
-    [view, parsed.request, props.body, props.encoding, props.contentType]
+        : null),
+    [
+      props.finalResult,
+      activeView,
+      props.request,
+      props.body,
+      props.encoding,
+      props.contentType,
+    ]
   )
   let warning: string | undefined
   if (props.truncated) {
@@ -89,13 +104,29 @@ export function PayloadPanel(props: PayloadPanelProps) {
     warning = t(
       'Client response write was interrupted; only the bytes written before the failure were captured, possibly ending inside a character.'
     )
-  } else if (props.encoding === 'base64') {
+  } else if (props.encoding === 'base64' && activeView === 'raw') {
     warning = t('Binary body is displayed as Base64')
   }
-  let visibleText = parsed.formatted
-  if (view === 'raw') visibleText = props.body
-  const previewLimit = 128 * 1024
-  const previewLimited = visibleText.length > previewLimit
+  const formatted = useMemo(
+    () =>
+      props.finalResult
+        ? (JSON.stringify(auditResultDocument(props.finalResult), null, 2) ??
+          '')
+        : parsed.formatted,
+    [props.finalResult, parsed.formatted]
+  )
+  let copyText = props.body
+  let copyLabel = t('Copy original')
+  if (props.finalResult && activeView !== 'raw') {
+    copyText =
+      activeView === 'formatted'
+        ? formatted
+        : auditReadableCopy(props.finalResult)
+    copyLabel =
+      activeView === 'formatted'
+        ? t('Copy formatted data')
+        : t('Copy readable content')
+  }
 
   return (
     <div className='bg-background max-w-full min-w-0 overflow-hidden rounded-lg border'>
@@ -113,12 +144,12 @@ export function PayloadPanel(props: PayloadPanelProps) {
           />
         </div>
         <CopyButton
-          value={props.body}
+          value={copyText}
           size='sm'
-          aria-label={t('Copy original')}
-          tooltip={t('Copy original')}
+          aria-label={copyLabel}
+          tooltip={copyLabel}
         >
-          {t('Copy original')}
+          {copyLabel}
         </CopyButton>
       </div>
       {warning && (
@@ -126,42 +157,57 @@ export function PayloadPanel(props: PayloadPanelProps) {
           <AlertDescription>{warning}</AlertDescription>
         </Alert>
       )}
-      {props.encoding === 'utf-8' && (
+      {props.notice}
+      {hasViews ? (
         <Tabs
-          value={view}
+          value={activeView}
           onValueChange={setView}
-          className='min-w-0 px-3 pt-2'
+          className='min-w-0 gap-0'
         >
-          <TabsList className='h-auto max-w-full flex-wrap'>
-            <TabsTrigger value='formatted'>{t('Formatted JSON')}</TabsTrigger>
+          <TabsList className='mx-3 mt-2 h-auto max-w-full flex-wrap'>
             <TabsTrigger value='readable'>{t('Readable content')}</TabsTrigger>
+            <TabsTrigger value='formatted'>{t('Formatted JSON')}</TabsTrigger>
             <TabsTrigger value='raw'>{t('Original payload')}</TabsTrigger>
           </TabsList>
+          <TabsContent value='readable' className='min-w-0'>
+            <div className='max-h-[min(56dvh,640px)] min-h-44 min-w-0 overflow-auto p-4 [overflow-wrap:anywhere]'>
+              {props.request && parsed.request !== null && (
+                <BodyAuditRequestContent value={parsed.request} />
+              )}
+              {props.request && parsed.request === null && (
+                <AuditText text={props.body || t('Empty body')} code />
+              )}
+              {result && (
+                <BodyAuditResultContent
+                  result={result}
+                  emptyLabel={t('No readable text was extracted')}
+                  imageAlt={t('Generated image')}
+                />
+              )}
+            </div>
+          </TabsContent>
+          <TabsContent value='formatted' className='min-w-0'>
+            {props.finalResult && (
+              <p className='text-muted-foreground px-4 pt-3 text-xs'>
+                {t(
+                  'Reconstructed result. Original payload preserves the captured response.'
+                )}
+              </p>
+            )}
+            <div className='max-h-[min(56dvh,640px)] min-h-44 min-w-0 overflow-auto p-4'>
+              <AuditText text={formatted || t('Empty body')} code />
+            </div>
+          </TabsContent>
+          <TabsContent value='raw' className='min-w-0'>
+            <div className='max-h-[min(56dvh,640px)] min-h-44 min-w-0 overflow-auto p-4'>
+              <AuditText text={props.body || t('Empty body')} code />
+            </div>
+          </TabsContent>
         </Tabs>
-      )}
-      <div className='max-h-[min(44dvh,440px)] min-h-44 min-w-0 scrollbar-thin overflow-auto p-4 [overflow-wrap:anywhere]'>
-        {view === 'readable' && parsed.request !== null && (
-          <BodyAuditJsonContent value={parsed.request} />
-        )}
-        {view === 'readable' && result && (
-          <BodyAuditResultContent
-            result={result}
-            emptyLabel={t('No readable text was extracted')}
-            imageAlt={t('Generated image')}
-          />
-        )}
-        {view !== 'readable' && (
-          <pre className='font-mono text-xs leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap'>
-            {visibleText.slice(0, previewLimit) || t('Empty body')}
-          </pre>
-        )}
-      </div>
-      {previewLimited && view !== 'readable' && (
-        <p className='text-muted-foreground border-t px-3 py-2 text-xs'>
-          {t(
-            'Preview shortened for performance. Copy original retains the entire captured body.'
-          )}
-        </p>
+      ) : (
+        <div className='max-h-[min(56dvh,640px)] min-h-44 min-w-0 overflow-auto p-4'>
+          <AuditText text={props.body || t('Empty body')} code />
+        </div>
       )}
     </div>
   )
