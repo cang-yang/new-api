@@ -19,604 +19,264 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { createInstance, type i18n } from 'i18next'
+import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 
-import zhCN from '@/i18n/locales/zh.json'
-
+import { usageLogSchema } from '../../data/schema'
 import type { BodyAudit } from '../../types'
-import { BodyAuditJsonContent } from '../body-audit-json-content'
 import { BodyAuditSection } from '../dialogs/body-audit-section'
+import { DetailsDialog } from '../dialogs/details-dialog'
 
-const { getAudit, previewReplay } = vi.hoisted(() => ({
+const { getAudit, executeReplay, previewReplay } = vi.hoisted(() => ({
   getAudit: vi.fn(),
+  executeReplay: vi.fn(),
   previewReplay: vi.fn(),
 }))
-
 vi.mock('../../api', () => ({
-  executeBodyAuditReplay: vi.fn(),
   getBodyAudit: getAudit,
+  executeBodyAuditReplay: executeReplay,
   previewBodyAuditReplay: previewReplay,
 }))
-
-const audit: BodyAudit = {
-  request_id: 'request-1',
-  created_at: 1,
-  updated_at: 1,
-  model_name: 'glm-5.2',
-  channel_id: 2093,
-  request_body: '{"model":"glm-5.2"}',
-  request_body_encoding: 'utf-8',
-  request_body_size: 19,
-  request_body_truncated: false,
-  response_body: '{"choices":[]}',
-  response_body_encoding: 'utf-8',
-  response_body_size: 14,
-  response_body_truncated: false,
-  response_status: 200,
-  response_content_type: 'application/json',
-  response_complete: true,
-  client_response_body: '{"choices":[]}',
-  client_response_body_encoding: 'utf-8',
-  client_response_body_size: 14,
-  client_response_body_truncated: false,
-  client_response_status: 200,
-  client_response_content_type: 'application/json',
-  client_response_complete: true,
-  attempts: [
-    {
-      id: 7,
-      attempt_no: 0,
-      routing_retry_index: 0,
-      channel_id: 2093,
-      channel_type: 8,
-      channel_name: '百度千帆_正常',
-      request_model: 'glm-5.2',
-      upstream_model: 'glm-5.2',
-      request_format: 'openai',
-      upstream_format: 'openai',
-      target: 'https://qianfan.example/chat/completions',
-      state: 'succeeded',
-      outcome: 'complete',
-      http_status: 200,
-      error_code: '',
-      error_message: '',
-      retry_action: '',
-      terminal_kind: 'protocol_terminal',
-      complete: true,
-      duration_ms: 3000,
-      request_body: '{"model":"glm-5.2"}',
-      request_body_encoding: 'utf-8',
-      request_body_size: 19,
-      request_body_truncated: false,
-      response_body: '{"choices":[]}',
-      response_body_encoding: 'utf-8',
-      response_body_size: 14,
-      response_body_truncated: false,
-    },
-  ],
-}
-
-function renderAudit() {
-  const queryClient = new QueryClient({
+const i18n = createInstance()
+let audit: BodyAudit
+beforeEach(async () => {
+  vi.clearAllMocks()
+  await i18n.init({
+    lng: 'en',
+    resources: { en: { translation: {} } },
+    interpolation: { escapeValue: false },
+  })
+  const body = JSON.stringify({
+    choices: [{ message: { content: 'Delivered answer' } }],
+  })
+  audit = {
+    request_id: 'request-1',
+    created_at: 1,
+    updated_at: 1,
+    model_name: 'fixture',
+    channel_id: 1,
+    request_body: JSON.stringify({
+      messages: [{ role: 'user', content: 'Question' }],
+      temperature: 0,
+    }),
+    request_body_encoding: 'utf-8',
+    request_body_size: 90,
+    request_body_truncated: false,
+    response_body: JSON.stringify({
+      choices: [{ message: { content: 'Upstream answer' } }],
+    }),
+    response_body_encoding: 'utf-8',
+    response_body_size: 90,
+    response_body_truncated: false,
+    response_content_type: 'application/json',
+    response_status: 200,
+    response_complete: true,
+    client_response_body: body,
+    client_response_body_encoding: 'utf-8',
+    client_response_body_size: body.length,
+    client_response_body_truncated: false,
+    client_response_content_type: 'application/json',
+    client_response_status: 200,
+    client_response_complete: true,
+  }
+  getAudit.mockImplementation(async () => audit)
+})
+function mount(enabled = true) {
+  const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
-    <I18nextProvider i18n={testI18n}>
-      <QueryClientProvider client={queryClient}>
-        <BodyAuditSection requestId='request-1' enabled />
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <BodyAuditSection requestId='request-1' enabled={enabled} />
       </QueryClientProvider>
     </I18nextProvider>
   )
 }
-
-let testI18n: i18n
-
-describe('body audit attempt actions', () => {
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    testI18n = createInstance()
-    await testI18n.init({
-      lng: 'zhCN',
-      fallbackLng: 'zhCN',
-      resources: { zhCN },
-      nsSeparator: false,
-      interpolation: { escapeValue: false },
-    })
-    getAudit.mockResolvedValue(audit)
-    previewReplay.mockImplementation(
-      async (_requestId: string, _attemptId: number, mode: string) => ({
-        mode,
-        available: false,
-        unavailable_reason: 'client_level_replay_not_supported',
-      })
-    )
+test('opens the final result directly with flat source navigation', async () => {
+  mount()
+  expect(
+    await screen.findByRole('tab', { name: 'Final Result' })
+  ).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('tab', { name: 'Client Response' })).toBeVisible()
+  expect(screen.getByRole('tab', { name: 'Upstream Response' })).toBeVisible()
+  expect(screen.getByText('Delivered answer')).toBeVisible()
+  expect(
+    screen.queryByRole('tab', { name: 'Response' })
+  ).not.toBeInTheDocument()
+})
+test('keeps all navigation outside the single reading viewport', async () => {
+  mount()
+  const viewport = await screen.findByRole('region', {
+    name: 'Reading content',
   })
+  expect(
+    screen.getAllByRole('region', { name: 'Reading content' })
+  ).toHaveLength(1)
+  for (const tab of screen.getAllByRole('tab')) {
+    expect(viewport).not.toContainElement(tab)
+  }
+  expect(viewport).not.toContainElement(
+    screen.getByRole('button', { name: 'Copy raw body' })
+  )
+  expect(viewport).toHaveClass('overflow-y-auto', 'min-h-0')
+})
+test('copies captured bytes even while displaying a decoded final answer', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(await screen.findByRole('button', { name: 'Copy raw body' }))
+  expect(await navigator.clipboard.readText()).toBe(audit.client_response_body)
+})
+test('switching upstream does not reuse client text and raw mode retains the payload', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(
+    await screen.findByRole('tab', { name: 'Upstream Response' })
+  )
+  expect(screen.getByText('Upstream answer')).toBeVisible()
+  expect(screen.queryByText('Delivered answer')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('tab', { name: 'Raw data' }))
+  expect(
+    screen.getByRole('region', { name: 'Reading content' })
+  ).toHaveTextContent(audit.response_body)
+})
+test('missing client capture explicitly marks the upstream fallback', async () => {
+  audit.client_response_status = 0
+  audit.client_response_body_size = 0
+  audit.client_response_complete = false
+  const user = userEvent.setup()
+  mount()
+  expect(
+    await screen.findByText(/delivery to the client is unverified/)
+  ).toBeVisible()
+  await user.click(screen.getByRole('tab', { name: 'Client Response' }))
+  expect(screen.getByText(/legacy record/)).toBeVisible()
+})
+test('truncated and interrupted captures show separate warnings', async () => {
+  audit.client_response_complete = false
+  audit.client_response_body_truncated = true
+  mount()
+  expect(await screen.findByText(/Partial capture/)).toBeVisible()
+  expect(screen.getByText(/delivery may have been interrupted/)).toBeVisible()
+})
+test('request messages have roles while unknown parameters remain accessible', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(await screen.findByRole('tab', { name: 'Sent Request' }))
+  expect(screen.getByText('Question')).toBeVisible()
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Reading section' }),
+    'parameters'
+  )
+  expect(screen.getByText('temperature')).toBeVisible()
+  expect(screen.getByText('0')).toBeVisible()
+})
+test('disabled audit never fetches or displays content', () => {
+  mount(false)
+  expect(getAudit).not.toHaveBeenCalled()
+  expect(screen.queryByRole('region')).not.toBeInTheDocument()
+})
+test('failed retrieval can be retried without enabling replay', async () => {
+  getAudit.mockRejectedValueOnce(new Error('unavailable'))
+  const user = userEvent.setup()
+  mount()
+  await user.click(await screen.findByRole('button', { name: /Retry/ }))
+  expect(await screen.findByText('Delivered answer')).toBeVisible()
+  expect(executeReplay).not.toHaveBeenCalled()
+})
+test('execution loads attempt bodies on demand and preserves configuration provenance', async () => {
+  const first = {
+    id: 1,
+    attempt_no: 0,
+    routing_retry_index: 0,
+    channel_id: 1,
+    channel_type: 1,
+    channel_name: 'one',
+    request_model: 'a',
+    upstream_model: 'b',
+    request_format: 'openai',
+    upstream_format: 'openai',
+    target: '/chat',
+    state: 'succeeded',
+    outcome: 'complete',
+    http_status: 200,
+    error_code: '',
+    error_message: '',
+    retry_action: '',
+    terminal_kind: 'stop',
+    complete: true,
+    duration_ms: 3,
+    request_body: '{"x":1}',
+    request_body_encoding: 'utf-8' as const,
+    request_body_size: 7,
+    request_body_truncated: false,
+    response_body: '{}',
+    response_body_encoding: 'utf-8' as const,
+    response_body_size: 2,
+    response_body_truncated: false,
+    config_snapshot: {
+      id: 1,
+      digest: 'test-digest',
+      schema_version: 2,
+      canonical_json: { limit: 4 },
+    },
+  }
+  audit.attempts = [
+    first,
+    { ...first, id: 2, attempt_no: 1, request_body: '{"x":2}' },
+  ]
+  const user = userEvent.setup()
+  mount()
+  await screen.findByText('Delivered answer')
+  expect(getAudit).toHaveBeenCalledTimes(1)
+  await user.click(screen.getByRole('tab', { name: 'Execution details' }))
+  await waitFor(() => expect(getAudit).toHaveBeenCalledWith('request-1', true))
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Attempt content' }),
+    'config'
+  )
+  expect(await screen.findByText(/test-digest/)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Copy data' })).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Copy raw body' })
+  ).not.toBeInTheDocument()
+  expect(executeReplay).not.toHaveBeenCalled()
+  expect(previewReplay).not.toHaveBeenCalled()
+})
 
-  test('renders the attempt timeline fully localized in Chinese', async () => {
-    const user = userEvent.setup()
-    renderAudit()
-
-    expect(
-      await screen.findByRole('tab', { name: /^发送正文/ })
-    ).toBeInTheDocument()
-    expect(getAudit).toHaveBeenCalledWith('request-1', false)
-    expect(screen.getByRole('tab', { name: /^响应/ })).toBeInTheDocument()
-    const executionTab = screen.getByRole('tab', { name: '执行过程' })
-    expect(executionTab).toBeInTheDocument()
-    expect(screen.queryByText('上游尝试时间线')).not.toBeInTheDocument()
-
-    await user.click(executionTab)
-
-    expect(await screen.findByText('上游尝试时间线')).toBeInTheDocument()
-    expect(screen.getByText('共 1 次尝试')).toBeInTheDocument()
-    expect(screen.getByText('第 1 次尝试')).toBeInTheDocument()
-    expect(
-      screen.queryByRole('tab', { name: '本次请求' })
-    ).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('tab', { name: '本次响应' })
-    ).not.toBeInTheDocument()
-    expect(getAudit).not.toHaveBeenCalledWith('request-1', true)
+test('the real log dialog enters one workspace and returns focus to its entry', async () => {
+  const user = userEvent.setup()
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
   })
-
-  test('keeps all three response views and mounts them on demand', async () => {
-    const user = userEvent.setup()
-    renderAudit()
-
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-
-    expect(screen.getByRole('tab', { name: '最终结果' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: '客户端原文' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: '上游返回' })).toBeInTheDocument()
-    expect(
-      screen.queryByText('New API 实际返回给客户端的原始正文')
-    ).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('tab', { name: '客户端原文' }))
-    expect(
-      screen.getByText('New API 实际返回给客户端的原始正文')
-    ).toBeInTheDocument()
+  const log = usageLogSchema.parse({
+    id: 1,
+    user_id: 1,
+    created_at: 1,
+    type: 2,
+    content: '',
+    request_id: 'request-1',
   })
-
-  test('reads decoded request messages without unescaping literal backslashes', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      request_body:
-        '{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}',
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
-    const content = screen.getByText(/first second "quoted"/)
-    expect(content.textContent).toContain('first\nsecond "quoted" C:\\temp')
-    await user.click(screen.getByRole('button', { name: '复制原文' }))
-    expect(await navigator.clipboard.readText()).toBe(
-      '{"messages":[{"role":"user","content":"first\\nsecond \\"quoted\\" C:\\\\temp"}]}'
-    )
-  })
-
-  test('shows a retryable error instead of claiming the audit is missing', async () => {
-    getAudit.mockRejectedValue(new Error('network unavailable'))
-    renderAudit()
-    expect(
-      await screen.findByRole('button', { name: '重试' })
-    ).toBeInTheDocument()
-    expect(screen.queryByText('此请求未存储正文审计')).not.toBeInTheDocument()
-  })
-
-  test('reads Responses string input and instructions without hiding the request text', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      request_body: JSON.stringify({
-        instructions: 'Please answer\nbriefly',
-        input: 'First line\nSecond line',
-      }),
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
-    expect(screen.getByText(/Please answer briefly/).textContent).toContain(
-      'Please answer\nbriefly'
-    )
-    expect(screen.getByText(/First line Second line/).textContent).toContain(
-      'First line\nSecond line'
-    )
-  })
-
-  test('includes tool descriptions and parameters in readable request context', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      request_body: JSON.stringify({
-        messages: [{ role: 'user', content: 'Continue' }],
-        tools: [
-          {
-            type: 'function',
-            function: {
-              name: 'game_content',
-              description: 'World context\nHistorical context',
-              parameters: {
-                type: 'object',
-                properties: { content: { type: 'string' } },
-              },
-            },
-          },
-        ],
-        temperature: 0.7,
-      }),
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: '阅读分区' }),
-      'tools'
-    )
-    expect(
-      screen.getByText(/World context Historical context/).textContent
-    ).toBe('World context\nHistorical context')
-    expect(screen.getByText('game_content')).toBeInTheDocument()
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: '阅读分区' }),
-      'parameters'
-    )
-    expect(screen.getByText('0.7')).toBeInTheDocument()
-  })
-
-  test('keeps objects grouped and reveals array pages without hiding sibling text', async () => {
-    const user = userEvent.setup()
-    const longText = `${'Long context\n'.repeat(400)}Context ending`
-    render(
-      <I18nextProvider i18n={testI18n}>
-        <BodyAuditJsonContent
-          value={{
-            messages: Array.from({ length: 260 }, (_, i) => `Message ${i}`),
-            description: longText,
-          }}
-        />
-      </I18nextProvider>
-    )
-    expect(screen.getByText(/Context ending/).textContent).toBe(longText)
-    expect(screen.queryByText('Message 259')).not.toBeInTheDocument()
-    for (let i = 0; i < 5; i++) {
-      await user.click(screen.getByRole('button', { name: /加载更多/ }))
-    }
-    expect(screen.getByText('Message 259')).toBeInTheDocument()
-    expect(screen.queryByText(/\$\["/)).not.toBeInTheDocument()
-  })
-
-  test('groups request messages by role and keeps unknown metadata accessible', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      request_body: JSON.stringify({
-        model: 'demo',
-        messages: [
-          { role: 'system', content: 'System instructions' },
-          { role: 'user', content: 'Question', custom: { retained: false } },
-        ],
-        custom_provider: { retained: 0 },
-      }),
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
-    expect(
-      screen.getByRole('heading', { name: /系统消息/ })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('heading', { name: /用户消息/ })
-    ).toBeInTheDocument()
-    expect(screen.getByText('Question')).toBeInTheDocument()
-    expect(screen.queryByText(/\$\["/)).not.toBeInTheDocument()
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: '阅读分区' }),
-      'parameters'
-    )
-    expect(screen.getByText('custom_provider')).toBeInTheDocument()
-    expect(screen.getByText('0')).toBeInTheDocument()
-  })
-
-  test('requests without messages open their parameters instead of a blank reading section', async () => {
-    getAudit.mockResolvedValue({
-      ...audit,
-      request_body: '{"model":"example","unknown":{"value":false}}',
-    })
-    renderAudit()
-    expect(
-      await screen.findByRole('tab', { name: '可读内容' })
-    ).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('combobox', { name: '阅读分区' })).toHaveValue(
-      'parameters'
-    )
-    expect(screen.getByText('example')).toBeInTheDocument()
-    expect(screen.getByText('false')).toBeInTheDocument()
-  })
-
-  test('unknown role names cannot resolve inherited properties or crash the reader', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      request_body: JSON.stringify({
-        messages: [{ role: '__proto__', content: 'Safe unknown role' }],
-      }),
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: '可读内容' }))
-    expect(
-      screen.getByRole('heading', { name: /__proto__/ })
-    ).toBeInTheDocument()
-    expect(screen.getByText('Safe unknown role')).toBeInTheDocument()
-  })
-
-  test('binary audio keeps the playable final view and exact Base64 copy', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: 'SUQzBAAAAAA=',
-      client_response_body_encoding: 'base64',
-      client_response_content_type: 'audio/mpeg',
-    })
-    const { container } = renderAudit()
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(container.querySelector('audio')).toHaveAttribute(
-      'src',
-      'data:audio/mpeg;base64,SUQzBAAAAAA='
-    )
-    await user.click(screen.getByRole('tab', { name: '原始数据' }))
-    await user.click(screen.getByRole('button', { name: '复制原文' }))
-    expect(await navigator.clipboard.readText()).toBe('SUQzBAAAAAA=')
-  })
-
-  test('final modes separate readable, reconstructed and exact captured data', async () => {
-    const user = userEvent.setup()
-    const body =
-      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n'
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: body,
-      client_response_content_type: 'text/event-stream',
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(screen.getByRole('tab', { name: '可读内容' })).toHaveAttribute(
-      'aria-selected',
-      'true'
-    )
-    expect(screen.getByText('Hello')).toBeInTheDocument()
-    await user.click(screen.getByRole('tab', { name: '格式化视图' }))
-    expect(screen.getByText(/"text": "Hello"/)).toBeInTheDocument()
-    await user.click(screen.getByRole('tab', { name: '原始数据' }))
-    expect(screen.getByText(/data: \{"choices"/).textContent).toBe(body)
-    await user.click(screen.getByRole('button', { name: '复制原文' }))
-    expect(await navigator.clipboard.readText()).toBe(body)
-  })
-
-  test('formatted SSE makes event JSON readable without changing the raw capture', async () => {
-    const user = userEvent.setup()
-    const body =
-      'event: message\r\ndata: {"content":"Line\\nnext","n":0}\r\n\r\ndata: broken\r\n\r\ndata: [DONE]\r\n\r\n'
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: body,
-      client_response_content_type: 'text/event-stream',
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    await user.click(screen.getByRole('tab', { name: '客户端原文' }))
-    expect(screen.getByText(/event: message/).textContent).toContain(
-      'data: {\n  "content": "Line\\nnext",\n  "n": 0\n}'
-    )
-    expect(screen.getByText(/event: message/).textContent).toContain(
-      'data: broken'
-    )
-    await user.click(screen.getByRole('tab', { name: '原始数据' }))
-    expect(screen.getByText(/event: message/).textContent).toBe(body)
-  })
-
-  test('unknown tool schemas retain nested groups and selectable reasoning', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: JSON.stringify({
-        choices: [
-          {
-            message: {
-              reasoning_content: 'Private analysis',
-              tool_calls: [
-                {
-                  function: {
-                    name: 'never_seen_before',
-                    arguments: JSON.stringify({
-                      batches: [
-                        {
-                          name: 'A',
-                          fields: {
-                            enabled: false,
-                            count: 0,
-                            note: 'line\nnext',
-                          },
-                        },
-                      ],
-                      empty: [],
-                    }),
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      }),
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(screen.getByText('batches')).toBeInTheDocument()
-    expect(screen.getByText('fields')).toBeInTheDocument()
-    expect(screen.getByText('false')).toBeInTheDocument()
-    expect(screen.queryByText(/\$\["/)).not.toBeInTheDocument()
-    expect(screen.queryByText('Private analysis')).not.toBeInTheDocument()
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: '阅读分区' }),
-      'reasoning-0'
-    )
-    expect(screen.getByRole('combobox', { name: '阅读分区' })).toHaveFocus()
-    expect(screen.getByText('Private analysis')).toBeInTheDocument()
-    expect(screen.queryByText('batches')).not.toBeInTheDocument()
-  })
-
-  test('deep unknown structures can be opened and long captured text remains reachable', async () => {
-    const user = userEvent.setup()
-    let nested: unknown = { value: 'Deep ending', empty: {}, absent: null }
-    for (let i = 0; i < 7; i++) nested = { nested }
-    const longText = `${'A'.repeat(128 * 1024)}\nText ending`
-    render(
-      <I18nextProvider i18n={testI18n}>
-        <BodyAuditJsonContent value={{ nested, text: longText }} />
-      </I18nextProvider>
-    )
-    expect(screen.queryByText('Deep ending')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '查看嵌套内容' }))
-    expect(screen.getByText('Deep ending')).toBeInTheDocument()
-    expect(screen.getByText('{}')).toBeInTheDocument()
-    expect(screen.getByText('null')).toBeInTheDocument()
-    expect(screen.queryByText(/Text ending/)).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '加载更多' }))
-    expect(screen.getByText(/Text ending/).textContent).toBe(longText)
-  })
-
-  test('shows tool results and invalid arguments instead of only reasoning', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: JSON.stringify({
-        choices: [
-          {
-            message: {
-              reasoning_content: 'analysis',
-              tool_calls: [
-                {
-                  id: 'call-1',
-                  function: {
-                    name: 'submit_image_plan',
-                    arguments: '{"images":[}',
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      }),
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(
-      screen.getByRole('option', { name: /submit_image_plan/ })
-    ).toBeInTheDocument()
-    expect(screen.getByText('工具参数不是有效的 JSON')).toBeInTheDocument()
-    expect(screen.getByText('{"images":[}')).toBeInTheDocument()
-  })
-
-  test('warns in final result when a capture is truncated even if client writes succeeded', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: '{"choices":[{"message":{"content":"partial"}}]}',
-      client_response_body_truncated: true,
-      client_response_complete: true,
-    })
-    renderAudit()
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(screen.getByText('采集已截断：此结果可能不完整')).toBeInTheDocument()
-  })
-
-  test('distinguishes an interrupted client write from a complete upstream capture', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      client_response_body: 'eyJ4Ijoi5Q==',
-      client_response_body_encoding: 'base64',
-      client_response_body_size: 7,
-      client_response_complete: false,
-    })
-    renderAudit()
-
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-    expect(screen.getByText('上游采集完整')).toBeInTheDocument()
-    expect(screen.getByText('客户端响应写入中断')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('tab', { name: '客户端原文' }))
-    expect(
-      screen.getByText(
-        '客户端响应写入中断；这里只记录了成功写出的部分，可能断在一个字符中间。'
-      )
-    ).toBeInTheDocument()
-    expect(screen.getByText('eyJ4Ijoi5Q==')).toBeInTheDocument()
-    expect(
-      screen.queryByText('二进制正文以 Base64 显示')
-    ).not.toBeInTheDocument()
-  })
-
-  test('labels reasoning-only streams without showing raw SSE as the final result', async () => {
-    const user = userEvent.setup()
-    getAudit.mockResolvedValue({
-      ...audit,
-      response_body:
-        'data: {"choices":[{"delta":{"reasoning":"分析中"}}]}\n\ndata: [DONE]\n\n',
-      response_content_type: 'text/event-stream',
-      client_response_body: '',
-      client_response_body_size: 0,
-      client_response_status: 0,
-      client_response_complete: false,
-    })
-    renderAudit()
-
-    await user.click(await screen.findByRole('tab', { name: /^响应/ }))
-
-    expect(screen.getByText('分析中')).toBeInTheDocument()
-    expect(screen.getByText('推理')).toBeInTheDocument()
-    expect(screen.queryByText(/data: \{"choices"/)).not.toBeInTheDocument()
-  })
-
-  test('retains per-attempt payload tabs when retries occurred', async () => {
-    const user = userEvent.setup()
-    const firstAttempt = audit.attempts?.[0]
-    if (!firstAttempt) throw new Error('test fixture requires an audit attempt')
-    getAudit.mockResolvedValue({
-      ...audit,
-      attempts: [firstAttempt, { ...firstAttempt, id: 8, attempt_no: 1 }],
-    })
-    renderAudit()
-
-    await user.click(await screen.findByRole('tab', { name: '执行过程' }))
-
-    expect(
-      await screen.findByRole('tab', { name: '本次请求' })
-    ).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: '本次响应' })).toBeInTheDocument()
-    expect(getAudit).toHaveBeenCalledWith('request-1', true)
-  })
-
-  test('keeps replay in one overflow menu for the selected attempt', async () => {
-    const user = userEvent.setup()
-    renderAudit()
-
-    await user.click(await screen.findByRole('tab', { name: '执行过程' }))
-
-    const moreActions = await screen.findByRole('button', {
-      name: '更多尝试操作',
-    })
-    expect(
-      screen.queryByRole('button', { name: /重放第.*次尝试/ })
-    ).not.toBeInTheDocument()
-    expect(screen.queryByText('重放所选尝试')).not.toBeInTheDocument()
-
-    await user.click(moreActions)
-    const replay = await screen.findByRole('menuitem', {
-      name: '重放所选尝试',
-    })
-    await user.click(replay)
-
-    await waitFor(() => expect(previewReplay).toHaveBeenCalledTimes(2))
-    expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
-  })
+  render(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <DetailsDialog log={log} open onOpenChange={() => {}} isAdmin isRoot />
+      </QueryClientProvider>
+    </I18nextProvider>
+  )
+  const entry = screen.getByRole('button', { name: 'Open audit workspace' })
+  expect(getAudit).not.toHaveBeenCalled()
+  await user.click(entry)
+  expect(await screen.findByText('Delivered answer')).toBeVisible()
+  expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Log Details' })).toHaveFocus()
+  expect(
+    screen.queryByRole('button', { name: 'Open audit workspace' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Log Details' }))
+  expect(entry).toHaveFocus()
+  expect(
+    screen.queryByRole('region', { name: 'Body Audit' })
+  ).not.toBeInTheDocument()
 })

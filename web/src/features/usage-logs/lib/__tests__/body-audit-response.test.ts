@@ -18,22 +18,41 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import { auditReadableCopy, auditRequestSections } from '../body-audit-reading'
+import {
+  displayValue,
+  requestDocuments,
+  responseDocuments,
+} from '../audit-workspace'
 import { parseBodyAuditResponse } from '../body-audit-response'
 
 describe('body audit readable response parsing', () => {
+  test('non-string roles remain in message metadata without being guessed', () => {
+    const docs = requestDocuments({
+      messages: [{ role: false, content: 'content' }],
+    })
+    expect(docs[0].metadata).toEqual({ role: false })
+    expect(docs[0].name).toBeUndefined()
+  })
   test('request sections retain unknown keys, empty collections and malformed roles', () => {
     const value = JSON.parse(
       '{"messages":[],"__proto__":{"kept":true},"input":[{"type":"function_call","role":null,"arguments":"{}"}],"system":false,"tools":[]}'
     )
-    const sections = auditRequestSections(value)
-    expect(sections?.parameters.messages).toEqual([])
-    expect(Object.hasOwn(sections?.parameters ?? {}, '__proto__')).toBe(true)
-    expect(sections?.parameters.__proto__).toEqual({ kept: true })
-    expect(sections?.messages[0].role).not.toBe('user')
-    expect(sections?.messages[0].value).toEqual(value.input[0])
-    expect(sections?.context.system).toBe(false)
-    expect(sections?.tools.tools).toEqual([])
+    const sections = requestDocuments(value)
+    expect(
+      sections.find((section) => section.id === 'parameters')?.value
+    ).toEqual(JSON.parse('{"messages":[],"__proto__":{"kept":true}}'))
+    expect(
+      sections.find((section) => section.id === 'input:0')?.name
+    ).toBeUndefined()
+    expect(sections.find((section) => section.id === 'input:0')?.value).toEqual(
+      value.input[0]
+    )
+    expect(sections.find((section) => section.id === 'system')?.value).toBe(
+      false
+    )
+    expect(sections.find((section) => section.id === 'tools')?.value).toEqual(
+      []
+    )
   })
   test('copies mixed answer, decoded tool fields and reasoning without internal parser metadata', () => {
     const result = parseBodyAuditResponse({
@@ -60,15 +79,20 @@ describe('body audit readable response parsing', () => {
         ],
       }),
     })
-    const copy = auditReadableCopy(result)
+    const documents = responseDocuments(result)
+    const copy = documents
+      .map((document) => displayValue(document.value))
+      .join('\n')
     expect(copy).toContain('Answer')
     expect(copy).toContain(JSON.stringify('Line one\nLine two'))
     expect(copy).toContain(JSON.stringify(String.raw`C:\new`))
     expect(copy).not.toContain('$["')
-    expect(copy).toContain('[reasoning]\nAnalysis')
+    expect(
+      documents.find((document) => document.category === 'reasoning')?.value
+    ).toBe('Analysis')
     expect(copy).not.toContain('choiceIndex')
     expect(
-      auditRequestSections({ 'a.b': 'one', a: { b: 'two' } })?.parameters
+      requestDocuments({ 'a.b': 'one', a: { b: 'two' } })[0].value
     ).toEqual({ 'a.b': 'one', a: { b: 'two' } })
   })
 

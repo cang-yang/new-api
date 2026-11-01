@@ -49,7 +49,10 @@ import {
   UserCog,
   Info,
   LogIn,
+  ArrowLeft,
+  FileText,
 } from 'lucide-react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -521,6 +524,12 @@ interface DetailsDialogProps {
 
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
+  const [auditRequestId, setAuditRequestId] = useState<string | null>(null)
+  const detailsRef = useRef<HTMLDivElement>(null)
+  const entryRef = useRef<HTMLButtonElement>(null)
+  const backRef = useRef<HTMLButtonElement>(null)
+  const detailScroll = useRef(0)
+  const wasAudit = useRef(false)
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
@@ -553,6 +562,18 @@ export function DetailsDialog(props: DetailsDialogProps) {
     props.isAdmin &&
     isDisplayableType(props.log.type) &&
     props.log.request_id.length > 0
+  const auditActive =
+    props.open && showBodyAudit && auditRequestId === props.log.request_id
+  useLayoutEffect(() => {
+    if (auditActive) backRef.current?.focus()
+    else if (wasAudit.current) {
+      if (detailsRef.current) {
+        detailsRef.current.scrollTop = detailScroll.current
+      }
+      entryRef.current?.focus()
+    }
+    wasAudit.current = auditActive
+  }, [auditActive])
   const showAdminIp =
     !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
   const adminInfo = other?.admin_info
@@ -680,10 +701,24 @@ export function DetailsDialog(props: DetailsDialogProps) {
   return (
     <Dialog
       open={props.open}
-      onOpenChange={props.onOpenChange}
+      onOpenChange={(open) => {
+        if (!open) setAuditRequestId(null)
+        props.onOpenChange(open)
+      }}
       title={
         <>
-          {t('Log Details')}
+          {auditActive && (
+            <Button
+              ref={backRef}
+              size='sm'
+              variant='ghost'
+              onClick={() => setAuditRequestId(null)}
+            >
+              <ArrowLeft className='size-4' aria-hidden='true' />
+              {t('Log Details')}
+            </Button>
+          )}
+          {auditActive ? t('Body Audit') : t('Log Details')}
           <StatusBadge
             label={t(typeConfig.label)}
             variant={typeConfig.color as StatusBadgeProps['variant']}
@@ -695,6 +730,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
       description={t('View the complete details for this log entry')}
       contentClassName={cn(
         'min-w-0 overflow-hidden',
+        showBodyAudit && 'h-[min(92dvh,960px)]',
         'max-sm:max-h-(--dialog-available-height) max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
         isTieredBilling || showBodyAudit
           ? 'sm:max-w-4xl lg:max-w-5xl'
@@ -703,10 +739,32 @@ export function DetailsDialog(props: DetailsDialogProps) {
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
       descriptionClassName='sr-only'
-      contentHeight='min(72dvh, 720px)'
-      bodyClassName='pr-2 sm:pr-4'
+      contentHeight={showBodyAudit ? 'auto' : 'min(72dvh, 720px)'}
+      bodyViewportClassName={
+        showBodyAudit ? 'flex min-h-0 flex-1 overflow-hidden' : undefined
+      }
+      bodyClassName={
+        showBodyAudit
+          ? 'flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden'
+          : 'pr-2 sm:pr-4'
+      }
     >
-      <div className='w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
+      {auditActive && (
+        <BodyAuditSection
+          requestId={props.log.request_id}
+          enabled
+          requestPath={other?.request_path}
+        />
+      )}
+      <div
+        ref={detailsRef}
+        hidden={auditActive}
+        className={cn(
+          'w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3',
+          showBodyAudit &&
+            'min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2'
+        )}
+      >
         {/* Overview section - key identifiers */}
         <div className='min-w-0 space-y-1'>
           {props.log.request_id && (
@@ -828,11 +886,30 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
         </div>
 
-        <BodyAuditSection
-          requestId={props.log.request_id}
-          enabled={props.open && showBodyAudit}
-          requestPath={other?.request_path}
-        />
+        {showBodyAudit && (
+          <div className='bg-muted/20 flex items-center justify-between gap-3 rounded-lg border p-4'>
+            <div className='min-w-0'>
+              <p className='text-sm font-medium'>{t('Body Audit')}</p>
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {t(
+                  'Read requests, responses and execution details in the audit workspace.'
+                )}
+              </p>
+            </div>
+            <Button
+              ref={entryRef}
+              variant='outline'
+              className='shrink-0'
+              onClick={() => {
+                detailScroll.current = detailsRef.current?.scrollTop ?? 0
+                setAuditRequestId(props.log.request_id)
+              }}
+            >
+              <FileText className='size-4' aria-hidden='true' />
+              {t('Open audit workspace')}
+            </Button>
+          </div>
+        )}
 
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (
