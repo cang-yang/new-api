@@ -28,9 +28,9 @@ import { formatNumber } from '@/lib/format'
 import {
   displayValue,
   formatCapture,
-  requestDocuments,
   responseDocuments,
   type AuditCapture,
+  type AuditDocument,
 } from '../../lib/audit-workspace'
 import { parseBodyAuditResponse } from '../../lib/body-audit-response'
 import { DocumentBrowser } from './document-browser'
@@ -48,18 +48,30 @@ export function AuditPayload(props: {
   const [view, setView] = useState('readable')
   const parsed = useMemo(
     () =>
-      parseBodyAuditResponse({
-        body: props.capture.body,
-        encoding: props.capture.encoding,
-        contentType: props.capture.contentType,
-        requestPath: props.requestPath,
-      }),
+      props.capture.request
+        ? null
+        : parseBodyAuditResponse({
+            body: props.capture.body,
+            encoding: props.capture.encoding,
+            contentType: props.capture.contentType,
+            requestPath: props.requestPath,
+          }),
     [props.capture, props.requestPath]
   )
-  const documents = useMemo(() => {
-    if (props.capture.request || props.capture.derived) {
+  const documents = useMemo<AuditDocument[]>(() => {
+    if (props.capture.request) return []
+    if (props.capture.derived) {
       try {
-        return requestDocumentsForCapture(props.capture)
+        return [
+          {
+            id: 'data',
+            category: 'data' as const,
+            value:
+              props.capture.encoding === 'utf-8'
+                ? JSON.parse(props.capture.body)
+                : props.capture.body,
+          },
+        ]
       } catch {
         return [
           {
@@ -71,7 +83,7 @@ export function AuditPayload(props: {
         ]
       }
     }
-    return responseDocuments(parsed)
+    return parsed ? responseDocuments(parsed) : []
   }, [parsed, props.capture])
   const formatted = useMemo(() => {
     if (props.final && documents.length) {
@@ -107,7 +119,7 @@ export function AuditPayload(props: {
   if (props.capture.encoding === 'base64') {
     warnings.push(t('Binary body is shown as Base64'))
   }
-  if (!props.capture.request && !props.capture.derived) {
+  if (parsed && !props.capture.derived) {
     warnings.push(
       ...(parsed.warnings ?? []).map((warning) => warningLabels[warning])
     )
@@ -128,6 +140,44 @@ export function AuditPayload(props: {
       ))}
     </div>
   ) : undefined
+
+  const captureActions = (
+    <div className='flex shrink-0 items-center sm:gap-2'>
+      {props.capture.size !== undefined && (
+        <span className='text-muted-foreground hidden text-xs sm:inline'>
+          {formatNumber(props.capture.size / 1024, locale)} KB
+        </span>
+      )}
+      <CopyButton
+        value={props.capture.body}
+        size='sm'
+        className='w-8 px-0 sm:w-auto sm:px-2.5'
+        tooltip={props.capture.derived ? t('Copy data') : t('Copy raw body')}
+      >
+        <span className='hidden sm:inline'>
+          {props.capture.derived ? t('Copy data') : t('Copy raw body')}
+        </span>
+      </CopyButton>
+    </div>
+  )
+
+  if (props.capture.request) {
+    return (
+      <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+        <div
+          data-audit-chrome='view'
+          className='flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2'
+        >
+          <span className='text-sm font-medium'>{t('Formatted view')}</span>
+          {captureActions}
+        </div>
+        <ReadingViewport>
+          {notice}
+          <TextBlock text={formatted} code />
+        </ReadingViewport>
+      </div>
+    )
+  }
 
   return (
     <Tabs
@@ -153,23 +203,7 @@ export function AuditPayload(props: {
               tooltip={t('Copy document')}
             />
           )}
-          {props.capture.size !== undefined && (
-            <span className='text-muted-foreground hidden text-xs sm:inline'>
-              {formatNumber(props.capture.size / 1024, locale)} KB
-            </span>
-          )}
-          <CopyButton
-            value={props.capture.body}
-            size='sm'
-            className='w-8 px-0 sm:w-auto sm:px-2.5'
-            tooltip={
-              props.capture.derived ? t('Copy data') : t('Copy raw body')
-            }
-          >
-            <span className='hidden sm:inline'>
-              {props.capture.derived ? t('Copy data') : t('Copy raw body')}
-            </span>
-          </CopyButton>
+          {captureActions}
         </div>
       </div>
       <TabsContent
@@ -210,13 +244,4 @@ export function AuditPayload(props: {
       </TabsContent>
     </Tabs>
   )
-}
-
-function requestDocumentsForCapture(capture: AuditCapture) {
-  if (capture.encoding !== 'utf-8') {
-    return [{ id: 'raw', category: 'data' as const, value: capture.body }]
-  }
-  const value: unknown = JSON.parse(capture.body)
-  if (capture.derived) return [{ id: 'data', category: 'data' as const, value }]
-  return requestDocuments(value)
 }

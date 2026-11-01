@@ -160,17 +160,16 @@ test('truncated and interrupted captures show separate warnings', async () => {
   expect(await screen.findByText(/Partial capture/)).toBeVisible()
   expect(screen.getByText(/delivery may have been interrupted/)).toBeVisible()
 })
-test('request messages have roles while unknown parameters remain accessible', async () => {
+test('sent request opens a single formatted view with messages and parameters together', async () => {
   const user = userEvent.setup()
   mount()
   await user.click(await screen.findByRole('tab', { name: 'Sent Request' }))
-  expect(screen.getByText('Question')).toBeVisible()
-  await user.selectOptions(
-    screen.getByRole('combobox', { name: 'Reading section' }),
-    'parameters'
+  const content = screen.getByRole('region', { name: 'Reading content' })
+  expect(content.querySelector('pre')?.textContent).toBe(
+    JSON.stringify(JSON.parse(audit.request_body), null, 2)
   )
-  expect(screen.getByText('temperature')).toBeVisible()
-  expect(screen.getByText('0')).toBeVisible()
+  expect(screen.queryByRole('tablist', { name: 'Display mode' })).toBeNull()
+  expect(screen.queryByRole('combobox', { name: 'Reading section' })).toBeNull()
 })
 test('disabled audit never fetches or displays content', () => {
   mount(false)
@@ -232,6 +231,15 @@ test('execution loads attempt bodies on demand and preserves configuration prove
   expect(getAudit).toHaveBeenCalledTimes(1)
   await user.click(screen.getByRole('tab', { name: 'Execution details' }))
   await waitFor(() => expect(getAudit).toHaveBeenCalledWith('request-1', true))
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Attempt content' }),
+    'request'
+  )
+  expect(screen.queryByRole('tablist', { name: 'Display mode' })).toBeNull()
+  expect(
+    screen.getByRole('region', { name: 'Reading content' }).querySelector('pre')
+      ?.textContent
+  ).toBe('{\n  "x": 2\n}')
   await user.selectOptions(
     screen.getByRole('combobox', { name: 'Attempt content' }),
     'config'

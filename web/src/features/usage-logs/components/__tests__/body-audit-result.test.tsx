@@ -23,6 +23,8 @@ import type { ReactNode } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import { beforeEach, expect, test, vi } from 'vitest'
 
+import { requestDocuments } from '../../lib/audit-workspace'
+import { DocumentBrowser } from '../audit-workspace/document-browser'
 import { AuditPayload } from '../audit-workspace/payload'
 import { TextBlock, ValueExplorer } from '../audit-workspace/reader'
 
@@ -244,17 +246,13 @@ test('empty leading messages remain selectable but do not hide the first readabl
   const user = userEvent.setup()
   const write = vi.spyOn(navigator.clipboard, 'writeText')
   mount(
-    <AuditPayload
-      capture={{
-        encoding: 'utf-8',
-        request: true,
-        body: JSON.stringify({
-          messages: [
-            { role: 'system', content: '' },
-            { role: 'user', content: 'Read this request first' },
-          ],
-        }),
-      }}
+    <DocumentBrowser
+      documents={requestDocuments({
+        messages: [
+          { role: 'system', content: '' },
+          { role: 'user', content: 'Read this request first' },
+        ],
+      })}
     />
   )
   expect(screen.getByText('Read this request first')).toBeVisible()
@@ -330,17 +328,13 @@ test.each([false, true])(
   async (leadingEmpty) => {
     const user = userEvent.setup()
     mount(
-      <AuditPayload
-        capture={{
-          encoding: 'utf-8',
-          request: true,
-          body: JSON.stringify({
-            messages: Array.from({ length: 80 }, (_, index) => ({
-              role: 'user',
-              content: leadingEmpty && index < 79 ? '' : `message ${index + 1}`,
-            })),
-          }),
-        }}
+      <DocumentBrowser
+        documents={requestDocuments({
+          messages: Array.from({ length: 80 }, (_, index) => ({
+            role: 'user',
+            content: leadingEmpty && index < 79 ? '' : `message ${index + 1}`,
+          })),
+        })}
       />
     )
     await user.click(screen.getByRole('button', { name: 'Content index' }))
