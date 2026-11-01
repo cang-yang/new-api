@@ -7519,6 +7519,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "再構成された結果です。元データには取得した応答が保持されます。",
     "Message metadata": "メッセージのメタデータ",
     "No readable content": "読み取れる内容がありません。元データを確認してください。",
+    "This message has no text content.": "このメッセージに本文はありません。",
+    "The original value is preserved. Select another section to continue reading.": "元の値は保持されています。別の項目を選択して読み進めてください。",
     "Content index": "内容一覧",
     "Copy current content": "現在の内容をコピー",
     "Copy document": "項目全体をコピー",

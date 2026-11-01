@@ -7519,6 +7519,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "Kết quả được tái cấu trúc. Dữ liệu gốc giữ nguyên phản hồi đã thu thập.",
     "Message metadata": "Siêu dữ liệu tin nhắn",
     "No readable content": "Không có nội dung dễ đọc. Hãy kiểm tra dữ liệu gốc.",
+    "This message has no text content.": "Tin nhắn này không có nội dung văn bản.",
+    "The original value is preserved. Select another section to continue reading.": "Giá trị gốc được giữ nguyên. Chọn mục khác để tiếp tục đọc.",
     "Content index": "Mục lục",
     "Copy current content": "Sao chép nội dung hiện tại",
     "Copy document": "Sao chép toàn bộ mục",

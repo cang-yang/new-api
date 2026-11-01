@@ -7714,6 +7714,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "Reconstructed result. Original payload preserves the captured response.",
     "Message metadata": "Message metadata",
     "No readable content": "No readable content",
+    "This message has no text content.": "This message has no text content.",
+    "The original value is preserved. Select another section to continue reading.": "The original value is preserved. Select another section to continue reading.",
     "Content index": "Content index",
     "Copy current content": "Copy current content",
     "Copy document": "Copy document",

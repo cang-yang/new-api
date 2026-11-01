@@ -70,6 +70,7 @@ export function AuditExecution(props: { audit: BodyAudit }) {
     )
   }
   let notice: string | undefined
+  let emptyMessage: string | undefined
   let capture: AuditCapture = {
     body: JSON.stringify({
       [t('Channel')]: `${selected.channel_name} #${selected.channel_id}`,
@@ -111,6 +112,7 @@ export function AuditExecution(props: { audit: BodyAudit }) {
     notice = selected.config_snapshot
       ? `${t('Immutable execution config')} · schema v${selected.config_snapshot.schema_version} · ${selected.config_snapshot.digest}`
       : t('No configuration snapshot was recorded')
+    if (!selected.config_snapshot) emptyMessage = notice
   } else if (part === 'diff') {
     capture.body = JSON.stringify(diff)
     if (!previous) {
@@ -123,6 +125,7 @@ export function AuditExecution(props: { audit: BodyAudit }) {
         'Difference limit reached; compare the raw requests for the full data.'
       )
     } else notice = t('JSON changes from the previous attempt')
+    if (!diff?.length) emptyMessage = notice
   }
   return (
     <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
@@ -183,6 +186,7 @@ export function AuditExecution(props: { audit: BodyAudit }) {
           key={`${selected.id}:${part}`}
           capture={capture}
           notice={notice}
+          emptyMessage={emptyMessage}
         />
       )}
       <AuditReplayDialog

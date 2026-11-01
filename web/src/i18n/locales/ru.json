@@ -7519,6 +7519,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "Восстановленная структура результата. Исходные данные сохраняют записанный ответ.",
     "Message metadata": "Метаданные сообщения",
     "No readable content": "Нет читаемого содержимого. Проверьте исходные данные.",
+    "This message has no text content.": "В этом сообщении нет текста.",
+    "The original value is preserved. Select another section to continue reading.": "Исходное значение сохранено. Выберите другой раздел для чтения.",
     "Content index": "Содержание",
     "Copy current content": "Копировать текущее содержимое",
     "Copy document": "Копировать документ",

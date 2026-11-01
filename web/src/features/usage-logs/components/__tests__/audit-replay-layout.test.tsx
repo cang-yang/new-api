@@ -35,6 +35,9 @@ describe('audit replay dialog layout', () => {
     expect(dialog).toHaveClass('!max-w-[56rem]')
     expect(dialog).toHaveClass('overflow-hidden')
     expect(dialog).not.toHaveClass('overflow-y-auto')
+    expect(
+      dialog.querySelector('[data-slot="alert-dialog-header"]')
+    ).toHaveClass('grid-cols-[2.5rem_minmax(0,1fr)]')
 
     const scrollArea = dialog.querySelector(
       '[data-slot="audit-replay-scroll-area"]'

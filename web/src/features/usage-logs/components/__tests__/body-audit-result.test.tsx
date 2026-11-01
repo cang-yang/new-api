@@ -16,12 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import type { ReactNode } from 'react'
 import { I18nextProvider } from 'react-i18next'
-import { beforeEach, expect, test } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 
 import { AuditPayload } from '../audit-workspace/payload'
 import { TextBlock, ValueExplorer } from '../audit-workspace/reader'
@@ -238,4 +238,147 @@ test('a single document does not reserve a redundant fixed navigation row', () =
   )
   expect(container.querySelector('[data-audit-chrome="document"]')).toBeNull()
   expect(screen.getByRole('button', { name: 'Copy document' })).toBeVisible()
+})
+
+test('empty leading messages remain selectable but do not hide the first readable message', async () => {
+  const user = userEvent.setup()
+  const write = vi.spyOn(navigator.clipboard, 'writeText')
+  mount(
+    <AuditPayload
+      capture={{
+        encoding: 'utf-8',
+        request: true,
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: '' },
+            { role: 'user', content: 'Read this request first' },
+          ],
+        }),
+      }}
+    />
+  )
+  expect(screen.getByText('Read this request first')).toBeVisible()
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Reading section' }),
+    'messages:0'
+  )
+  expect(screen.getByText('This message has no text content.')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Copy document' }))
+  expect(write).toHaveBeenCalledWith('')
+  write.mockRestore()
+})
+
+test('document index is opt-in and closing it keeps the selected document', async () => {
+  const user = userEvent.setup()
+  mount(
+    <AuditPayload
+      capture={{
+        encoding: 'utf-8',
+        body: '{"choices":[{"message":{"content":"Answer","reasoning_content":"Analysis"}}]}',
+      }}
+    />
+  )
+  expect(screen.queryByRole('navigation', { name: 'Content index' })).toBeNull()
+  const toggle = screen.getByRole('button', { name: 'Content index' })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await user.click(toggle)
+  await user.click(
+    within(screen.getByRole('navigation', { name: 'Content index' })).getByRole(
+      'button',
+      { name: /Reasoning/ }
+    )
+  )
+  await user.click(toggle)
+  expect(screen.getByText('Analysis')).toBeVisible()
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('long and multiline fields use full-width reading blocks while short values stay compact', () => {
+  const prose = 'A paragraph with room to read. '.repeat(10)
+  mount(
+    <ValueExplorer
+      value={{ prose, multiline: 'First line\nSecond line', enabled: true }}
+    />
+  )
+  expect(
+    screen.getByText(prose.trim()).closest('[data-field-layout]')
+  ).toHaveAttribute('data-field-layout', 'prose')
+  expect(
+    screen.getByText(/First line/).closest('[data-field-layout]')
+  ).toHaveAttribute('data-field-layout', 'prose')
+  expect(
+    screen.getByText('true').closest('[data-field-layout]')
+  ).toHaveAttribute('data-field-layout', 'compact')
+})
+
+test('unavailable derived data shows its explanation but preserves null in raw mode', async () => {
+  const user = userEvent.setup()
+  mount(
+    <AuditPayload
+      capture={{ encoding: 'utf-8', derived: true, body: 'null' }}
+      emptyMessage='No comparison is available'
+    />
+  )
+  expect(screen.getByText('No comparison is available')).toBeVisible()
+  expect(screen.queryByText('null')).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Raw data' }))
+  expect(screen.getByText('null')).toBeVisible()
+})
+
+test.each([false, true])(
+  'a later document stays available in the paginated index (leading empty: %s)',
+  async (leadingEmpty) => {
+    const user = userEvent.setup()
+    mount(
+      <AuditPayload
+        capture={{
+          encoding: 'utf-8',
+          request: true,
+          body: JSON.stringify({
+            messages: Array.from({ length: 80 }, (_, index) => ({
+              role: 'user',
+              content: leadingEmpty && index < 79 ? '' : `message ${index + 1}`,
+            })),
+          }),
+        }}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: 'Content index' }))
+    if (leadingEmpty) {
+      expect(
+        within(
+          screen.getByRole('navigation', { name: 'Content index' })
+        ).getByRole('button', { name: /80 ·/ })
+      ).toHaveAttribute('aria-current', 'true')
+    }
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Reading section' }),
+      'messages:79'
+    )
+    expect(
+      within(
+        screen.getByRole('navigation', { name: 'Content index' })
+      ).getByRole('button', { name: /80 ·/ })
+    ).toHaveAttribute('aria-current', 'true')
+  }
+)
+
+test('tool metadata shares the explanation disclosure instead of adding another reading row', async () => {
+  const user = userEvent.setup()
+  const { container } = mount(
+    <AuditPayload
+      capture={{
+        encoding: 'utf-8',
+        body: '{"choices":[{"message":{"tool_calls":[{"id":"call-123","function":{"name":"tool","arguments":"{\\"content\\":\\"Readable\\"}"}}]}}]}',
+      }}
+    />
+  )
+  const summary = screen.getByText(
+    'Tool call arguments, not an execution result.'
+  )
+  expect(summary.tagName).toBe('SUMMARY')
+  expect(container.querySelector('details')).not.toHaveAttribute('open')
+  await user.click(summary)
+  expect(container.querySelector('details')).toHaveAttribute('open')
+  expect(screen.getByText('Readable')).toBeVisible()
 })

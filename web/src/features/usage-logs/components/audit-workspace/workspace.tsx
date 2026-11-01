@@ -91,10 +91,14 @@ export function AuditWorkspace(props: {
         <TabsList
           variant='line'
           aria-label={t('Audit source')}
-          className='hidden max-w-full min-w-0 flex-1 lg:flex lg:justify-start'
+          className='hidden max-w-full min-w-0 lg:flex lg:justify-start'
         >
           {sources.map((item) => (
-            <TabsTrigger key={item.id} value={item.id}>
+            <TabsTrigger
+              key={item.id}
+              value={item.id}
+              className='flex-none px-3'
+            >
               {item.label}
             </TabsTrigger>
           ))}
@@ -111,16 +115,18 @@ export function AuditWorkspace(props: {
             </NativeSelectOption>
           ))}
         </NativeSelect>
-        {responseStatus > 0 &&
-          source !== 'execution' &&
-          source !== 'request' && (
-            <StatusBadge
-              label={`HTTP ${responseStatus}`}
-              size='sm'
-              copyable={false}
-              variant={responseStatus < 400 ? 'green' : 'red'}
-            />
-          )}
+        <div className='ml-auto shrink-0'>
+          {responseStatus > 0 &&
+            source !== 'execution' &&
+            source !== 'request' && (
+              <StatusBadge
+                label={`HTTP ${responseStatus}`}
+                size='sm'
+                copyable={false}
+                variant={responseStatus < 400 ? 'green' : 'red'}
+              />
+            )}
+        </div>
       </div>
       <TabsContent
         value={source}

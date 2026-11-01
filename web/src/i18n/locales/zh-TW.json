@@ -7540,6 +7540,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "這是整理後的結果結構；原始資料保留擷取到的回應。",
     "Message metadata": "訊息附加資訊",
     "No readable content": "沒有可讀內容，可切換至原始資料檢查。",
+    "This message has no text content.": "這則訊息沒有正文",
+    "The original value is preserved. Select another section to continue reading.": "原始值已保留，可切換其他內容繼續閱讀。",
     "Content index": "內容目錄",
     "Copy current content": "複製目前內容",
     "Copy document": "複製整項內容",

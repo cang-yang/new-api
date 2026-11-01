@@ -20,6 +20,7 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
+import { EmptyState } from '@/components/empty-state'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber } from '@/lib/format'
@@ -40,6 +41,7 @@ export function AuditPayload(props: {
   requestPath?: string
   final?: boolean
   notice?: string
+  emptyMessage?: string
 }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -142,10 +144,11 @@ export function AuditPayload(props: {
           <TabsTrigger value='formatted'>{t('Formatted view')}</TabsTrigger>
           <TabsTrigger value='raw'>{t('Raw data')}</TabsTrigger>
         </TabsList>
-        <div className='flex shrink-0 items-center gap-2'>
+        <div className='flex shrink-0 items-center sm:gap-2'>
           {view === 'readable' && documents.length === 1 && (
             <CopyButton
               size='sm'
+              className='w-8 px-0 sm:w-auto sm:px-2.5'
               value={displayValue(documents[0].value)}
               tooltip={t('Copy document')}
             />
@@ -158,6 +161,7 @@ export function AuditPayload(props: {
           <CopyButton
             value={props.capture.body}
             size='sm'
+            className='w-8 px-0 sm:w-auto sm:px-2.5'
             tooltip={
               props.capture.derived ? t('Copy data') : t('Copy raw body')
             }
@@ -172,7 +176,12 @@ export function AuditPayload(props: {
         value={view}
         className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'
       >
-        {view === 'readable' && (
+        {view === 'readable' && props.emptyMessage && (
+          <ReadingViewport>
+            <EmptyState title={props.emptyMessage} className='min-h-0 py-8' />
+          </ReadingViewport>
+        )}
+        {view === 'readable' && !props.emptyMessage && (
           <DocumentBrowser documents={documents} notice={notice} />
         )}
         {view !== 'readable' && (

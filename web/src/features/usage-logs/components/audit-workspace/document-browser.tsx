@@ -16,10 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState, type ReactNode } from 'react'
+import { FileText, PanelLeft } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
+import { EmptyState } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
@@ -37,16 +39,17 @@ function DocumentBody(props: {
 }) {
   const { t } = useTranslation()
   const doc = props.document
+  const hasMetadata = !!doc.metadata && Object.keys(doc.metadata).length > 0
   const notice = (
-    <div className='space-y-3 empty:hidden'>
+    <div className='mb-3 space-y-2 empty:hidden'>
       {props.showHeading && (
-        <h3 className='mb-4 text-sm font-medium [overflow-wrap:anywhere]'>
+        <h3 className='text-sm font-medium [overflow-wrap:anywhere]'>
           {documentTitle(doc, t)}
         </h3>
       )}
       {props.notice}
-      {doc.category === 'tool' && (
-        <p className='text-muted-foreground mb-4 text-xs'>
+      {doc.category === 'tool' && !hasMetadata && (
+        <p className='text-muted-foreground text-xs leading-5'>
           {t('Tool call arguments, not an execution result.')}
         </p>
       )}
@@ -57,10 +60,12 @@ function DocumentBody(props: {
             : t('This payload is not valid JSON. Showing the captured text.')}
         </p>
       )}
-      {doc.metadata && Object.keys(doc.metadata).length > 0 && (
-        <details className='mb-4 text-xs'>
+      {hasMetadata && (
+        <details className='text-xs'>
           <summary className='text-muted-foreground cursor-pointer py-1'>
-            {t('Message metadata')}
+            {doc.category === 'tool'
+              ? t('Tool call arguments, not an execution result.')
+              : t('Message metadata')}
           </summary>
           <TextBlock code text={displayValue(doc.metadata)} />
         </details>
@@ -97,11 +102,22 @@ function DocumentBody(props: {
           className='max-h-full w-full'
         />
       )}
-      {!doc.media && (
-        <TextBlock
-          text={displayValue(doc.value)}
-          code={doc.invalid || typeof doc.value !== 'string'}
+      {!doc.media && typeof doc.value === 'string' && !doc.value.trim() ? (
+        <EmptyState
+          icon={FileText}
+          title={t('This message has no text content.')}
+          description={t(
+            'The original value is preserved. Select another section to continue reading.'
+          )}
+          className='min-h-0 py-8'
         />
+      ) : (
+        !doc.media && (
+          <TextBlock
+            text={displayValue(doc.value)}
+            code={doc.invalid || typeof doc.value !== 'string'}
+          />
+        )
       )}
     </ReadingViewport>
   )
@@ -112,8 +128,43 @@ export function DocumentBrowser(props: {
   notice?: ReactNode
 }) {
   const { t } = useTranslation()
-  const [selectedId, setSelectedId] = useState(props.documents[0]?.id)
-  const [visible, setVisible] = useState(60)
+  const indexId = useId()
+  const indexRef = useRef<HTMLElement>(null)
+  const [indexOpen, setIndexOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState(() => {
+    const readable = props.documents.filter((doc) => {
+      if (typeof doc.value === 'string') return doc.value.trim().length > 0
+      if (doc.value === null || doc.value === undefined) return false
+      if (typeof doc.value === 'object') {
+        return Object.keys(doc.value).length > 0
+      }
+      return true
+    })
+    const message = readable.find(
+      (doc) => doc.category === 'message' || doc.category === 'context'
+    )
+    return (message ?? readable[0] ?? props.documents[0])?.id
+  })
+  const [visible, setVisible] = useState(() =>
+    Math.max(60, props.documents.findIndex((doc) => doc.id === selectedId) + 1)
+  )
+  const selectDocument = (id: string) => {
+    setSelectedId(id)
+    setVisible((count) =>
+      Math.max(count, props.documents.findIndex((doc) => doc.id === id) + 1)
+    )
+  }
+  useEffect(() => {
+    const index = indexRef.current
+    const selected = index?.querySelector<HTMLElement>('[aria-current="true"]')
+    if (!index || !selected) return
+    const viewport = index.getBoundingClientRect()
+    const item = selected.getBoundingClientRect()
+    if (item.top < viewport.top) index.scrollTop += item.top - viewport.top
+    else if (item.bottom > viewport.bottom) {
+      index.scrollTop += item.bottom - viewport.bottom
+    }
+  }, [selectedId, indexOpen])
   const active =
     props.documents.find((doc) => doc.id === selectedId) ?? props.documents[0]
   if (!active) {
@@ -127,75 +178,90 @@ export function DocumentBrowser(props: {
     )
   }
   return (
-    <div className='flex min-h-0 min-w-0 flex-1 overflow-hidden'>
+    <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
       {props.documents.length > 1 && (
-        <nav
-          aria-label={t('Content index')}
-          className='bg-muted/15 hidden w-48 shrink-0 overflow-y-auto overscroll-contain border-r p-2 lg:block'
+        <div
+          data-audit-chrome='document'
+          className='bg-muted/15 flex shrink-0 items-center gap-2 border-b px-3 py-1.5'
         >
-          <p className='text-muted-foreground px-2 py-2 text-xs'>
-            {t('Content index')} · {props.documents.length}
-          </p>
-          {props.documents.slice(0, visible).map((doc) => (
-            <Button
-              key={doc.id}
-              variant={doc.id === active.id ? 'secondary' : 'ghost'}
-              aria-current={doc.id === active.id ? 'true' : undefined}
-              onClick={() => setSelectedId(doc.id)}
-              title={documentTitle(doc, t)}
-              className='mb-1 h-auto w-full justify-start px-2 py-2 text-left'
-            >
-              <span className='truncate text-xs'>{documentTitle(doc, t)}</span>
-            </Button>
-          ))}
-          {visible < props.documents.length && (
-            <Button
-              variant='ghost'
-              size='sm'
-              onClick={() => setVisible(visible + 60)}
-            >
-              {t('Load more')}
-            </Button>
-          )}
-        </nav>
-      )}
-      <div className='flex min-h-0 min-w-0 flex-1 flex-col'>
-        {props.documents.length > 1 && (
-          <div
-            data-audit-chrome='document'
-            className='flex shrink-0 items-center gap-2 border-b px-3 py-2'
+          <Button
+            variant={indexOpen ? 'secondary' : 'ghost'}
+            size='sm'
+            className='hidden lg:inline-flex'
+            aria-label={t('Content index')}
+            aria-controls={indexId}
+            aria-expanded={indexOpen}
+            onClick={() => setIndexOpen(!indexOpen)}
           >
-            <NativeSelect
-              className='min-w-0 flex-1 lg:hidden'
-              aria-label={t('Reading section')}
-              value={active.id}
-              onChange={(event) => setSelectedId(event.target.value)}
-            >
-              {props.documents.map((doc) => (
-                <NativeSelectOption key={doc.id} value={doc.id}>
+            <PanelLeft className='size-4' aria-hidden='true' />
+            {t('Content index')}
+          </Button>
+          <NativeSelect
+            className='min-w-0 flex-1 sm:max-w-md'
+            aria-label={t('Reading section')}
+            value={active.id}
+            onChange={(event) => selectDocument(event.target.value)}
+          >
+            {props.documents.map((doc) => (
+              <NativeSelectOption key={doc.id} value={doc.id}>
+                {documentTitle(doc, t)}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <span className='text-muted-foreground ml-auto shrink-0 text-xs tabular-nums'>
+            {props.documents.indexOf(active) + 1} / {props.documents.length}
+          </span>
+          <CopyButton
+            size='sm'
+            value={displayValue(active.value)}
+            tooltip={t('Copy document')}
+          />
+        </div>
+      )}
+      <div className='flex min-h-0 min-w-0 flex-1 overflow-hidden'>
+        {props.documents.length > 1 && indexOpen && (
+          <nav
+            ref={indexRef}
+            id={indexId}
+            aria-label={t('Content index')}
+            className='bg-muted/15 hidden w-52 shrink-0 overflow-y-auto overscroll-contain border-r p-2 lg:block'
+          >
+            <p className='text-muted-foreground px-2 py-2 text-xs'>
+              {t('Content index')} · {props.documents.length}
+            </p>
+            {props.documents.slice(0, visible).map((doc) => (
+              <Button
+                key={doc.id}
+                variant={doc.id === active.id ? 'secondary' : 'ghost'}
+                aria-current={doc.id === active.id ? 'true' : undefined}
+                onClick={() => selectDocument(doc.id)}
+                title={documentTitle(doc, t)}
+                className='mb-1 h-auto w-full justify-start px-2 py-2 text-left'
+              >
+                <span className='min-w-0 text-xs leading-5 [overflow-wrap:anywhere] whitespace-normal'>
                   {documentTitle(doc, t)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <h3
-              title={documentTitle(active, t)}
-              className='hidden min-w-0 flex-1 truncate text-sm font-medium lg:block'
-            >
-              {documentTitle(active, t)}
-            </h3>
-            <CopyButton
-              size='sm'
-              value={displayValue(active.value)}
-              tooltip={t('Copy document')}
-            />
-          </div>
+                </span>
+              </Button>
+            ))}
+            {visible < props.documents.length && (
+              <Button
+                variant='ghost'
+                size='sm'
+                onClick={() => setVisible(visible + 60)}
+              >
+                {t('Load more')}
+              </Button>
+            )}
+          </nav>
         )}
-        <DocumentBody
-          key={active.id}
-          document={active}
-          notice={props.notice}
-          showHeading={props.documents.length === 1}
-        />
+        <div className='flex min-h-0 min-w-0 flex-1 flex-col'>
+          <DocumentBody
+            key={active.id}
+            document={active}
+            notice={props.notice}
+            showHeading={props.documents.length === 1}
+          />
+        </div>
       </div>
     </div>
   )

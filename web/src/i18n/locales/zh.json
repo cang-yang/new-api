@@ -7732,6 +7732,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "这是整理后的结果结构；原始数据保留采集到的响应。",
     "Message metadata": "消息附加信息",
     "No readable content": "没有可读内容，可切换到原始数据检查。",
+    "This message has no text content.": "这条消息没有正文",
+    "The original value is preserved. Select another section to continue reading.": "原始值已保留，可切换其他内容继续阅读。",
     "Content index": "内容目录",
     "Copy current content": "复制当前内容",
     "Copy document": "复制整项内容",

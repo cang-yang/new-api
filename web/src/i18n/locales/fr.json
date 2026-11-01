@@ -7519,6 +7519,8 @@
     "Reconstructed result. Original payload preserves the captured response.": "Résultat reconstruit. Les données originales conservent la réponse capturée.",
     "Message metadata": "Métadonnées du message",
     "No readable content": "Aucun contenu lisible. Consultez les données brutes.",
+    "This message has no text content.": "Ce message ne contient aucun texte.",
+    "The original value is preserved. Select another section to continue reading.": "La valeur d’origine est conservée. Sélectionnez une autre section pour poursuivre la lecture.",
     "Content index": "Sommaire",
     "Copy current content": "Copier le contenu actuel",
     "Copy document": "Copier le document",

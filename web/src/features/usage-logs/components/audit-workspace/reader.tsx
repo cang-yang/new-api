@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { cn } from '@/lib/utils'
 
 import {
   displayValue,
@@ -43,8 +44,8 @@ export function TextBlock(props: {
       <pre
         className={
           props.code
-            ? 'font-mono text-xs leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap'
-            : 'max-w-[80ch] font-sans text-sm leading-7 [overflow-wrap:anywhere] whitespace-pre-wrap'
+            ? 'font-mono text-xs leading-6 font-normal [overflow-wrap:anywhere] whitespace-pre-wrap'
+            : 'font-sans text-sm leading-6 font-normal [overflow-wrap:anywhere] whitespace-pre-wrap'
         }
       >
         {props.text.slice(0, limit) || '""'}
@@ -71,9 +72,9 @@ export function ReadingViewport(props: { children: ReactNode }) {
       role='region'
       aria-label={t('Reading content')}
       tabIndex={0}
-      className='min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-4 outline-offset-[-2px] sm:p-6'
+      className='min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-4 outline-offset-[-2px] sm:px-8 sm:py-5 [@media(max-height:500px)]:py-2'
     >
-      {props.children}
+      <div className='mx-auto max-w-3xl min-w-0'>{props.children}</div>
     </div>
   )
 }
@@ -194,12 +195,21 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
                 </Button>
               )
             }
+            const prose =
+              typeof child === 'string' &&
+              (child.length > 160 || /[\r\n]/.test(child))
             return (
               <div
                 key={key}
-                className='grid min-w-0 gap-1 border-b py-4 first:pt-0 sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)] sm:gap-5'
+                data-field-layout={prose ? 'prose' : 'compact'}
+                className={cn(
+                  'grid min-w-0 border-b last:border-b-0',
+                  prose
+                    ? 'gap-2 py-3 first:pt-0'
+                    : 'grid-cols-[minmax(0,8rem)_minmax(0,1fr)] items-start gap-3 py-2.5'
+                )}
               >
-                <div className='text-muted-foreground text-sm [overflow-wrap:anywhere]'>
+                <div className='text-muted-foreground text-xs leading-6 [overflow-wrap:anywhere]'>
                   {label}
                 </div>
                 <TextBlock

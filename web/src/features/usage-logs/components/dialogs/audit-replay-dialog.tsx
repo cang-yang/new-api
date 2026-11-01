@@ -260,12 +260,14 @@ export function AuditReplayDialog(props: {
   return (
     <AlertDialog open={props.open} onOpenChange={props.onOpenChange}>
       <AlertDialogContent className='flex max-h-[min(88dvh,760px)] w-[calc(100vw-1.5rem)] !max-w-[56rem] grid-rows-none flex-col gap-0 overflow-hidden !p-0 sm:w-[min(56rem,calc(100vw-3rem))]'>
-        <AlertDialogHeader className='shrink-0 px-4 pt-4 pb-3 text-left sm:px-6 sm:pt-6'>
-          <AlertDialogMedia>
+        <AlertDialogHeader className='shrink-0 grid-cols-[2.5rem_minmax(0,1fr)] place-items-start px-4 pt-4 pb-3 text-left sm:px-6 sm:pt-6'>
+          <AlertDialogMedia className='row-span-2 mb-0'>
             <RotateCcw aria-hidden='true' />
           </AlertDialogMedia>
-          <AlertDialogTitle>{t('Replay upstream attempt')}</AlertDialogTitle>
-          <AlertDialogDescription>
+          <AlertDialogTitle className='col-start-2'>
+            {t('Replay upstream attempt')}
+          </AlertDialogTitle>
+          <AlertDialogDescription className='col-start-2'>
             {t('Preview the exact operation before sending a real request')}
           </AlertDialogDescription>
         </AlertDialogHeader>
