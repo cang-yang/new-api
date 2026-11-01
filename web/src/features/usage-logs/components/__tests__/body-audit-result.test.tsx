@@ -229,3 +229,13 @@ test('keyboard drill-down transfers focus to the stable data location control', 
   await user.keyboard('{Enter}')
   expect(screen.getByRole('combobox', { name: 'Data location' })).toHaveFocus()
 })
+
+test('a single document does not reserve a redundant fixed navigation row', () => {
+  const { container } = mount(
+    <AuditPayload
+      capture={{ encoding: 'utf-8', derived: true, body: '{"status":"ok"}' }}
+    />
+  )
+  expect(container.querySelector('[data-audit-chrome="document"]')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Copy document' })).toBeVisible()
+})

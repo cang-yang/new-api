@@ -30,11 +30,20 @@ import {
 } from '../../lib/audit-workspace'
 import { ReadingViewport, TextBlock, ValueExplorer } from './reader'
 
-function DocumentBody(props: { document: AuditDocument; notice?: ReactNode }) {
+function DocumentBody(props: {
+  document: AuditDocument
+  notice?: ReactNode
+  showHeading?: boolean
+}) {
   const { t } = useTranslation()
   const doc = props.document
   const notice = (
     <div className='space-y-3 empty:hidden'>
+      {props.showHeading && (
+        <h3 className='mb-4 text-sm font-medium [overflow-wrap:anywhere]'>
+          {documentTitle(doc, t)}
+        </h3>
+      )}
       {props.notice}
       {doc.category === 'tool' && (
         <p className='text-muted-foreground mb-4 text-xs'>
@@ -151,35 +160,42 @@ export function DocumentBrowser(props: {
         </nav>
       )}
       <div className='flex min-h-0 min-w-0 flex-1 flex-col'>
-        <div
-          data-audit-chrome='document'
-          className='flex shrink-0 items-center gap-2 border-b px-3 py-2'
-        >
-          <NativeSelect
-            className='min-w-0 flex-1 lg:hidden'
-            aria-label={t('Reading section')}
-            value={active.id}
-            onChange={(event) => setSelectedId(event.target.value)}
+        {props.documents.length > 1 && (
+          <div
+            data-audit-chrome='document'
+            className='flex shrink-0 items-center gap-2 border-b px-3 py-2'
           >
-            {props.documents.map((doc) => (
-              <NativeSelectOption key={doc.id} value={doc.id}>
-                {documentTitle(doc, t)}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <h3
-            title={documentTitle(active, t)}
-            className='hidden min-w-0 flex-1 truncate text-sm font-medium lg:block'
-          >
-            {documentTitle(active, t)}
-          </h3>
-          <CopyButton
-            size='sm'
-            value={displayValue(active.value)}
-            tooltip={t('Copy document')}
-          />
-        </div>
-        <DocumentBody key={active.id} document={active} notice={props.notice} />
+            <NativeSelect
+              className='min-w-0 flex-1 lg:hidden'
+              aria-label={t('Reading section')}
+              value={active.id}
+              onChange={(event) => setSelectedId(event.target.value)}
+            >
+              {props.documents.map((doc) => (
+                <NativeSelectOption key={doc.id} value={doc.id}>
+                  {documentTitle(doc, t)}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <h3
+              title={documentTitle(active, t)}
+              className='hidden min-w-0 flex-1 truncate text-sm font-medium lg:block'
+            >
+              {documentTitle(active, t)}
+            </h3>
+            <CopyButton
+              size='sm'
+              value={displayValue(active.value)}
+              tooltip={t('Copy document')}
+            />
+          </div>
+        )}
+        <DocumentBody
+          key={active.id}
+          document={active}
+          notice={props.notice}
+          showHeading={props.documents.length === 1}
+        />
       </div>
     </div>
   )

@@ -730,7 +730,8 @@ export function DetailsDialog(props: DetailsDialogProps) {
       description={t('View the complete details for this log entry')}
       contentClassName={cn(
         'min-w-0 overflow-hidden',
-        showBodyAudit && 'h-[min(92dvh,960px)]',
+        showBodyAudit &&
+          'h-[min(92dvh,960px)] [@media(max-height:500px)]:gap-1 [@media(max-height:500px)]:p-2',
         'max-sm:max-h-(--dialog-available-height) max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
         isTieredBilling || showBodyAudit
           ? 'sm:max-w-4xl lg:max-w-5xl'

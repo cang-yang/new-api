@@ -143,6 +143,13 @@ export function AuditPayload(props: {
           <TabsTrigger value='raw'>{t('Raw data')}</TabsTrigger>
         </TabsList>
         <div className='flex shrink-0 items-center gap-2'>
+          {view === 'readable' && documents.length === 1 && (
+            <CopyButton
+              size='sm'
+              value={displayValue(documents[0].value)}
+              tooltip={t('Copy document')}
+            />
+          )}
           {props.capture.size !== undefined && (
             <span className='text-muted-foreground hidden text-xs sm:inline'>
               {formatNumber(props.capture.size / 1024, locale)} KB

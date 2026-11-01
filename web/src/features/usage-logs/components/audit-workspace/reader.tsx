@@ -86,6 +86,9 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
   const value = valueAtPath(props.value, path)
   const structured = value !== null && typeof value === 'object'
   const entries = structured ? Object.entries(value) : []
+  const hasNavigation =
+    path.length > 0 ||
+    entries.some(([, child]) => child !== null && typeof child === 'object')
   const pageSize = 40
   const pages = Math.max(1, Math.ceil(entries.length / pageSize))
   const navigate = (next: string[]) => {
@@ -96,47 +99,49 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
 
   return (
     <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
-      <div
-        data-audit-chrome='path'
-        className='bg-muted/20 flex shrink-0 items-center gap-2 border-b px-3 py-2'
-      >
-        <Button
-          variant='ghost'
-          size='icon-sm'
-          aria-label={t('Back')}
-          disabled={!path.length}
-          onClick={() => navigate(path.slice(0, -1))}
+      {hasNavigation && (
+        <div
+          data-audit-chrome='path'
+          className='bg-muted/20 flex shrink-0 items-center gap-2 border-b px-3 py-2'
         >
-          <ArrowLeft className='size-4' />
-        </Button>
-        <NativeSelect
-          ref={locationRef}
-          className='min-w-0 flex-1'
-          aria-label={t('Data location')}
-          value={String(path.length)}
-          onChange={(event) =>
-            navigate(path.slice(0, Number(event.target.value)))
-          }
-        >
-          <NativeSelectOption value='0'>{t('Data root')}</NativeSelectOption>
-          {path.map((_, index) => (
-            <NativeSelectOption
-              key={JSON.stringify(path.slice(0, index + 1))}
-              value={String(index + 1)}
-            >
-              {path
-                .slice(0, index + 1)
-                .map((part) => JSON.stringify(part))
-                .join(' / ')}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-        <CopyButton
-          value={displayValue(value)}
-          size='sm'
-          tooltip={t('Copy current content')}
-        />
-      </div>
+          <Button
+            variant='ghost'
+            size='icon-sm'
+            aria-label={t('Back')}
+            disabled={!path.length}
+            onClick={() => navigate(path.slice(0, -1))}
+          >
+            <ArrowLeft className='size-4' />
+          </Button>
+          <NativeSelect
+            ref={locationRef}
+            className='min-w-0 flex-1'
+            aria-label={t('Data location')}
+            value={String(path.length)}
+            onChange={(event) =>
+              navigate(path.slice(0, Number(event.target.value)))
+            }
+          >
+            <NativeSelectOption value='0'>{t('Data root')}</NativeSelectOption>
+            {path.map((_, index) => (
+              <NativeSelectOption
+                key={JSON.stringify(path.slice(0, index + 1))}
+                value={String(index + 1)}
+              >
+                {path
+                  .slice(0, index + 1)
+                  .map((part) => JSON.stringify(part))
+                  .join(' / ')}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <CopyButton
+            value={displayValue(value)}
+            size='sm'
+            tooltip={t('Copy current content')}
+          />
+        </div>
+      )}
       <ReadingViewport key={`${JSON.stringify(path)}:${page}`}>
         {props.notice}
         {!structured && (
