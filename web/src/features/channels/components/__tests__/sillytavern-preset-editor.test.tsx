@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   cleanup,
+  act,
   render,
   screen,
   waitFor,
@@ -28,13 +29,58 @@ import { useState } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'
 
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
+import { api } from '@/lib/api'
 
+import { applyScriptPreparation } from '../../lib/preset-script-preparation'
 import { PresetScriptSettings } from '../preset-script-settings'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('preparation issues display readable explanations and safely handle unknown codes', () => {
+  const config = applyScriptPreparation(
+    {
+      preset: {
+        extensions: {
+          tavern_helper: {
+            scripts: [{ type: 'script', id: 'issues', enabled: true }],
+          },
+        },
+      },
+    },
+    {
+      modules: {},
+      scripts: [
+        {
+          id: 'issues',
+          name: 'Issue hook',
+          enabled: true,
+          status: 'failed',
+          issues: [
+            { code: 'computed_import' },
+            { code: 'download_failed' },
+            { code: 'future_code' },
+          ],
+        },
+      ],
+    }
+  )
+  render(<PresetScriptSettings config={config} onChange={vi.fn()} />)
+  expect(
+    screen.getByText('Computed imports need manually saved dependencies.')
+  ).toBeVisible()
+  expect(
+    screen.getByText('A script dependency could not be downloaded.')
+  ).toBeVisible()
+  expect(
+    screen.getByText('This script could not be prepared automatically.')
+  ).toBeVisible()
+  expect(
+    screen.queryByText(/future_code|download_failed|computed_import/)
+  ).toBeNull()
 })
 
 test('script compatibility is explicit, preserves the preset and disables the conflicting transport', async () => {
@@ -67,7 +113,7 @@ test('script compatibility is explicit, preserves the preset and disables the co
   await user.click(toggle)
   expect(
     screen.getByText(
-      'Browser pages, remote loaders, persistent state and tool actions are not executed. This is not full Tavern Helper emulation.'
+      'Dependencies are downloaded only during preparation, never during script execution. Browser pages, persistent state and tool execution are unavailable. This is not full Tavern Helper emulation.'
     )
   ).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
@@ -79,14 +125,126 @@ test('script compatibility is explicit, preserves the preset and disables the co
   expect(saved.preset).toEqual(withHooks)
 })
 
-test('script compatibility cannot be enabled when the preset has no supported adapter', async () => {
+test('script compatibility hides the legacy adapter when the preset has no supported adapter', async () => {
   const user = userEvent.setup()
   render(<Editor />)
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
   expect(
-    screen.getByRole('switch', { name: 'Enable SPreset data hooks' })
-  ).toHaveAttribute('aria-disabled', 'true')
+    screen.queryByRole('switch', { name: 'Enable SPreset data hooks' })
+  ).toBeNull()
+})
+
+test('script names and inherited disabled states appear without fetching existing presets and retry prepares explicitly', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        modules: {},
+        scripts: [
+          {
+            id: 'local',
+            name: 'Local hook',
+            enabled: true,
+            status: 'prepared',
+            issues: [],
+          },
+          {
+            id: 'off',
+            name: 'Hidden hook',
+            enabled: false,
+            status: 'disabled',
+            issues: [],
+          },
+        ],
+      },
+    },
+  })
+  render(
+    <PresetScriptSettings
+      onChange={onChange}
+      config={{
+        preset: {
+          extensions: {
+            tavern_helper: {
+              scripts: [
+                {
+                  type: 'script',
+                  id: 'local',
+                  name: 'Local hook',
+                  enabled: true,
+                },
+                {
+                  type: 'folder',
+                  enabled: false,
+                  scripts: [
+                    {
+                      type: 'script',
+                      id: 'off',
+                      name: 'Hidden hook',
+                      enabled: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  )
+  expect(
+    screen.getByRole('list', { name: 'Preset scripts' })
+  ).toHaveTextContent('Local hook')
+  expect(
+    screen.getByRole('list', { name: 'Preset scripts' })
+  ).toHaveTextContent('Hidden hook')
+  expect(screen.getByText('Disabled')).toBeVisible()
+  expect(post).not.toHaveBeenCalled()
+  await user.click(
+    screen.getByRole('button', { name: 'Prepare script dependencies' })
+  )
+  await waitFor(() => expect(onChange).toHaveBeenCalled())
+  expect(onChange.mock.calls[0][0].script_runtime).toBeUndefined()
+})
+
+test('preparation completing after a preset switch does not overwrite the new draft', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  let resolve!: (value: unknown) => void
+  vi.spyOn(api, 'post').mockImplementation(
+    () =>
+      new Promise((finish) => {
+        resolve = finish
+      })
+  )
+  const config = {
+    preset: {
+      extensions: {
+        tavern_helper: {
+          scripts: [
+            { type: 'script', id: 'old', name: 'Old hook', enabled: true },
+          ],
+        },
+      },
+    },
+  }
+  const { rerender } = render(
+    <PresetScriptSettings config={config} onChange={onChange} />
+  )
+  await user.click(
+    screen.getByRole('button', { name: 'Prepare script dependencies' })
+  )
+  rerender(<PresetScriptSettings config={{ preset: {} }} onChange={onChange} />)
+  resolve({
+    data: { success: true, data: { modules: { stale: '1' }, scripts: [] } },
+  })
+  await waitFor(() =>
+    expect(screen.queryByText('Preparing script dependencies…')).toBeNull()
+  )
+  expect(onChange).not.toHaveBeenCalled()
 })
 
 test('generic Tavern scripts select a distinct runtime and preserve pinned dependencies', async () => {
@@ -124,8 +282,8 @@ test('generic Tavern scripts select a distinct runtime and preserve pinned depen
     screen.getByRole('switch', { name: 'Enable Tavern Helper data scripts' })
   )
   expect(
-    screen.getByRole('switch', { name: 'Enable SPreset data hooks' })
-  ).toHaveAttribute('aria-checked', 'false')
+    screen.queryByRole('switch', { name: 'Enable SPreset data hooks' })
+  ).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   const saved = JSON.parse(
     screen.getByLabelText('Saved config').textContent || '{}'
@@ -135,6 +293,79 @@ test('generic Tavern scripts select a distinct runtime and preserve pinned depen
   expect(saved.tool_text.enabled).toBe(false)
 })
 
+test.each([
+  'invalid JSON',
+  'invalid shape',
+  'oversized file',
+  'oversized source',
+])(
+  'an advanced bundle with %s cancels preparation, clears loading and preserves the existing modules',
+  async (kind) => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    let resolve!: (value: unknown) => void
+    const post = vi.spyOn(api, 'post').mockImplementation(
+      () =>
+        new Promise((finish) => {
+          resolve = finish
+        })
+    )
+    render(
+      <PresetScriptSettings
+        config={{
+          preset: {
+            extensions: {
+              tavern_helper: {
+                scripts: [
+                  { type: 'script', id: 'pending-bundle', enabled: true },
+                ],
+              },
+            },
+          },
+          script_modules: { saved: 'export const a=1' },
+        }}
+        onChange={onChange}
+      />
+    )
+    await user.click(
+      screen.getByRole('button', { name: 'Prepare script dependencies' })
+    )
+    expect(
+      screen.getByRole('button', { name: 'Preparing script dependencies…' })
+    ).toBeDisabled()
+    await user.click(
+      screen.getByRole('button', { name: 'Advanced: manual module bundle' })
+    )
+    const file = new File(['{}'], 'invalid.json', { type: 'application/json' })
+    let source = '{'
+    if (kind === 'invalid shape') source = '[]'
+    if (kind === 'oversized file') {
+      Object.defineProperty(file, 'size', { value: 2 * 1024 * 1024 + 1 })
+    }
+    if (kind === 'oversized source') {
+      source = JSON.stringify({ example: 'a'.repeat(128 * 1024 + 1) })
+    }
+    Object.defineProperty(file, 'text', { value: async () => source })
+    await user.upload(
+      screen.getByLabelText('Import module bundle', { selector: 'input' }),
+      file
+    )
+    expect(await screen.findByText(/^Invalid module bundle/)).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: 'Prepare script dependencies' })
+    ).toBeEnabled()
+    expect(screen.getByText('saved')).toBeVisible()
+    await act(async () => {
+      resolve({
+        data: { success: true, data: { modules: { stale: '1' }, scripts: [] } },
+      })
+    })
+    expect(onChange).not.toHaveBeenCalled()
+    const signal = (post.mock.calls[0][2] as { signal: AbortSignal }).signal
+    expect(signal.aborted).toBe(true)
+  }
+)
+
 test('module imports validate input and cannot overwrite a newer channel draft', async () => {
   const user = userEvent.setup()
   const onChange = vi.fn()
@@ -142,6 +373,7 @@ test('module imports validate input and cannot overwrite a newer channel draft',
   const { rerender } = render(
     <PresetScriptSettings config={initial} onChange={onChange} />
   )
+  await user.click(screen.getByText('Advanced: manual module bundle'))
   const input = screen.getByLabelText('Import module bundle', {
     selector: 'input',
   })
@@ -821,6 +1053,26 @@ test('replacing an entry name does not insert its identifier into the new name',
     JSON.parse(screen.getByLabelText('Saved config').textContent || '{}').preset
       .prompts[0].name
   ).toBe('Revised name')
+})
+
+test('preset tabs constrain narrow layouts and scroll independently while retaining all navigation', async () => {
+  const user = userEvent.setup()
+  render(<Editor />)
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  const tabs = screen.getByRole('tablist', { name: 'Preset settings' })
+  expect(tabs.parentElement).toHaveClass(
+    'min-w-0',
+    'max-w-full',
+    'overflow-x-auto'
+  )
+  expect(tabs.parentElement?.parentElement).toHaveClass('min-w-0', 'w-full')
+  expect(tabs).toHaveClass('w-max')
+  await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
+  expect(
+    screen.getByRole('tab', { name: 'Script compatibility' })
+  ).toHaveAttribute('aria-selected', 'true')
+  await user.click(screen.getByRole('tab', { name: 'Preset entries' }))
+  expect(screen.getByRole('textbox', { name: 'Prompt content' })).toBeVisible()
 })
 
 test('entry editing keeps a wrapping expanding text area and returning to the list preserves the draft', async () => {

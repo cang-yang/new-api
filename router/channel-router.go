@@ -41,6 +41,7 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	channelRoute := apiRouter.Group("/channel")
 	channelRoute.Use(middleware.AdminAuth())
 	channelRoute.POST("/regex/preview", middleware.RequirePermission(authz.ChannelWrite), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewChannelRegex)
+	handlePermissionRoute(channelRoute, http.MethodPost, "/preset/scripts/prepare", authz.ChannelWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PrepareChannelPresetScripts)
 
 	channelRoute.POST("/:id/key",
 		middleware.RootAuth(),

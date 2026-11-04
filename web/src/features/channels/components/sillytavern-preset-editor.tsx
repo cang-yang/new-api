@@ -130,13 +130,14 @@ export function SillyTavernPresetEditor(props: Props) {
               </>
             )}
           </div>
-          {hasBrowserScripts && parsed?.config.script_runtime !== 'tavern-v1' && (
-            <p className='text-xs text-amber-600 dark:text-amber-400'>
-              {t(
-                'Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.'
-              )}
-            </p>
-          )}
+          {hasBrowserScripts &&
+            parsed?.config.script_runtime !== 'tavern-v1' && (
+              <p className='text-xs text-amber-600 dark:text-amber-400'>
+                {t(
+                  'Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.'
+                )}
+              </p>
+            )}
         </div>
         <Button
           type='button'
@@ -259,10 +260,14 @@ export function SillyTavernPresetEditor(props: Props) {
             <Tabs
               value={tab}
               onValueChange={(value) => setTab(String(value))}
-              className='min-h-0 flex-1 gap-0'
+              className='min-h-0 w-full min-w-0 flex-1 gap-0'
             >
-              <div className='shrink-0 overflow-x-auto border-b px-4 py-2'>
-                <TabsList variant='line' aria-label={t('Preset settings')}>
+              <div className='max-w-full min-w-0 shrink-0 overflow-x-auto border-b px-4 py-2'>
+                <TabsList
+                  variant='line'
+                  className='w-max'
+                  aria-label={t('Preset settings')}
+                >
                   <TabsTrigger value='entries'>
                     {t('Preset entries')}
                   </TabsTrigger>

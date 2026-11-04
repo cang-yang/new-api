@@ -143,6 +143,147 @@ func TestTavernRuntimeUnavailableCapabilities(t *testing.T) {
 	}
 }
 
+func TestTavernRuntimeSafeDiagnostics(t *testing.T) {
+	for _, test := range []struct {
+		name, source, phase, capability, module string
+	}{
+		{"host", `eventOn(tavern_events.CHARACTER_MESSAGE_RENDERED,()=>{});`, "import", "event:CHARACTER_MESSAGE_RENDERED", ""},
+		{"dom", `document.querySelector("private message");`, "import", "browser-dom", ""},
+		{"network", `await fetch("https://secret.invalid/?token=credential");`, "import", "external-io", ""},
+		{"unknown-event", `tavern_events["private message credential"];`, "import", "event:unsupported", ""},
+		{"callback", `eventOn(tavern_events.GENERATION_AFTER_COMMANDS,()=>{$("private message")});`, "GENERATION_AFTER_COMMANDS", "jquery-dom", ""},
+		{"thrown", `throw new Error("private message https://secret.invalid/?token=credential");`, "import", "script-failed", ""},
+		{"forged", `throw {phase:"forged",script_id:"forged",capability:"credential"};`, "import", "script-failed", ""},
+		{"missing", `import "https://user:credential@missing.invalid/code.js?token=credential#credential";`, "module-resolution", "missing-module", "missing.invalid/code.js"},
+		{"malformed-module", `import "https://credential%zz@missing.invalid/code.js";`, "module-resolution", "missing-module", "invalid-module-identifier"},
+		{"compile", `export const = "private message";`, "compile", "invalid-javascript", "preset:diagnostic-script"},
+		{"unawaited", `updateVariablesWith(async()=>{await new Promise(()=>{}); return {};});`, "import", "unawaited-async-work", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "diagnostic-script", "name": "Diagnostic example", "enabled": true, "content": test.source}}, nil)
+			request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "private message"}}}
+			_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			if trace.ScriptResponse != nil {
+				defer trace.ScriptResponse.tavern.Close()
+			}
+			require.Error(t, err)
+			for _, expected := range []string{test.phase, test.capability, test.module, "diagnostic-script", "Diagnostic example"} {
+				assert.Contains(t, err.Error(), expected)
+			}
+			for _, secret := range []string{"private message", "credential", "forged"} {
+				assert.NotContains(t, err.Error(), secret)
+			}
+			assert.Less(t, len(err.Error()), 2048)
+		})
+	}
+}
+
+func TestTavernRuntimeCaughtDiagnosticsRetainContext(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "caught-owner", "name": "Caught operation", "enabled": true, "content": `for(let i=0;i<40;i++){try{$("private message")}catch{}}`},
+		map[string]any{"type": "script", "id": "next-owner", "enabled": true, "content": `eventOn(tavern_events.GENERATION_STARTED,()=>{});`},
+	}, nil)
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	if trace.ScriptResponse != nil {
+		defer trace.ScriptResponse.tavern.Close()
+	}
+	require.NoError(t, err)
+	joined := strings.Join(trace.Warnings, "\n")
+	assert.Contains(t, joined, "caught-owner")
+	assert.Contains(t, joined, "jquery-dom")
+	assert.NotContains(t, joined, "private message")
+	assert.LessOrEqual(t, len(trace.Warnings), 18)
+}
+
+func TestTavernRuntimeVariableDefaultsAndOwnedUnsubscribe(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "owner", "enabled": true, "content": `
+import {listener,saveStop} from "shared";
+replaceVariables({value:"chat"});
+if(getVariables({}).value!=="chat" || getVariables().value!=="chat") throw Error("default scope");
+await updateVariablesWith(async value=>{await Promise.resolve();return {...value,awaited:true};},{});
+insertOrAssignVariables({extra:true},{});
+eventOn("owned",listener);
+saveStop(eventOn("owned",listener).stop);`},
+		map[string]any{"type": "script", "id": "caller", "enabled": true, "content": `
+import {stop} from "shared";
+stop();
+await eventEmit("owned");
+if(getVariables().called) throw Error("owner unsubscribe failed");
+if(!getVariables({}).extra) throw Error("default update scope");`},
+	}, map[string]string{"shared": `export let stop; export const saveStop=value=>{stop=value}; export function listener(){insertOrAssignVariables({called:true})}`})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	if trace.ScriptResponse != nil {
+		defer trace.ScriptResponse.tavern.Close()
+	}
+	require.NoError(t, err)
+}
+
+func TestTavernRuntimePinnedURLScript(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "url-script", "enabled": true, "content": "https://cdn.example/pinned.js"},
+	}, map[string]string{"https://cdn.example/pinned.js": `eventOn(tavern_events.CHAT_COMPLETION_PROMPT_READY,data=>{data.chat[0].content="pinned"});`})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	result, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	if trace.ScriptResponse != nil {
+		defer trace.ScriptResponse.tavern.Close()
+	}
+	require.NoError(t, err)
+	assert.Equal(t, "pinned", result.Messages[0].Content)
+}
+
+func TestTavernRuntimePinnedURLRelativeImports(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "url-relative", "enabled": true, "content": "https://cdn.example/folder/main.js"},
+	}, map[string]string{
+		"https://cdn.example/folder/main.js": `import {prefix} from '/dep.js'; import {suffix} from '//other.example/x.js'; eventOn(tavern_events.CHAT_COMPLETION_PROMPT_READY,data=>{data.chat[0].content=prefix+data.chat[0].content+suffix});`,
+		"https://cdn.example/dep.js":         `export const prefix='root:';`,
+		"https://other.example/x.js":         `export const suffix=':other';`,
+	})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	result, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	if trace.ScriptResponse != nil {
+		defer trace.ScriptResponse.tavern.Close()
+	}
+	require.NoError(t, err)
+	assert.Equal(t, "root:hello:other", result.Messages[0].Content)
+}
+
+func TestTavernRuntimeUnhandledRejections(t *testing.T) {
+	for _, test := range []struct {
+		name, source string
+		handled      bool
+	}{
+		{"partial-message-update", `setChatMessages([{message_id:0,message:'partially changed'},{message_id:999999,message:'missing'}]);`, false},
+		{"detached-rejection", `Promise.reject(new Error('private message https://secret.invalid/?token=credential'));`, false},
+		{"handled-message-update", `setChatMessages([{message_id:999999,message:'missing'}]).catch(()=>{});`, true},
+		{"handled-rejection", `Promise.reject(new Error('private message credential')).catch(()=>{});`, true},
+		{"later-handler", `const rejected=Promise.reject(new Error('credential')); await Promise.resolve(); rejected.catch(()=>{});`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "rejection-script", "name": "Async rejection", "enabled": true, "content": test.source}}, nil)
+			request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "original"}}}
+			_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			if trace.ScriptResponse != nil {
+				defer trace.ScriptResponse.tavern.Close()
+			}
+			if test.handled {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unhandled-promise-rejection")
+			assert.Contains(t, err.Error(), "rejection-script")
+			assert.Contains(t, err.Error(), "Async rejection")
+			assert.NotContains(t, err.Error(), "credential")
+			assert.NotContains(t, err.Error(), "private message")
+			assert.Equal(t, "original", request.Messages[0].Content)
+		})
+	}
+}
+
 func TestTavernRuntimeFailureReleasesSession(t *testing.T) {
 	config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "test", "enabled": true, "content": ""}}, nil)
 	config.Preset = []byte(strings.Replace(string(config.Preset), `"marker":true`, `"content":"{{unavailable_macro}}","role":"system"`, 1))

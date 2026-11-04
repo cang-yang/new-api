@@ -198,6 +198,11 @@ import {
   supportsNewAPIUpstream,
 } from '../../lib/channel-plugin-extensions'
 import { getChannelTypeConfig } from '../../lib/channel-type-config'
+import {
+  applyScriptPreparation,
+  discoverPresetScripts,
+  preparePresetScripts,
+} from '../../lib/preset-script-preparation'
 import { mergePresetRegexScripts } from '../../lib/regex-rules'
 import { parsePresetEditor } from '../../lib/sillytavern-editor'
 import {
@@ -468,6 +473,7 @@ export function ChannelMutateDrawer({
     scripts: unknown[]
   } | null>(null)
   const [presetDragActive, setPresetDragActive] = useState(false)
+  const [preparingPreset, setPreparingPreset] = useState(false)
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
     useState<ChannelConnectionInfo | null>(null)
 
@@ -482,11 +488,15 @@ export function ChannelMutateDrawer({
   const channelId = currentRow?.id ?? null
   const presetScope = useMemo(() => ({ channelId, open }), [channelId, open])
   const presetImportScope = useRef<typeof presetScope | null>(null)
+  const presetImportSequence = useRef(0)
+  const presetPreparationAbort = useRef<AbortController | null>(null)
   useLayoutEffect(() => {
     presetImportScope.current = presetScope
     setPendingPresetRegex(null)
+    setPreparingPreset(false)
     return () => {
       presetImportScope.current = null
+      presetPreparationAbort.current?.abort()
     }
   }, [presetScope])
   const sensitiveLocked = isEditing && !canEditSensitive
@@ -602,6 +612,10 @@ export function ChannelMutateDrawer({
     onChange: (value: string) => void
   ) => {
     const importScope = presetScope
+    const sequence = ++presetImportSequence.current
+    presetPreparationAbort.current?.abort()
+    setPreparingPreset(false)
+    const previousValue = form.getValues('sillytavern_preset')
     if (
       !file.name.toLowerCase().endsWith('.json') &&
       file.type !== 'application/json'
@@ -615,24 +629,59 @@ export function ChannelMutateDrawer({
     }
     try {
       const preset = JSON.parse(await file.text()) as Record<string, unknown>
-      if (presetImportScope.current !== importScope || !importScope.open) return
+      if (
+        presetImportScope.current !== importScope ||
+        !importScope.open ||
+        sequence !== presetImportSequence.current
+      ) {
+        return
+      }
       if (
         !Array.isArray(preset.prompts) ||
         !Array.isArray(preset.prompt_order)
       ) {
         throw new Error('Invalid preset')
       }
-      const config = {
+      let config: Record<string, unknown> = {
         preset,
         parameter_policy: 'preset',
         source_file_name: file.name,
-      }
-      if (!parsePresetEditor(config)) throw new Error('Invalid preset')
-      const presetValue = JSON.stringify({
-        ...config,
         enable_embedded_regex: false,
         enable_send_regex: false,
-      })
+      }
+      if (!parsePresetEditor(config)) throw new Error('Invalid preset')
+      const previousConfig = parsePresetEditor(previousValue || '')?.config
+      if (previousConfig && Object.hasOwn(previousConfig, 'script_runtime')) {
+        config.script_runtime = previousConfig.script_runtime
+      }
+      if (previousConfig?.tool_text) config.tool_text = previousConfig.tool_text
+      if (discoverPresetScripts(config).some((script) => script.enabled)) {
+        setPreparingPreset(true)
+        const controller = new AbortController()
+        presetPreparationAbort.current = controller
+        try {
+          const result = await preparePresetScripts(config, controller.signal)
+          if (controller.signal.aborted) return
+          config = applyScriptPreparation(config, result, true)
+        } catch (error) {
+          if (controller.signal.aborted) return
+          if (
+            presetImportScope.current === importScope &&
+            sequence === presetImportSequence.current
+          ) {
+            handleServerError(error)
+          }
+        }
+      }
+      if (
+        presetImportScope.current !== importScope ||
+        !importScope.open ||
+        sequence !== presetImportSequence.current ||
+        form.getValues('sillytavern_preset') !== previousValue
+      ) {
+        return
+      }
+      const presetValue = JSON.stringify(config)
       onChange(presetValue)
       const scripts = (
         preset.extensions as { regex_scripts?: unknown[] } | undefined
@@ -644,8 +693,21 @@ export function ChannelMutateDrawer({
       )
       toast.success(t('Preset imported. Save the channel to apply it.'))
     } catch {
-      if (presetImportScope.current !== importScope || !importScope.open) return
+      if (
+        presetImportScope.current !== importScope ||
+        !importScope.open ||
+        sequence !== presetImportSequence.current
+      ) {
+        return
+      }
       toast.error(t('Import a valid SillyTavern Chat Completion preset'))
+    } finally {
+      if (
+        presetImportScope.current === importScope &&
+        sequence === presetImportSequence.current
+      ) {
+        setPreparingPreset(false)
+      }
     }
   }
 
@@ -2970,6 +3032,11 @@ export function ChannelMutateDrawer({
                   )}
                 </div>
               </div>
+              {preparingPreset && (
+                <p role='status' className='text-muted-foreground text-sm'>
+                  {t('Preparing script dependencies…')}
+                </p>
+              )}
               <FormControl>
                 <input
                   id='sillytavern-preset-file'
@@ -5513,6 +5580,7 @@ export function ChannelMutateDrawer({
                 type='submit'
                 disabled={
                   isSubmitting ||
+                  preparingPreset ||
                   (!isEditing && !canEditSensitive) ||
                   (isEditing && !channelData?.data)
                 }

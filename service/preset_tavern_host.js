@@ -1,11 +1,16 @@
 // Independent, data-only Tavern Helper contract. No DOM or external IO.
 let request, currentScript = '', input;
 let messages = [], ready = [], diagnostics = [];
+const report = globalThis.__tavernDiagnostic;
+delete globalThis.__tavernDiagnostic;
+let phase = 'import', pendingWork = 0;
+const context = () => report(phase, currentScript, 'script-failed');
 const listeners = new Map(), scriptData = new Map(), messageData = new Map();
 const copy = value => JSON.parse(JSON.stringify(value));
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reject = capability => {
-  diagnostics.push(capability);
+  report(phase, currentScript, capability);
+  if (diagnostics.length < 16) diagnostics.push(true);
   throw new Error('Unavailable gateway capability');
 };
 const events = Object.freeze({
@@ -31,7 +36,7 @@ function subscribe(event, listener, order = 'normal') {
     return reject('event:' + event);
   const list = listeners.get(event) || [];
   const existing = list.find(item => item.fn === listener && item.owner === currentScript);
-  if (existing && order === 'normal') return {stop: () => remove(event, listener)};
+  if (existing && order === 'normal') return {stop: () => remove(event, listener, existing.owner)};
   if (existing) list.splice(list.indexOf(existing), 1);
   if ([...listeners.values()].reduce((n, items) => n + items.length, 0) >= 256)
     throw new RangeError('Listener limit');
@@ -54,8 +59,14 @@ async function emit(event, ...args) {
       if (!(listeners.get(event) || []).includes(item)) continue;
       if (item.once) remove(event, item.fn, item.owner);
       const previous = currentScript;
+      const previousPhase = phase;
       currentScript = item.owner;
-      try { await item.fn(...args); } finally { currentScript = previous; }
+      phase = Object.values(events).includes(event) ? event : 'custom-event';
+      context();
+      try {
+        await item.fn(...args);
+        if (pendingWork) reject('unawaited-async-work');
+      } finally { currentScript = previous; phase = previousPhase; }
     }
   } finally { eventActive = false; }
 }
@@ -117,7 +128,7 @@ async function setChatMessages(changes, options = {}) {
 }
 function variableTable(options = {type:'chat'}) {
   if (!object(options)) throw new TypeError('Invalid variable options');
-  const type = options.type;
+  const type = options.type ?? 'chat';
   if (type === 'chat' || type === 'global') return [input, type === 'chat' ? 'variables' : 'globalVariables'];
   if (type === 'script') {
     const id = options.script_id || currentScript;
@@ -146,8 +157,12 @@ function updateVariablesWith(updater, options) {
   if (resolved.type === 'script' && !resolved.script_id) resolved.script_id = currentScript;
   if (resolved.type === 'message') resolved.message_id = indexOf(resolved.message_id ?? 'latest');
   const result = updater(getVariables(resolved));
-  if (result && typeof result.then === 'function')
-    return result.then(value => {replaceVariables(value, resolved); return getVariables(resolved);});
+  if (result && typeof result.then === 'function') {
+    pendingWork++;
+    return Promise.resolve(result).then(value => {
+      replaceVariables(value, resolved); return getVariables(resolved);
+    }).finally(() => {pendingWork--;});
+  }
   replaceVariables(result, resolved);
   return getVariables(resolved);
 }
@@ -195,6 +210,10 @@ const api = {
 Object.assign(globalThis, api);
 globalThis.TavernHelper = Object.freeze({...api});
 globalThis.SillyTavern = Object.freeze({getCurrentChatId: () => input.chatID, event_types:tavern_events});
+for (const name of ['document', 'window', 'localStorage', 'sessionStorage'])
+  Object.defineProperty(globalThis, name, {get: () => reject('browser-dom')});
+for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket'])
+  Object.defineProperty(globalThis, name, {get: () => reject('external-io')});
 globalThis.console = Object.freeze({log(){},warn(){},error(){},info(){},debug(){}});
 export async function start(serialized) {
   input = JSON.parse(serialized);
@@ -203,12 +222,18 @@ export async function start(serialized) {
   for (const script of input.scripts) scriptData.set(script.id, script.data || {});
   for (const script of input.scripts) {
     currentScript = script.id;
+    phase = 'import';
+    context();
     await import(script.module);
     if (eventActive) return reject('unawaited-event');
+    if (pendingWork) return reject('unawaited-async-work');
     while (ready.length) {
       const item = ready.shift();
       currentScript = item.owner;
+      phase = 'ready';
+      context();
       await item.fn();
+      if (eventActive || pendingWork) return reject('unawaited-async-work');
     }
   }
   await emit(events.GENERATION_STARTED, 'normal', {}, false);

@@ -1435,6 +1435,207 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   })
 })
 
+test('importing scripts automatically prepares snapshots and enables only the prepared Tavern family', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        modules: { helper: 'export const value = 1' },
+        scripts: [
+          {
+            id: 'hook',
+            name: 'Imported hook',
+            enabled: true,
+            status: 'prepared',
+            issues: [],
+          },
+        ],
+      },
+    },
+  })
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File(
+      [
+        JSON.stringify({
+          prompts: [],
+          prompt_order: [],
+          extensions: {
+            tavern_helper: {
+              scripts: [
+                {
+                  type: 'script',
+                  id: 'hook',
+                  name: 'Imported hook',
+                  enabled: true,
+                  content: '1',
+                },
+              ],
+            },
+          },
+        }),
+      ],
+      'scripts.json',
+      { type: 'application/json' }
+    )
+  )
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel/preset/scripts/prepare',
+      expect.any(Object),
+      expect.any(Object)
+    )
+  )
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  expect(
+    JSON.parse((put.mock.calls[0][1] as { settings: string }).settings)
+      .sillytavern_preset
+  ).toMatchObject({
+    script_runtime: 'tavern-v1',
+    script_modules: { helper: 'export const value = 1' },
+  })
+})
+
+test.each(['wrong extension', 'oversized JSON'])(
+  'choosing an invalid replacement (%s) during preparation clears loading and preserves the current draft',
+  async (invalidKind) => {
+    const savedPreset = {
+      preset: { name: 'Keep current preset', prompts: [], prompt_order: [] },
+    }
+    editingChannel.settings = JSON.stringify({
+      sillytavern_preset: savedPreset,
+    })
+    const pending = deferredResponse<{ data: unknown }>()
+    const post = vi.spyOn(api, 'post').mockImplementation(() => pending.promise)
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+    await user.upload(
+      screen.getByLabelText('SillyTavern Chat Completion Preset'),
+      new File(
+        [
+          JSON.stringify({
+            name: 'Pending replacement',
+            prompts: [],
+            prompt_order: [],
+            extensions: {
+              tavern_helper: {
+                scripts: [
+                  {
+                    type: 'script',
+                    id: 'pending',
+                    enabled: true,
+                    content: '1',
+                  },
+                ],
+              },
+            },
+          }),
+        ],
+        'pending.json',
+        { type: 'application/json' }
+      )
+    )
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(
+      screen.getByRole('button', { name: 'Update Channel' })
+    ).toBeDisabled()
+    const invalidFile = new File(['{}'], 'invalid.txt', { type: 'text/plain' })
+    if (invalidKind === 'oversized JSON') {
+      Object.defineProperty(invalidFile, 'name', { value: 'large.json' })
+      Object.defineProperty(invalidFile, 'type', { value: 'application/json' })
+      Object.defineProperty(invalidFile, 'size', { value: 6 * 1024 * 1024 + 1 })
+    }
+    fireEvent.drop(
+      screen.getByRole('button', { name: 'Replace preset JSON' }),
+      {
+        dataTransfer: { files: [invalidFile] },
+      }
+    )
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Update Channel' })).toBeEnabled()
+    await act(async () => {
+      pending.resolve({
+        data: { success: true, data: { modules: { stale: '1' }, scripts: [] } },
+      })
+      await pending.promise
+    })
+    expect(screen.getByText('Keep current preset')).toBeVisible()
+    expect(screen.queryByText('Pending replacement')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(
+      JSON.parse((put.mock.calls[0][1] as { settings: string }).settings)
+        .sillytavern_preset.preset
+    ).toEqual(savedPreset.preset)
+  }
+)
+
+test('switching channels during dependency preparation discards the old imported preset', async () => {
+  const pending = deferredResponse<{ data: unknown }>()
+  const post = vi.spyOn(api, 'post').mockImplementation(() => pending.promise)
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  const view = render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  await user.upload(
+    screen.getByLabelText('SillyTavern Chat Completion Preset'),
+    new File(
+      [
+        JSON.stringify({
+          prompts: [],
+          prompt_order: [],
+          extensions: {
+            tavern_helper: {
+              scripts: [
+                { type: 'script', id: 'old', enabled: true, content: '1' },
+              ],
+            },
+          },
+        }),
+      ],
+      'old.json',
+      { type: 'application/json' }
+    )
+  )
+  await waitFor(() => expect(post).toHaveBeenCalled())
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'Preparing script dependencies…'
+  )
+  expect(screen.getByRole('button', { name: 'Update Channel' })).toBeDisabled()
+  editingChannel = { ...editingChannel, id: 43, name: 'Second channel' }
+  view.rerender(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Second channel')
+  await act(async () => {
+    pending.resolve({
+      data: { success: true, data: { modules: { stale: '1' }, scripts: [] } },
+    })
+    await pending.promise
+  })
+  expect(screen.queryByText('old.json')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  expect(
+    JSON.parse((put.mock.calls[0][1] as { settings: string }).settings)
+      .sillytavern_preset
+  ).toBeUndefined()
+})
+
 test('switching channels while reading a preset file never imports it into the new channel', async () => {
   const user = userEvent.setup()
   const put = vi

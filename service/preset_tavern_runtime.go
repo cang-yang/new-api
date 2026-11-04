@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Calcium-Ion/moejs"
 	"github.com/QuantumNous/new-api/common"
@@ -26,6 +28,7 @@ var presetTavernSessions = make(chan struct{}, 16)
 type presetTavernScript struct {
 	Type    string                     `json:"type"`
 	ID      string                     `json:"id"`
+	Name    string                     `json:"name"`
 	Enabled bool                       `json:"enabled"`
 	Content string                     `json:"content"`
 	Data    map[string]json.RawMessage `json:"data"`
@@ -33,12 +36,51 @@ type presetTavernScript struct {
 }
 
 type presetTavernSession struct {
-	mu       sync.Mutex
-	runtime  *moejs.Runtime
-	module   *moejs.Module
-	closed   bool
-	failed   bool
-	finished bool
+	mu          sync.Mutex
+	runtime     *moejs.Runtime
+	module      *moejs.Module
+	closed      bool
+	failed      bool
+	finished    bool
+	diagnostic  presetTavernDiagnostic
+	diagnostics []presetTavernDiagnostic
+	scriptNames map[string]string
+}
+
+// Diagnostics contain only host-selected classifications and configuration
+// identities. Never inspect an exception's message, stack or object fields.
+type presetTavernDiagnostic struct {
+	Phase      string `json:"phase"`
+	ScriptID   string `json:"script_id,omitempty"`
+	ScriptName string `json:"script_name,omitempty"`
+	Capability string `json:"capability"`
+	Module     string `json:"module,omitempty"`
+}
+
+func tavernDiagnosticIdentity(value string) string {
+	value, _, _ = strings.Cut(value, "?")
+	value, _, _ = strings.Cut(value, "#")
+	parsed, err := url.Parse(value)
+	if err != nil && (strings.Contains(value, "://") || strings.HasPrefix(value, "//")) {
+		return "invalid-module-identifier"
+	}
+	if err == nil && parsed.Host != "" {
+		parsed.User = nil
+		value = parsed.String()
+	}
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
+	runes := []rune(value)
+	return string(runes[:min(len(runes), 160)])
+}
+
+func (d presetTavernDiagnostic) Error() string {
+	encoded, _ := common.Marshal(d)
+	return "Tavern runtime: " + string(encoded)
 }
 
 func ClosePresetScriptResponse(c *gin.Context) {
@@ -95,6 +137,28 @@ func (s *presetTavernSession) call(name string, input any, output any) error {
 		}
 	}()
 	s.failed = true
+	// Track promise identity only, never rejection values. The engine drains
+	// jobs before Call returns, so handlers added later in that turn remove
+	// their rejection. Bound retained identities and fail closed on overflow.
+	unhandled := make(map[*moejs.Object]presetTavernDiagnostic)
+	var rejectionLimit *presetTavernDiagnostic
+	s.runtime.SetPromiseRejectionTracker(func(p moejs.Value, operation moejs.PromiseRejectionOperation) {
+		if operation == moejs.PromiseRejectionHandle {
+			delete(unhandled, p.AsObject())
+			return
+		}
+		diagnostic := s.diagnostic
+		diagnostic.Capability = "unhandled-promise-rejection"
+		if len(unhandled) >= 256 {
+			if rejectionLimit == nil {
+				diagnostic.Capability = "promise-rejection-limit"
+				rejectionLimit = &diagnostic
+			}
+			return
+		}
+		unhandled[p.AsObject()] = diagnostic
+	})
+	defer s.runtime.SetPromiseRejectionTracker(nil)
 	if name == "start" {
 		if err := s.runtime.Load(s.module); err != nil {
 			return fmt.Errorf("Tavern host initialization failed")
@@ -110,13 +174,22 @@ func (s *presetTavernSession) call(name string, input any, output any) error {
 	}
 	result, err := s.runtime.Call(hook, arg)
 	if err != nil {
-		return fmt.Errorf("Tavern script failed or exceeded execution limits")
+		return s.diagnostic
 	}
 	if state, value, promise := moejs.PromiseResult(result); promise {
 		if state != moejs.PromiseFulfilled {
-			return fmt.Errorf("Tavern script requires an unavailable capability or dependency, failed, or left an unresolved promise")
+			if state == moejs.PromisePending && s.diagnostic.Capability == "script-failed" {
+				s.diagnostic.Capability = "unresolved-promise"
+			}
+			return s.diagnostic
 		}
 		result = value
+	}
+	if rejectionLimit != nil {
+		return *rejectionLimit
+	}
+	for _, diagnostic := range unhandled {
+		return diagnostic
 	}
 	value, err := s.runtime.ToGo(result)
 	if err != nil {
@@ -196,11 +269,12 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 		if script.ID == "" || len(script.ID) > 128 || duplicate {
 			return nil, nil, fmt.Errorf("Tavern script identifiers must be nonempty and unique")
 		}
-		total += len(script.Content)
-		if len(script.Content) > maxPresetScriptSource || total > 1<<20 {
+		source := tavernScriptSource(script.Content)
+		total += len(source)
+		if len(source) > maxPresetScriptSource || total > 1<<20 {
 			return nil, nil, fmt.Errorf("Tavern script sources exceed size limits")
 		}
-		sources[key] = script.Content
+		sources[key] = source
 		entries = append(entries, map[string]any{"id": script.ID, "module": key, "data": script.Data})
 	}
 	// Admission covers compilation as well as execution and retained closures.
@@ -209,7 +283,10 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 	default:
 		return nil, nil, fmt.Errorf("Tavern runtime has reached its active request limit")
 	}
-	session := &presetTavernSession{}
+	session := &presetTavernSession{scriptNames: map[string]string{}}
+	for _, script := range active {
+		session.scriptNames[script.ID] = tavernDiagnosticIdentity(script.Name)
+	}
 	accepted := false
 	defer func() {
 		if !accepted {
@@ -220,12 +297,16 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 	for name, source := range sources {
 		module, err := moejs.Compile(name, source)
 		if err != nil {
-			return nil, nil, fmt.Errorf("Tavern module could not compile as JavaScript")
+			diagnostic := presetTavernDiagnostic{Phase: "compile", Capability: "invalid-javascript", Module: tavernDiagnosticIdentity(name)}
+			if id, ok := strings.CutPrefix(name, "preset:"); ok {
+				diagnostic.ScriptID, diagnostic.ScriptName = tavernDiagnosticIdentity(id), session.scriptNames[id]
+			}
+			return nil, nil, diagnostic
 		}
 		modules[name] = module
 	}
 	resolve := func(referrer moejs.Referrer, name string) (*moejs.Module, error) {
-		if strings.HasPrefix(name, ".") && referrer != nil {
+		if (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "/")) && referrer != nil {
 			base, baseErr := url.Parse(referrer.Name())
 			relative, relativeErr := url.Parse(name)
 			if baseErr == nil && relativeErr == nil {
@@ -235,6 +316,9 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 		if module := modules[name]; module != nil {
 			return module, nil
 		}
+		session.diagnostic.Phase = "module-resolution"
+		session.diagnostic.Capability = "missing-module"
+		session.diagnostic.Module = tavernDiagnosticIdentity(name)
 		return nil, fmt.Errorf("module is not in the administrator-pinned bundle")
 	}
 	host, err := moejs.Compile("gateway-tavern-host", presetTavernHost)
@@ -246,13 +330,37 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 		DisableDynamicCode: true, MemoryLimit: 32 << 20,
 		Importer: &moejs.Importer{Resolve: resolve},
 	})
+	// The trusted host captures and deletes this callback before any user code
+	// loads. It cannot be invoked by script code to forge diagnostic fields.
+	if err := session.runtime.SetGlobal("__tavernDiagnostic", moejs.NativeFunc(func(_ *moejs.Realm, _ moejs.Value, args []moejs.Value) (moejs.Value, error) {
+		phase, id, capability := moejs.Arg(args, 0).String(), moejs.Arg(args, 1).String(), moejs.Arg(args, 2).String()
+		allowed := []string{"script-failed", "jquery-dom", "concurrent-or-nested-events", "unawaited-event", "unawaited-async-work", "text-message-only", "message-swipes", "chat-reload", "hidden-messages", "browser-dom", "external-io"}
+		if !slices.Contains(allowed, capability) {
+			switch capability {
+			case "event:CHARACTER_MESSAGE_RENDERED", "event:USER_MESSAGE_RENDERED", "event:APP_READY", "event:CHAT_ID_CHANGED", "event:MESSAGE_EDITED", "event:MESSAGE_SWIPED", "event:GENERATION_STOPPED":
+			default:
+				if kind, _, ok := strings.Cut(capability, ":"); ok && slices.Contains([]string{"event", "message-field", "variable-scope"}, kind) {
+					capability = kind + ":unsupported"
+				} else {
+					capability = "unavailable-host-operation"
+				}
+			}
+		}
+		session.diagnostic = presetTavernDiagnostic{Phase: tavernDiagnosticIdentity(phase), ScriptID: tavernDiagnosticIdentity(id), ScriptName: session.scriptNames[id], Capability: capability}
+		if capability != "script-failed" && len(session.diagnostics) < 16 && !slices.Contains(session.diagnostics, session.diagnostic) {
+			session.diagnostics = append(session.diagnostics, session.diagnostic)
+		}
+		return moejs.Undefined(), nil
+	})); err != nil {
+		return nil, nil, fmt.Errorf("Tavern diagnostic initialization failed")
+	}
 	before, err := common.Marshal(request)
 	if err != nil {
 		return nil, nil, err
 	}
 	var result struct {
 		Request     map[string]json.RawMessage `json:"request"`
-		Diagnostics []string                   `json:"diagnostics"`
+		Diagnostics []bool                     `json:"diagnostics"`
 	}
 	if err := session.call("start", map[string]any{
 		"request": json.RawMessage(before), "scripts": entries, "user": macro.user, "char": macro.char,
@@ -266,6 +374,9 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 	warnings := []string{"Tavern data scripts use request-local messages and variables; browser, persistence, external IO and autonomous generation are unavailable"}
 	if len(result.Diagnostics) > 0 {
 		warnings = append(warnings, "Tavern scripts caught unavailable host operations; review the script compatibility requirements")
+		for _, diagnostic := range session.diagnostics {
+			warnings = append(warnings, diagnostic.Error())
+		}
 	}
 	accepted = true
 	return &PresetScriptResponse{tavern: session, fingerprint: presetScriptFingerprint(config)}, warnings, nil
