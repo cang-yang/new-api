@@ -70,13 +70,19 @@ test('preparation issues display readable explanations and safely handle unknown
   )
   render(<PresetScriptSettings config={config} onChange={vi.fn()} />)
   expect(
-    screen.getByText('Computed imports need manually saved dependencies.')
+    screen.getByText(
+      'This script builds file names while running. Ask the author for a compatible version and the required files; retrying the download alone will not fix it.'
+    )
   ).toBeVisible()
   expect(
-    screen.getByText('A script dependency could not be downloaded.')
+    screen.getByText(
+      'A required file could not be downloaded. Check the connection and try again, or ask the author for the file.'
+    )
   ).toBeVisible()
   expect(
-    screen.getByText('This script could not be prepared automatically.')
+    screen.getByText(
+      'This script could not be checked. Try again or ask the author for a compatible version.'
+    )
   ).toBeVisible()
   expect(
     screen.queryByText(/future_code|download_failed|computed_import/)
@@ -106,16 +112,16 @@ test('script compatibility is explicit, preserves the preset and disables the co
   )
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
-  const toggle = screen.getByRole('switch', {
-    name: 'Enable SPreset data hooks',
+  const toggle = screen.getByRole('radio', {
+    name: 'Use preset settings (SPreset)',
   })
   expect(toggle).toHaveAttribute('aria-checked', 'false')
   await user.click(toggle)
+  expect(screen.getByRole('radiogroup')).toBeVisible()
   expect(
-    screen.getByText(
-      'Dependencies are downloaded only during preparation, never during script execution. Browser pages, persistent state and tool execution are unavailable. This is not full Tavern Helper emulation.'
-    )
-  ).toBeVisible()
+    screen.getByRole('radio', { name: 'Do not use preset extras' })
+  ).toHaveAttribute('aria-checked', 'false')
+  expect(screen.queryByText('Compatibility boundaries')).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   const saved = JSON.parse(
     screen.getByLabelText('Saved config').textContent || '{}'
@@ -131,7 +137,7 @@ test('script compatibility hides the legacy adapter when the preset has no suppo
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
   expect(
-    screen.queryByRole('switch', { name: 'Enable SPreset data hooks' })
+    screen.queryByRole('radio', { name: 'Use preset settings (SPreset)' })
   ).toBeNull()
 })
 
@@ -201,10 +207,10 @@ test('script names and inherited disabled states appear without fetching existin
   expect(
     screen.getByRole('list', { name: 'Preset scripts' })
   ).toHaveTextContent('Hidden hook')
-  expect(screen.getByText('Disabled')).toBeVisible()
+  expect(screen.getByText('Disabled by author')).toBeVisible()
   expect(post).not.toHaveBeenCalled()
   await user.click(
-    screen.getByRole('button', { name: 'Prepare script dependencies' })
+    screen.getByRole('button', { name: 'Check and download files' })
   )
   await waitFor(() => expect(onChange).toHaveBeenCalled())
   expect(onChange.mock.calls[0][0].script_runtime).toBeUndefined()
@@ -235,14 +241,14 @@ test('preparation completing after a preset switch does not overwrite the new dr
     <PresetScriptSettings config={config} onChange={onChange} />
   )
   await user.click(
-    screen.getByRole('button', { name: 'Prepare script dependencies' })
+    screen.getByRole('button', { name: 'Check and download files' })
   )
   rerender(<PresetScriptSettings config={{ preset: {} }} onChange={onChange} />)
   resolve({
     data: { success: true, data: { modules: { stale: '1' }, scripts: [] } },
   })
   await waitFor(() =>
-    expect(screen.queryByText('Preparing script dependencies…')).toBeNull()
+    expect(screen.queryByText('Checking and downloading files…')).toBeNull()
   )
   expect(onChange).not.toHaveBeenCalled()
 })
@@ -278,11 +284,9 @@ test('generic Tavern scripts select a distinct runtime and preserve pinned depen
   )
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
-  await user.click(
-    screen.getByRole('switch', { name: 'Enable Tavern Helper data scripts' })
-  )
+  await user.click(screen.getByRole('radio', { name: 'Run bundled scripts' }))
   expect(
-    screen.queryByRole('switch', { name: 'Enable SPreset data hooks' })
+    screen.queryByRole('radio', { name: 'Use preset settings (SPreset)' })
   ).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   const saved = JSON.parse(
@@ -328,13 +332,13 @@ test.each([
       />
     )
     await user.click(
-      screen.getByRole('button', { name: 'Prepare script dependencies' })
+      screen.getByRole('button', { name: 'Check and download files' })
     )
     expect(
-      screen.getByRole('button', { name: 'Preparing script dependencies…' })
+      screen.getByRole('button', { name: 'Checking and downloading files…' })
     ).toBeDisabled()
     await user.click(
-      screen.getByRole('button', { name: 'Advanced: manual module bundle' })
+      screen.getByRole('button', { name: 'Advanced details and manual files' })
     )
     const file = new File(['{}'], 'invalid.json', { type: 'application/json' })
     let source = '{'
@@ -352,7 +356,7 @@ test.each([
     )
     expect(await screen.findByText(/^Invalid module bundle/)).toBeVisible()
     expect(
-      screen.getByRole('button', { name: 'Prepare script dependencies' })
+      screen.getByRole('button', { name: 'Check and download files' })
     ).toBeEnabled()
     expect(screen.getByText('saved')).toBeVisible()
     await act(async () => {
@@ -373,7 +377,7 @@ test('module imports validate input and cannot overwrite a newer channel draft',
   const { rerender } = render(
     <PresetScriptSettings config={initial} onChange={onChange} />
   )
-  await user.click(screen.getByText('Advanced: manual module bundle'))
+  await user.click(screen.getByText('Advanced details and manual files'))
   const input = screen.getByLabelText('Import module bundle', {
     selector: 'input',
   })

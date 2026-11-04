@@ -30,10 +30,11 @@ import {
 import {
   Field,
   FieldDescription,
+  FieldLegend,
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
-import { Switch } from '@/components/ui/switch'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -80,13 +81,20 @@ export function PresetScriptSettings(props: Props) {
     const revision = importRevision.current
     return { revision, sequence: ++revision.sequence }
   }
-  const selectRuntime = (mode: string, checked: boolean) => {
+  const selectRuntime = (mode: string) => {
+    if (
+      props.disabled ||
+      (mode === 'spreset-v1' && !supported) ||
+      (mode === 'tavern-v1' && !hasScripts)
+    ) {
+      return
+    }
     supersedeScriptOperation()
     const next: Record<string, unknown> = {
       ...props.config,
-      script_runtime: checked ? mode : '',
+      script_runtime: mode,
     }
-    if (checked && record(props.config.tool_text).enabled === true) {
+    if (mode && record(props.config.tool_text).enabled === true) {
       next.tool_text = { ...record(props.config.tool_text), enabled: false }
     }
     props.onChange(next)
@@ -96,26 +104,157 @@ export function PresetScriptSettings(props: Props) {
       className='mx-auto flex w-full max-w-3xl flex-col gap-4'
       aria-label={t('Script compatibility')}
     >
-      <div className='space-y-1'>
-        <h4 className='text-sm font-semibold'>{t('Script compatibility')}</h4>
+      <FieldSet disabled={props.disabled}>
+        <FieldLegend id={`${id}-mode`} variant='label'>
+          {t('How should this preset be processed?')}
+        </FieldLegend>
+        <FieldDescription>
+          {t(
+            'Choose how this preset handles messages and replies. Only run extras from authors you trust.'
+          )}
+        </FieldDescription>
+        <p role='status' className='text-sm font-medium'>
+          {!enabled && !tavernEnabled && t('Current draft: preset extras off')}
+          {enabled && t('Current draft: use preset settings (SPreset)')}
+          {tavernEnabled && t('Current draft: run bundled scripts')}
+        </p>
+        <RadioGroup
+          aria-labelledby={`${id}-mode`}
+          value={
+            typeof props.config.script_runtime === 'string'
+              ? props.config.script_runtime
+              : ''
+          }
+          disabled={props.disabled}
+          onValueChange={(value) => {
+            if (
+              value === '' ||
+              value === 'spreset-v1' ||
+              value === 'tavern-v1'
+            ) {
+              selectRuntime(value)
+            }
+          }}
+        >
+          <FieldLabel htmlFor={`${id}-off`} className='min-w-0'>
+            <Field orientation='horizontal'>
+              <RadioGroupItem
+                id={`${id}-off`}
+                value=''
+                aria-labelledby={`${id}-off-label`}
+                aria-describedby={`${id}-off-hint`}
+              />
+              <div className='min-w-0'>
+                <span id={`${id}-off-label`}>
+                  {t('Do not use preset extras')}
+                </span>
+                <FieldDescription id={`${id}-off-hint`}>
+                  {t('The normal preset text still applies.')}
+                </FieldDescription>
+              </div>
+            </Field>
+          </FieldLabel>
+          {(supported || enabled) && (
+            <FieldLabel htmlFor={`${id}-spreset`} className='min-w-0'>
+              <Field
+                orientation='horizontal'
+                data-disabled={props.disabled || !supported}
+              >
+                <RadioGroupItem
+                  id={`${id}-spreset`}
+                  value='spreset-v1'
+                  disabled={props.disabled || !supported}
+                  aria-labelledby={`${id}-spreset-label`}
+                  aria-describedby={`${id}-spreset-hint`}
+                />
+                <div className='min-w-0'>
+                  <span id={`${id}-spreset-label`}>
+                    {t('Use preset settings (SPreset)')}
+                  </span>
+                  <FieldDescription id={`${id}-spreset-hint`}>
+                    {t(
+                      'Use SPreset settings to organize sent messages, attach preset tools and process replies. Choose this when the author requires SPreset.'
+                    )}
+                  </FieldDescription>
+                </div>
+              </Field>
+            </FieldLabel>
+          )}
+          {(scripts.length > 0 || tavernEnabled) && (
+            <FieldLabel htmlFor={`${id}-tavern`} className='min-w-0'>
+              <Field
+                orientation='horizontal'
+                data-disabled={props.disabled || !hasScripts}
+              >
+                <RadioGroupItem
+                  id={`${id}-tavern`}
+                  value='tavern-v1'
+                  disabled={props.disabled || !hasScripts}
+                  aria-labelledby={`${id}-tavern-label`}
+                  aria-describedby={`${id}-tavern-hint`}
+                />
+                <div className='min-w-0'>
+                  <span id={`${id}-tavern-label`}>
+                    {t('Run bundled scripts')}
+                  </span>
+                  <FieldDescription id={`${id}-tavern-hint`}>
+                    {t(
+                      'Run the scripts below that the author enabled. Choose this when the author asks you to enable Tavern Helper scripts.'
+                    )}
+                  </FieldDescription>
+                </div>
+              </Field>
+            </FieldLabel>
+          )}
+        </RadioGroup>
+        {supported && scripts.length > 0 && (
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Both options were found. Only one can run at a time; follow the preset author’s instructions.'
+            )}
+          </p>
+        )}
+        {!supported && scripts.length === 0 && !enabled && !tavernEnabled && (
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'No supported preset extras were found. The normal preset text can still be used.'
+            )}
+          </p>
+        )}
+        {((enabled && !supported) || (tavernEnabled && !hasScripts)) && (
+          <Alert>
+            <AlertTitle>{t('The selected option is unavailable')}</AlertTitle>
+            <AlertDescription>
+              {enabled
+                ? t('Choose Off or import a preset with SPreset settings.')
+                : t(
+                    'No author-enabled scripts are available. Choose Off or import a preset with enabled scripts.'
+                  )}
+            </AlertDescription>
+          </Alert>
+        )}
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Run supported preset data hooks inside New API. No separate service is required.'
+            'Apply these changes, then save the channel for them to take effect.'
           )}
         </p>
-      </div>
-      {supported && scripts.length > 0 && (
-        <Alert>
-          <AlertTitle>{t('Choose a script mode')}</AlertTitle>
-          <AlertDescription>
-            {t(
-              'This preset contains Tavern Helper scripts and SPreset hooks. Choose one mode explicitly; enabling one disables the other.'
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
+      </FieldSet>
+      <p className='text-muted-foreground text-sm'>
+        {t(
+          'Some Tavern functions are unavailable. See advanced details for limits.'
+        )}
+      </p>
       {scripts.length > 0 && (
-        <div className='min-w-0 space-y-3'>
+        <section
+          className='min-w-0 space-y-3 border-t pt-4'
+          aria-label={t('Bundled script files')}
+        >
+          <h5 className='text-sm font-medium'>{t('Bundled script files')}</h5>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Checking and downloading files does not enable scripts or change your choice above.'
+            )}
+          </p>
           <ul aria-label={t('Preset scripts')} className='min-w-0 space-y-2'>
             {scripts.map((script) => (
               <li
@@ -130,10 +269,10 @@ export function PresetScriptSettings(props: Props) {
                     script.status === 'failed' ? 'destructive' : 'secondary'
                   }
                 >
-                  {script.status === 'prepared' && t('Prepared')}
-                  {script.status === 'disabled' && t('Disabled')}
-                  {script.status === 'manual' && t('Needs preparation')}
-                  {script.status === 'failed' && t('Preparation failed')}
+                  {script.status === 'prepared' && t('Files checked')}
+                  {script.status === 'disabled' && t('Disabled by author')}
+                  {script.status === 'manual' && t('Not checked')}
+                  {script.status === 'failed' && t('Check failed')}
                 </Badge>
                 {script.issues.map((issue) => (
                   <p
@@ -148,7 +287,7 @@ export function PresetScriptSettings(props: Props) {
           </ul>
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Prepared means syntax and dependencies are ready. Scripts are not executed during preparation; runtime capabilities may still be unsupported.'
+              'Passing the file check does not guarantee every script function works.'
             )}
           </p>
           <Button
@@ -179,207 +318,157 @@ export function PresetScriptSettings(props: Props) {
             }}
           >
             {preparing
-              ? t('Preparing script dependencies…')
-              : t('Prepare script dependencies')}
+              ? t('Checking and downloading files…')
+              : t('Check and download files')}
           </Button>
-        </div>
+        </section>
       )}
-      <FieldSet className='rounded-lg border p-4' disabled={props.disabled}>
-        <Field orientation='horizontal'>
-          <div className='min-w-0 flex-1'>
-            <FieldLabel htmlFor={`${id}-tavern`}>
-              {t('Enable Tavern Helper data scripts')}
-            </FieldLabel>
-            <FieldDescription>
-              {t(
-                'Execute enabled preset scripts with shared message, variable and event interfaces. No preset-specific rewriting.'
-              )}
-            </FieldDescription>
-          </div>
-          <Switch
-            id={`${id}-tavern`}
-            aria-label={t('Enable Tavern Helper data scripts')}
-            checked={tavernEnabled}
-            disabled={props.disabled || (!hasScripts && !tavernEnabled)}
-            onCheckedChange={(checked) => selectRuntime('tavern-v1', checked)}
+      <Collapsible className='min-w-0 space-y-2'>
+        <CollapsibleTrigger
+          render={
+            <Button type='button' variant='ghost' disabled={props.disabled} />
+          }
+        >
+          {t('Advanced details and manual files')}
+        </CollapsibleTrigger>
+        <CollapsibleContent className='space-y-3'>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Import a JSON object mapping exact module names or URLs to JavaScript source. Imports use these saved snapshots only, never the network.'
+            )}
+          </p>
+          <input
+            ref={bundleInput}
+            type='file'
+            accept='.json,application/json'
+            className='hidden'
+            aria-label={t('Import module bundle')}
+            disabled={props.disabled}
+            onChange={async (event) => {
+              const file = event.currentTarget.files?.[0]
+              event.currentTarget.value = ''
+              if (!file) return
+              const { revision, sequence } = supersedeScriptOperation()
+              try {
+                if (file.size > 2 * 1024 * 1024) throw new Error('size')
+                const value: unknown = JSON.parse(await file.text())
+                if (!revision.active || sequence !== revision.sequence) return
+                const entries = Object.entries(record(value))
+                if (
+                  !value ||
+                  typeof value !== 'object' ||
+                  Array.isArray(value) ||
+                  entries.length > 64
+                ) {
+                  throw new Error('shape')
+                }
+                const encoder = new TextEncoder()
+                let bytes = 0
+                for (const [name, source] of entries) {
+                  if (
+                    !name ||
+                    name.startsWith('preset:') ||
+                    typeof source !== 'string'
+                  ) {
+                    throw new Error('entry')
+                  }
+                  const length = encoder.encode(source).length
+                  if (length > 128 * 1024) throw new Error('source')
+                  bytes += length
+                }
+                if (bytes > 1024 * 1024) throw new Error('total')
+                props.onChange({ ...props.config, script_modules: value })
+                setBundleError(false)
+              } catch {
+                if (revision.active && sequence === revision.sequence) {
+                  setBundleError(true)
+                }
+              }
+            }}
           />
-        </Field>
-        <p className='text-muted-foreground text-sm'>
-          {t(
-            'Variables and listeners belong to this request only. Supports one text response choice; browser rendering and persistent chat storage are unavailable.'
-          )}
-        </p>
-        <p className='text-muted-foreground text-sm'>
-          {t(
-            'Await custom events sequentially. Concurrent or nested event dispatch is not supported.'
-          )}
-        </p>
-        <Collapsible className='min-w-0 space-y-2'>
-          <CollapsibleTrigger
-            render={
-              <Button type='button' variant='ghost' disabled={props.disabled} />
-            }
-          >
-            {t('Advanced: manual module bundle')}
-          </CollapsibleTrigger>
-          <CollapsibleContent keepMounted className='space-y-2'>
-            <p className='text-muted-foreground text-sm'>
+          <div className='flex flex-wrap gap-2'>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={props.disabled}
+              onClick={() => bundleInput.current?.click()}
+            >
+              {t('Import module bundle')}
+            </Button>
+            <Button
+              type='button'
+              variant='ghost'
+              disabled={
+                props.disabled ||
+                Object.keys(record(props.config.script_modules)).length === 0
+              }
+              onClick={() => {
+                supersedeScriptOperation()
+                props.onChange({ ...props.config, script_modules: {} })
+              }}
+            >
+              {t('Clear')}
+            </Button>
+          </div>
+          {Object.keys(record(props.config.script_modules)).map((name) => (
+            <p
+              key={name}
+              className='text-muted-foreground font-mono text-xs break-all'
+            >
+              {name}
+            </p>
+          ))}
+          {bundleError && (
+            <p role='alert' className='text-destructive text-sm'>
               {t(
-                'Import a JSON object mapping exact module names or URLs to JavaScript source. Imports use these saved snapshots only, never the network.'
+                'Invalid module bundle. Use at most 64 string entries, 128 KiB per module and 1 MiB of total source.'
               )}
             </p>
-            <input
-              ref={bundleInput}
-              type='file'
-              accept='.json,application/json'
-              className='hidden'
-              aria-label={t('Import module bundle')}
-              disabled={props.disabled}
-              onChange={async (event) => {
-                const file = event.currentTarget.files?.[0]
-                event.currentTarget.value = ''
-                if (!file) return
-                const { revision, sequence } = supersedeScriptOperation()
-                try {
-                  if (file.size > 2 * 1024 * 1024) throw new Error('size')
-                  const value: unknown = JSON.parse(await file.text())
-                  if (!revision.active || sequence !== revision.sequence) return
-                  const entries = Object.entries(record(value))
-                  if (
-                    !value ||
-                    typeof value !== 'object' ||
-                    Array.isArray(value) ||
-                    entries.length > 64
-                  ) {
-                    throw new Error('shape')
-                  }
-                  const encoder = new TextEncoder()
-                  let bytes = 0
-                  for (const [name, source] of entries) {
-                    if (
-                      !name ||
-                      name.startsWith('preset:') ||
-                      typeof source !== 'string'
-                    ) {
-                      throw new Error('entry')
-                    }
-                    const length = encoder.encode(source).length
-                    if (length > 128 * 1024) throw new Error('source')
-                    bytes += length
-                  }
-                  if (bytes > 1024 * 1024) throw new Error('total')
-                  props.onChange({ ...props.config, script_modules: value })
-                  setBundleError(false)
-                } catch {
-                  if (revision.active && sequence === revision.sequence) {
-                    setBundleError(true)
-                  }
-                }
-              }}
-            />
-            <div className='flex flex-wrap gap-2'>
-              <Button
-                type='button'
-                variant='outline'
-                disabled={props.disabled}
-                onClick={() => bundleInput.current?.click()}
-              >
-                {t('Import module bundle')}
-              </Button>
-              <Button
-                type='button'
-                variant='ghost'
-                disabled={
-                  props.disabled ||
-                  Object.keys(record(props.config.script_modules)).length === 0
-                }
-                onClick={() => {
-                  supersedeScriptOperation()
-                  props.onChange({ ...props.config, script_modules: {} })
-                }}
-              >
-                {t('Clear')}
-              </Button>
-            </div>
-            {Object.keys(record(props.config.script_modules)).map((name) => (
-              <p
-                key={name}
-                className='text-muted-foreground font-mono text-xs break-all'
-              >
-                {name}
-              </p>
-            ))}
-            {bundleError && (
-              <p role='alert' className='text-destructive text-sm'>
+          )}
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Variables and listeners belong to this request only. Supports one text response choice; browser rendering and persistent chat storage are unavailable.'
+            )}
+          </p>
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'Await custom events sequentially. Concurrent or nested event dispatch is not supported.'
+            )}
+          </p>
+          {(supported || enabled) && (
+            <div className='space-y-3 rounded-lg border p-4 text-sm'>
+              <h5 className='font-medium'>
+                SPreset · {t('Supported data pipeline')}
+              </h5>
+              <p className='text-muted-foreground text-sm leading-relaxed'>
                 {t(
-                  'Invalid module bundle. Use at most 64 string entries, 128 KiB per module and 1 MiB of total source.'
+                  'ChatSquash text merging, active ToolBindings, FinalRequestProcessing, tool-call formatting and final OutputPreprocessing run before existing response regex rules.'
                 )}
               </p>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
-      </FieldSet>
-      {(supported || enabled) && (
-        <FieldSet className='rounded-lg border p-4' disabled={props.disabled}>
-          <Field orientation='horizontal'>
-            <div className='min-w-0 flex-1'>
-              <FieldLabel htmlFor={id}>
-                {t('Enable SPreset data hooks')}
-              </FieldLabel>
-              <FieldDescription>
-                {supported
-                  ? t(
-                      'SPreset configuration detected. Only enable scripts from a trusted preset.'
-                    )
-                  : t(
-                      'No supported SPreset configuration was found. Browser loaders alone are not supported.'
-                    )}
-              </FieldDescription>
             </div>
-            <Switch
-              id={id}
-              aria-label={t('Enable SPreset data hooks')}
-              checked={enabled}
-              disabled={props.disabled || (!supported && !enabled)}
-              onCheckedChange={(checked) =>
-                selectRuntime('spreset-v1', checked)
-              }
-            />
-          </Field>
-        </FieldSet>
-      )}
-      {(supported || enabled) && (
-        <div className='space-y-3 rounded-lg border p-4 text-sm'>
-          <h5 className='font-medium'>
-            SPreset · {t('Supported data pipeline')}
-          </h5>
+          )}
           <p className='text-muted-foreground text-sm leading-relaxed'>
             {t(
-              'ChatSquash text merging, active ToolBindings, FinalRequestProcessing, tool-call formatting and final OutputPreprocessing run before existing response regex rules.'
+              'Each request is isolated. Script time and memory are limited. Streamed replies are buffered; script failures do not trigger another generation.'
             )}
           </p>
-        </div>
-      )}
-      <p className='text-muted-foreground text-sm leading-relaxed'>
-        {t(
-          'Each request is isolated. Script time and memory are limited. Streamed replies are buffered; script failures do not trigger another generation.'
-        )}
-      </p>
-      <Alert>
-        <AlertTitle>{t('Compatibility boundaries')}</AlertTitle>
-        <AlertDescription className='space-y-2'>
-          <p>
-            {t(
-              'Dependencies are downloaded only during preparation, never during script execution. Browser pages, persistent state and tool execution are unavailable. This is not full Tavern Helper emulation.'
-            )}
-          </p>
-          <p>
-            {t(
-              'Only Chat Completions is supported. Unsupported options are reported in errors or the execution trace. Native tool-text transport is disabled when this mode is enabled.'
-            )}
-          </p>
-        </AlertDescription>
-      </Alert>
+          <Alert>
+            <AlertTitle>{t('Compatibility boundaries')}</AlertTitle>
+            <AlertDescription className='space-y-2'>
+              <p>
+                {t(
+                  'Dependencies are downloaded only during preparation, never during script execution. Browser pages, persistent state and tool execution are unavailable. This is not full Tavern Helper emulation.'
+                )}
+              </p>
+              <p>
+                {t(
+                  'Only Chat Completions is supported. Unsupported options are reported in errors or the execution trace. Native tool-text transport is disabled when this mode is enabled.'
+                )}
+              </p>
+            </AlertDescription>
+          </Alert>
+        </CollapsibleContent>
+      </Collapsible>
     </section>
   )
 }

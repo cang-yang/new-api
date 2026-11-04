@@ -37,29 +37,53 @@ export function scriptPreparationIssueMessage(
 ): string {
   switch (code) {
     case 'computed_import':
-      return t('Computed imports need manually saved dependencies.')
+      return t(
+        'This script builds file names while running. Ask the author for a compatible version and the required files; retrying the download alone will not fix it.'
+      )
     case 'missing_module':
-      return t('A required script dependency is missing.')
+      return t(
+        'A required file is missing. Check and download files, or ask the author for a file bundle.'
+      )
     case 'invalid_javascript':
-      return t('The script contains invalid JavaScript syntax.')
+      return t(
+        'This script contains an error. Ask the author for a corrected version.'
+      )
     case 'unsupported_javascript':
-      return t('The script uses unsupported JavaScript features.')
+      return t(
+        'This script uses features that are unavailable here. Ask the author for a compatible version.'
+      )
     case 'source_limit':
-      return t('The script source exceeds the preparation size limit.')
+      return t(
+        'This script is too large to check. Ask the author for a smaller version.'
+      )
     case 'dependency_limit':
-      return t('The script exceeds dependency count or nesting limits.')
+      return t(
+        'This script needs too many linked files. Ask the author for a simplified version.'
+      )
     case 'download_failed':
-      return t('A script dependency could not be downloaded.')
+      return t(
+        'A required file could not be downloaded. Check the connection and try again, or ask the author for the file.'
+      )
     case 'preparation_cancelled':
-      return t('Script preparation was cancelled or timed out.')
+      return t(
+        'The file check was cancelled or took too long. Try checking the files again.'
+      )
     case 'unsupported_entry':
-      return t('This script entry format is unsupported.')
+      return t(
+        'This script is saved in an unsupported format. Ask the author for a compatible preset.'
+      )
     case 'invalid_script_id':
-      return t('The script needs a valid unique identifier.')
+      return t(
+        'This script has a missing or duplicate identifier. Ask the author to correct the preset.'
+      )
     case 'script_limit':
-      return t('This preset exceeds the supported script count.')
+      return t(
+        'This preset has too many scripts. Ask the author for a version with fewer scripts.'
+      )
     default:
-      return t('This script could not be prepared automatically.')
+      return t(
+        'This script could not be checked. Try again or ask the author for a compatible version.'
+      )
   }
 }
 
