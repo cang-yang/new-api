@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -17,6 +18,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestPresetScriptEndpointScope(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{ScriptRuntime: "spreset-v1", Models: []string{"selected"}}
+	require.ErrorContains(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeResponses), "chat completions")
+	require.NoError(t, validatePresetScriptEndpoint(preset, "other", relayconstant.RelayModeResponses))
+	require.NoError(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeChatCompletions))
+	preset.ScriptRuntime = ""
+	require.NoError(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeResponses))
+}
 
 func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
 	first := &dto.ResponseTextFilter{Mode: "rules", EnableSend: true, FailurePolicy: "passthrough", Rules: []dto.TextRegexRule{

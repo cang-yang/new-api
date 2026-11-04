@@ -492,12 +492,15 @@ func (r *GeneralOpenAIRequest) ParseInput() []string {
 }
 
 type Message struct {
-	Role             string          `json:"role"`
-	Content          any             `json:"content"`
-	Name             *string         `json:"name,omitempty"`
-	Prefix           *bool           `json:"prefix,omitempty"`
-	ReasoningContent *string         `json:"reasoning_content,omitempty"`
-	Reasoning        *string         `json:"reasoning,omitempty"`
+	Role             string  `json:"role"`
+	Content          any     `json:"content"`
+	Name             *string `json:"name,omitempty"`
+	Prefix           *bool   `json:"prefix,omitempty"`
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
+	Reasoning        *string `json:"reasoning,omitempty"`
+	// Preserve provider signature metadata on OpenAI-compatible message replay.
+	// Native protocol converters remain responsible for their own wire format.
+	ThoughtSignature json.RawMessage `json:"thoughtSignature,omitempty"`
 	ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
 	ToolCallId       string          `json:"tool_call_id,omitempty"`
 	// Tools carries Kimi K3 dynamic tool loading declarations on a system message.

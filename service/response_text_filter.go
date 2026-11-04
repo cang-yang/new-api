@@ -23,19 +23,20 @@ const maxFilteredResponseBytes = 8 << 20
 // regex match span arbitrary SSE chunks and keeps protocol metadata intact.
 type ResponseTextFilterWriter struct {
 	gin.ResponseWriter
-	config        dto.ResponseTextFilter
-	pattern       *regexp.Regexp
-	regexes       []presetResponseRegex
-	hasFilter     bool
-	toolText      *dto.SillyTavernToolText
-	strictFailure bool
-	status        int
-	buffer        bytes.Buffer
-	tooLarge      bool
-	blocked       bool
-	warned        bool
-	transformErr  error
-	deadline      time.Time
+	config         dto.ResponseTextFilter
+	pattern        *regexp.Regexp
+	regexes        []presetResponseRegex
+	hasFilter      bool
+	toolText       *dto.SillyTavernToolText
+	scriptResponse *PresetScriptResponse
+	strictFailure  bool
+	status         int
+	buffer         bytes.Buffer
+	tooLarge       bool
+	blocked        bool
+	warned         bool
+	transformErr   error
+	deadline       time.Time
 }
 
 func BeginResponseTextFilter(c *gin.Context, config *dto.ResponseTextFilter, model string) *ResponseTextFilterWriter {
@@ -75,17 +76,26 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 	}
 	hasFilter := config != nil && config.Mode != "rules"
 	var toolText *dto.SillyTavernToolText
+	var scriptResponse *PresetScriptResponse
+	scriptEnabled := preset != nil && preset.ScriptRuntime != "" && (len(preset.Models) == 0 || slices.Contains(preset.Models, model))
+	if scriptEnabled {
+		value, _ := c.Get("preset_script_response")
+		scriptResponse, _ = value.(*PresetScriptResponse)
+		if scriptResponse == nil || scriptResponse.fingerprint != presetScriptFingerprint(preset) {
+			setupErr = fmt.Errorf("preset script response context is missing or belongs to another configuration")
+		}
+	}
 	if preset != nil && preset.ToolText != nil && preset.ToolText.Enabled && (len(preset.Models) == 0 || slices.Contains(preset.Models, model)) {
 		toolText = preset.ToolText
 		if _, err := preset.ParseAndValidate(); err != nil {
 			setupErr = err
 		}
 	}
-	if !hasFilter && toolText == nil && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
+	if !hasFilter && toolText == nil && scriptResponse == nil && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
 		return nil
 	}
-	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, toolText: toolText, status: c.Writer.Status()}
-	w.strictFailure = toolText != nil || textRegexRequiresStrictFailure(config, preset, model, false)
+	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, toolText: toolText, scriptResponse: scriptResponse, status: c.Writer.Status()}
+	w.strictFailure = scriptEnabled || toolText != nil || textRegexRequiresStrictFailure(config, preset, model, false)
 	if len(warnings) > 0 {
 		w.transformErr = fmt.Errorf("preset regex compatibility failure")
 	}
@@ -182,6 +192,9 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		prepared := body
 		if w.transformErr == nil {
 			prepared, err = restorePresetToolText(body, stream, w.toolText, w.deadline)
+			if err == nil && w.scriptResponse != nil {
+				prepared, err = w.scriptResponse.restoreTools(prepared, stream, w.deadline)
+			}
 		}
 		if w.transformErr != nil {
 			err = w.transformErr
@@ -199,6 +212,9 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 			body = filtered
 		} else if w.strictFailure {
 			w.Header().Del("Content-Length")
+			if w.scriptResponse != nil {
+				return fmt.Errorf("preset script response processing failed: %w", err)
+			}
 			return fmt.Errorf("response text filter could not safely parse or transform the response")
 		} else {
 			logger.LogWarn(c, "Response text filter bypassed an unsupported or malformed response")
@@ -218,6 +234,14 @@ type responseTextSlot struct {
 
 func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 	original := text
+	if w.scriptResponse != nil {
+		var err error
+		text, err = w.scriptResponse.processText(text, w.deadline)
+		if err != nil {
+			w.transformErr = err
+			return original, false
+		}
+	}
 	matched := false
 	if w.hasFilter {
 		match := w.pattern.FindStringSubmatch(text)
@@ -251,10 +275,10 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 	return text, text != original
 }
 
-func textSlots(payload map[string]any, stream bool) []responseTextSlot {
+func textSlots(payload map[string]any, stream bool, includeEmpty ...bool) []responseTextSlot {
 	var slots []responseTextSlot
 	add := func(parent map[string]any, field, group string) {
-		if value, ok := parent[field].(string); ok && value != "" {
+		if value, ok := parent[field].(string); ok && (value != "" || len(includeEmpty) > 0 && includeEmpty[0]) {
 			slots = append(slots, responseTextSlot{parent, field, group})
 		}
 	}
@@ -270,7 +294,7 @@ func textSlots(payload map[string]any, stream bool) []responseTextSlot {
 			}
 		case "response.output_item.added", "response.output_item.done":
 			if item, ok := payload["item"].(map[string]any); ok {
-				snapshots := textSlots(map[string]any{"output": []any{item}}, false)
+				snapshots := textSlots(map[string]any{"output": []any{item}}, false, includeEmpty...)
 				for i := range snapshots {
 					snapshots[i].group = event + ":" + fmt.Sprint(payload["output_index"]) + ":" + snapshots[i].group
 				}
@@ -287,7 +311,7 @@ func textSlots(payload map[string]any, stream bool) []responseTextSlot {
 		}
 		if event == "response.completed" || event == "response.done" {
 			if response, ok := payload["response"].(map[string]any); ok {
-				snapshots := textSlots(response, false)
+				snapshots := textSlots(response, false, includeEmpty...)
 				for i := range snapshots {
 					snapshots[i].group = event + ":" + snapshots[i].group
 				}
@@ -382,10 +406,13 @@ func (w *ResponseTextFilterWriter) filterJSON(body []byte) ([]byte, error) {
 	if err := common.UnmarshalPreservingNumbers(body, &payload); err != nil {
 		return nil, err
 	}
-	slots := textSlots(payload, false)
+	slots := textSlots(payload, false, w.scriptResponse != nil)
 	groups := map[string][]responseTextSlot{}
 	for _, slot := range slots {
 		groups[slot.group] = append(groups[slot.group], slot)
+	}
+	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 {
+		return nil, fmt.Errorf("Tavern runtime requires exactly one final text response choice")
 	}
 	changed := false
 	for _, group := range groups {
@@ -446,12 +473,15 @@ func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
 			if err := common.UnmarshalPreservingNumbers([]byte(data), &item.payload); err != nil {
 				return nil, fmt.Errorf("invalid JSON in response SSE event")
 			}
-			item.slots = textSlots(item.payload, true)
+			item.slots = textSlots(item.payload, true, w.scriptResponse != nil)
 			for _, slot := range item.slots {
 				groups[slot.group] = append(groups[slot.group], slot)
 			}
 		}
 		frames = append(frames, item)
+	}
+	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 {
+		return nil, fmt.Errorf("Tavern runtime requires exactly one final text response choice")
 	}
 	changed := false
 	for _, group := range groups {

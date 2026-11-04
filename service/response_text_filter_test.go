@@ -134,6 +134,11 @@ func TestSillyTavernNativeToolTextRepeatedStreamNameAndSSEMetadata(t *testing.T)
 	assert.Contains(t, string(output), `"finish_reason":"stop"`)
 	assert.NotContains(t, string(output), "tool_calls")
 	assert.True(t, strings.HasSuffix(string(output), "data: [DONE]\n\n"))
+	changedName := strings.Replace(string(body), `"name":"text","arguments":"\"}"`, `"name":"other","arguments":"\"}"`, 1)
+	require.NotEqual(t, string(body), changedName)
+	output, err = restorePresetToolText([]byte(changedName), true, config, time.Time{})
+	require.Error(t, err, "legacy owned tool name changes must fail closed")
+	assert.Empty(t, output)
 }
 
 func TestResponseTextFilterPreservesProtocolMetadata(t *testing.T) {

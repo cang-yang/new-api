@@ -119,7 +119,22 @@ export function SillyTavernMacroEditor(props: Props) {
             checked={toolTextEnabled}
             disabled={props.disabled}
             aria-label={t('Enable native tool-text transport')}
-            onCheckedChange={(checked) => updateToolText({ enabled: checked })}
+            onCheckedChange={(checked) => {
+              if (checked && props.config.script_runtime) {
+                props.onChange({
+                  ...props.config,
+                  script_runtime: '',
+                  tool_text: {
+                    name: 'newapi_text',
+                    argument: 'display_stream',
+                    ...toolText,
+                    enabled: true,
+                  },
+                })
+              } else {
+                updateToolText({ enabled: checked })
+              }
+            }}
           />
         </Field>
         {toolTextEnabled && (

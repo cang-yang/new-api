@@ -47,10 +47,11 @@ type PresetMessageSource struct {
 }
 
 type PresetCompileTrace struct {
-	Name     string                `json:"name"`
-	Mode     string                `json:"mode"`
-	Messages []PresetMessageSource `json:"messages"`
-	Warnings []string              `json:"warnings,omitempty"`
+	Name           string                `json:"name"`
+	Mode           string                `json:"mode"`
+	Messages       []PresetMessageSource `json:"messages"`
+	Warnings       []string              `json:"warnings,omitempty"`
+	ScriptResponse *PresetScriptResponse `json:"-"`
 }
 
 type presetMessage struct {
@@ -108,7 +109,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	trace.Name = preset.Name
 	trace.Mode = "compatibility"
 	for _, script := range preset.Extensions.TavernHelper.Scripts {
-		if script.Type == "script" && script.Enabled {
+		if config.ScriptRuntime != "tavern-v1" && script.Type == "script" && script.Enabled {
 			trace.Warnings = append(trace.Warnings, "Browser scripts are preserved but not executed; use native declarative features for server-side compatibility")
 			break
 		}
@@ -505,6 +506,24 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		return nil, trace, fmt.Errorf("sillytavern_preset compiled an empty message list")
 	}
 	applySillyTavernParameters(config, preset, compiled)
+	delivered := false
+	defer func() {
+		if !delivered && trace.ScriptResponse != nil && trace.ScriptResponse.tavern != nil {
+			trace.ScriptResponse.tavern.Close()
+		}
+	}()
+	if config.ScriptRuntime != "" {
+		response, warnings, err := preparePresetScripts(config, preset, compiled, &macro)
+		if err != nil {
+			return nil, trace, err
+		}
+		trace.ScriptResponse = response
+		trace.Warnings = append(trace.Warnings, warnings...)
+		trace.Messages = nil
+		for index, message := range compiled.Messages {
+			trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: message.Role, Source: "preset_script"})
+		}
+	}
 	if config.ToolText != nil && config.ToolText.Enabled {
 		if compiled.ToolChoice != nil {
 			return nil, trace, fmt.Errorf("preset tool_text cannot override an explicit client tool_choice")
@@ -540,6 +559,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	if trace.Mode == "exact" && len(macro.warnings) > 0 {
 		return nil, trace, fmt.Errorf("exact SillyTavern mode cannot resolve every preset macro: %s", strings.Join(trace.Warnings, "; "))
 	}
+	delivered = true
 	return compiled, trace, nil
 }
 

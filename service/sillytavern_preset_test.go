@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strconv"
@@ -16,9 +17,448 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSillyTavernScriptRuntimeRequestHook(t *testing.T) {
+	var config dto.SillyTavernPresetConfig
+	require.NoError(t, common.Unmarshal([]byte(`{
+		"script_runtime":"spreset-v1",
+		"preset":{
+			"prompts":[{"identifier":"chatHistory","marker":true}],
+			"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true}]}],
+			"extensions":{"SPreset":{"FinalRequestProcessing":{
+				"enabled":true,
+				"script":"({request}) => { request.messages[0].content = request.messages[0].content.toUpperCase(); return request; };"
+			}}}
+		}
+	}`), &config))
+	request := &dto.GeneralOpenAIRequest{Model: "example", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	result, _, err := CompileSillyTavernPreset(&config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, "HELLO", result.Messages[0].Content)
+	assert.Equal(t, "hello", request.Messages[0].Content)
+}
+
+func tavernRuntimeConfig(t *testing.T, scripts []any, modules map[string]string) *dto.SillyTavernPresetConfig {
+	t.Helper()
+	data, err := common.Marshal(map[string]any{
+		"script_runtime": "tavern-v1", "script_modules": modules,
+		"preset": map[string]any{
+			"prompts":      []any{map[string]any{"identifier": "chatHistory", "marker": true}},
+			"prompt_order": []any{map[string]any{"order": []any{map[string]any{"identifier": "chatHistory", "enabled": true}}}},
+			"extensions":   map[string]any{"tavern_helper": map[string]any{"scripts": scripts}},
+		},
+	})
+	require.NoError(t, err)
+	var config dto.SillyTavernPresetConfig
+	require.NoError(t, common.Unmarshal(data, &config))
+	return &config
+}
+
+func TestTavernRuntimeModuleEventsAndResponse(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "event-script", "enabled": true, "content": `
+import {decorate} from "https://bundle.invalid/main.js";
+let count = 0;
+eventOn(tavern_events.CHAT_COMPLETION_PROMPT_READY, async data => {
+  count++;
+  data.chat[0].content = decorate(data.chat[0].content);
+});
+eventOn(tavern_events.MESSAGE_RECEIVED, async id => {
+  const message = getChatMessages(id)[0];
+  await setChatMessages([{message_id:id,message:message.message+" / "+count}]);
+});`},
+		map[string]any{"type": "folder", "enabled": false, "scripts": []any{
+			map[string]any{"type": "script", "id": "off", "enabled": true, "content": `throw Error("disabled folder executed")`},
+		}},
+	}, map[string]string{
+		"https://bundle.invalid/main.js":   `import {prefix} from "./prefix.js"; export const decorate = text => prefix+text;`,
+		"https://bundle.invalid/prefix.js": `export const prefix = "[generic] ";`,
+	})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	result, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	assert.Equal(t, "[generic] hello", result.Messages[0].Content)
+	assert.Equal(t, "hello", request.Messages[0].Content)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"content":"reply","reasoning_content":"reason"},"finish_reason":"stop"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"reply / 1"`)
+	assert.Contains(t, recorder.Body.String(), `"reasoning_content":"reason"`)
+	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+}
+
+func TestTavernRuntimeHelpersAndIsolation(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "variables", "enabled": true, "data": map[string]any{"prefix": "seed"}, "content": `
+const own = getVariables({type:"script"});
+eventOn(tavern_events.GENERATION_AFTER_COMMANDS, async () => {
+  const vars = updateVariablesWith(v=>({...v,count:(v.count||0)+1}), {type:"chat"});
+  const last = getChatMessages(-1)[0];
+  await setChatMessages([{message_id:last.message_id,message:own.prefix+":"+vars.count+":"+last.message}]);
+});
+eventOn("local", value => insertOrAssignVariables({value}, {type:"script"}));
+await eventEmit("local", "ok");
+if(getVariables({type:"script"}).value !== "ok") throw Error("event failed");
+`},
+	}, nil)
+	for range 2 {
+		request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+		result, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+		require.NoError(t, err)
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		AttachPresetScriptResponse(context, trace)
+		ClosePresetScriptResponse(context)
+		assert.Equal(t, "seed:1:hello", result.Messages[0].Content)
+	}
+}
+
+func TestTavernRuntimeUnavailableCapabilities(t *testing.T) {
+	for name, source := range map[string]string{
+		"dependency": `import "https://unavailable.invalid/code.js";`,
+		"dom":        `document.querySelector("body");`,
+		"network":    `await fetch("https://unavailable.invalid");`,
+		"ui-event":   `eventOn(tavern_events.CHARACTER_MESSAGE_RENDERED,()=>{});`,
+		"billing":    `eventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY,r=>{r.max_tokens=999999999});`,
+		"pending":    `await new Promise(()=>{});`,
+		"loop":       `while(true){}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "test", "enabled": true, "content": source}}, nil)
+			request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "private message"}}}
+			_, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "private message")
+			assert.Equal(t, "private message", request.Messages[0].Content)
+		})
+	}
+}
+
+func TestTavernRuntimeFailureReleasesSession(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "test", "enabled": true, "content": ""}}, nil)
+	config.Preset = []byte(strings.Replace(string(config.Preset), `"marker":true`, `"content":"{{unavailable_macro}}","role":"system"`, 1))
+	config.Preset = []byte(strings.ReplaceAll(string(config.Preset), "chatHistory", "main"))
+	config.ContextMode = "exact"
+	config.ReferenceSource = "openai"
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	before := len(presetTavernSessions)
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{
+		User: "u", Char: "c", Markers: map[string]string{}, ChatHistory: request.Messages, DialogueExamples: [][]dto.Message{},
+	})
+	// Clean up even on the old, leaking implementation.
+	defer func() {
+		if trace.ScriptResponse != nil && trace.ScriptResponse.tavern != nil {
+			trace.ScriptResponse.tavern.Close()
+		}
+	}()
+	require.ErrorContains(t, err, "cannot resolve")
+	assert.Equal(t, before, len(presetTavernSessions))
+}
+
+func TestTavernRuntimeConcurrentEventsFailExplicitly(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{
+		map[string]any{"type": "script", "id": "a", "enabled": true, "content": `eventOn("a",async()=>{await Promise.resolve();insertOrAssignVariables({owner:"a"},{type:"script"})});`},
+		map[string]any{"type": "script", "id": "b", "enabled": true, "content": `eventOn("b",async()=>{await Promise.resolve();insertOrAssignVariables({owner:"b"},{type:"script"})});`},
+		map[string]any{"type": "script", "id": "caller", "enabled": true, "content": `await Promise.all([eventEmit("a"),eventEmit("b")]);`},
+	}, nil)
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	if trace.ScriptResponse != nil {
+		defer trace.ScriptResponse.tavern.Close()
+	}
+	require.Error(t, err, "unsupported concurrent event scopes must not silently corrupt script variables")
+}
+
+func TestTavernRuntimeResponseBoundaries(t *testing.T) {
+	for name, body := range map[string]string{
+		"no-text":     `{"choices":[{"message":{"content":null,"reasoning_content":"reason"},"finish_reason":"stop"}]}`,
+		"two-choices": `{"choices":[{"message":{"content":"a"}},{"message":{"content":"b"}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "test", "enabled": true, "content": ""}}, nil)
+			request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+			_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			AttachPresetScriptResponse(context, trace)
+			defer ClosePresetScriptResponse(context)
+			filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+			require.NotNil(t, filter)
+			_, err = filter.WriteString(body)
+			require.NoError(t, err)
+			require.Error(t, filter.Finish(context, true))
+			assert.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
+func TestTavernRuntimeVariableMergeAndStream(t *testing.T) {
+	config := tavernRuntimeConfig(t, []any{map[string]any{"type": "script", "id": "merge", "enabled": true, "content": `
+replaceVariables({nested:{kept:1,value:2}},{type:"chat"});
+insertVariables({nested:{kept:9,added:3}},{type:"chat"});
+insertOrAssignVariables({nested:{value:4}},{type:"chat"});
+const vars=getVariables({type:"chat"});
+if(vars.nested.kept!==1 || vars.nested.added!==3 || vars.nested.value!==4) throw Error("merge");
+replaceVariables({layer:"first"},{type:"message",message_id:0});
+eventOn(tavern_events.MESSAGE_RECEIVED, async id=>{
+  replaceVariables({layer:"last"},{type:"message",message_id:id});
+  if(getAllVariables().layer!=="last") throw Error("layer order");
+  const text=getChatMessages(id)[0].message;
+  await setChatMessages([{message_id:id,message:text.toUpperCase()}]);
+});`}}, nil)
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	context.Writer.Header().Set("Content-Type", "text/event-stream")
+	_, err = filter.WriteString("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"re\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ply\"}}]}\n\ndata: [DONE]\n\n")
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"REPLY"`)
+	assert.Contains(t, recorder.Body.String(), "[DONE]")
+}
+
+func scriptPresetConfig(t *testing.T, settings map[string]any) *dto.SillyTavernPresetConfig {
+	t.Helper()
+	preset, err := common.Marshal(map[string]any{
+		"prompts": []any{map[string]any{"identifier": "chatHistory", "marker": true}, map[string]any{"identifier": "reply", "content": "Reply using the declared format."}},
+		"prompt_order": []any{map[string]any{"order": []any{
+			map[string]any{"identifier": "reply", "enabled": true}, map[string]any{"identifier": "chatHistory", "enabled": true},
+		}}},
+		"extensions": map[string]any{"SPreset": settings},
+	})
+	require.NoError(t, err)
+	return &dto.SillyTavernPresetConfig{Preset: preset, ScriptRuntime: "spreset-v1"}
+}
+
+func TestSillyTavernScriptRuntimeToolBindings(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"reply": map[string]any{"enabled": true, "code": `return {name:"answer", parameters:{type:"object",properties:{text:{type:"string"}},required:["text"]}, action:async()=>{throw new Error("must never execute")}};`},
+	}})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	result, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+	assert.Equal(t, "answer", result.Tools[0].Function.Name)
+	assert.Empty(t, request.Tools)
+	config.EntryOverrides = map[string]bool{"reply": false}
+	result, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Empty(t, result.Tools)
+}
+
+func TestSillyTavernScriptRuntimeBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name, source string
+	}{
+		{"routing", `({request}) => {request.model = "other"; return request}`},
+		{"billing", `({request}) => {request.max_tokens = 999999999; return request}`},
+		{"streaming", `({request}) => {request.stream = false; return request}`},
+		{"network", `({request}) => {fetch("https://example.invalid"); return request}`},
+		{"browser", `({request}) => {document.querySelector("body"); return request}`},
+		{"loop", `() => {while(true){}}`},
+		{"async", `async ({request}) => request`},
+		{"malformed", `() => []`},
+		{"nested-message", `({request}) => {request.messages[0].cache_control={type:"ephemeral"};return request}`},
+		{"nested-format", `({request}) => {request.response_format={type:"json_schema",schema:{type:"object"}};return request}`},
+		{"nested-tool", `({request}) => {request.tools=[{type:"function",function:{name:"x",parameters:{type:"object"},cache_control:{type:"ephemeral"}}}];return request}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{"enabled": true, "script": test.source}})
+			request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "private"}}}
+			_, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "private")
+			assert.Equal(t, "m", request.Model)
+			assert.Equal(t, "private", request.Messages[0].Content)
+			config.ScriptRuntime = ""
+			_, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err, "disabled scripts must not execute")
+		})
+	}
+}
+
+func TestSillyTavernScriptRuntimeIsolation(t *testing.T) {
+	var value int
+	source := `() => { globalThis.counter = (globalThis.counter || 0) + 1; return globalThis.counter; }`
+	require.NoError(t, runPresetScript(source, nil, &value, time.Time{}))
+	assert.Equal(t, 1, value)
+	require.NoError(t, runPresetScript(source, nil, &value, time.Time{}))
+	assert.Equal(t, 1, value, "globals must not cross requests or channels")
+}
+
+func TestSillyTavernScriptRuntimeEmptyResponseAndRetryContext(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, reject := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%v/reject=%v", stream, reject), func(t *testing.T) {
+				script := `({buffer})=>({output:buffer||"fallback",state:{}})`
+				if reject {
+					script = `({buffer})=>({output:buffer,state:{rejected:!buffer}})`
+				}
+				config := scriptPresetConfig(t, map[string]any{"OutputPreprocessing": map[string]any{"enabled": true, "script": script}})
+				_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}, SillyTavernContext{})
+				require.NoError(t, err)
+				retry := *config
+				retry.Models = []string{"m"}
+				retry.EnableEmbeddedRegex = true
+				recorder := httptest.NewRecorder()
+				context, _ := gin.CreateTestContext(recorder)
+				AttachPresetScriptResponse(context, trace)
+				filter := BeginResponseTextFilterWithPreset(context, nil, &retry, "m")
+				require.NotNil(t, filter)
+				body := `{"choices":[{"index":0,"message":{"content":""},"finish_reason":"stop"}]}`
+				if stream {
+					context.Writer.Header().Set("Content-Type", "text/event-stream")
+					body = "data: " + `{"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"
+				}
+				_, err = context.Writer.WriteString(body)
+				require.NoError(t, err)
+				err = filter.Finish(context, true)
+				if reject {
+					require.Error(t, err)
+					assert.Empty(t, recorder.Body.String(), "rejected output must not leak")
+				} else {
+					require.NoError(t, err)
+					assert.Contains(t, recorder.Body.String(), `"content":"fallback"`)
+				}
+				retry.EntryOverrides = map[string]bool{"reply": false}
+				assert.NotEqual(t, presetScriptFingerprint(config), presetScriptFingerprint(&retry))
+			})
+		}
+	}
+}
+
+func TestSillyTavernScriptRuntimeToolNameFragments(t *testing.T) {
+	for _, test := range []struct{ first, last, name string }{
+		{"answer", "_more", "answer_more"},
+		{"foo", "foo", "foofoo"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := fmt.Sprintf("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":%q,\"arguments\":\"{}\"}}]}}]}\n\n"+
+				"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":%q}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n", test.first, test.last)
+			result, err := restorePresetToolCalls([]byte(body), true, map[string]bool{"answer": true, test.name: true}, true, func(calls []*presetToolTextCall) (string, error) {
+				require.Len(t, calls, 1)
+				assert.Equal(t, test.name, calls[0].name.String())
+				return "assembled", nil
+			}, time.Now().Add(time.Second))
+			require.NoError(t, err)
+			assert.Contains(t, string(result), `"content":"assembled"`)
+			assert.NotContains(t, string(result), `"function":`)
+		})
+	}
+}
+
+func TestSillyTavernScriptRuntimeChatSquash(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ChatSquash": map[string]any{
+		"enabled": true, "role": "system", "user_prefix": "[{{user}}]", "char_prefix": "[{{char}}]",
+		"conditional_enabled": true, "conditional_tag": "<merge>",
+		"enable_squashed_separator": true, "squashed_separator_string": "<sep>",
+		"squashed_post_script_enable": true, "squashed_post_script": `text => text.replace("hello", "welcome")`,
+	}})
+	config.User, config.Char = "reader", "guide"
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{
+		{Role: "user", Content: "<merge>hello"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "<sep>separate"},
+	}}
+	result, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 2)
+	assert.Equal(t, "Reply using the declared format.[reader]welcome[guide]answer", result.Messages[0].Content)
+	assert.Equal(t, "system", result.Messages[0].Role)
+	assert.Equal(t, dto.Message{Role: "user", Content: "separate"}, result.Messages[1])
+	assert.Equal(t, "<merge>hello", request.Messages[0].Content)
+	request.Messages[0].Content = "hello"
+	result, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 4, "conditional squash must not run without its marker")
+}
+
+func TestSillyTavernScriptRuntimeRealPreset(t *testing.T) {
+	path := os.Getenv("ST_SCRIPT_PRESET")
+	if path == "" {
+		t.Skip("ST_SCRIPT_PRESET enables an offline, local preset compatibility check")
+	}
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	config := &dto.SillyTavernPresetConfig{Preset: data, ScriptRuntime: "spreset-v1", User: "Reader", Char: "Guide"}
+	result, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model: "example", Messages: []dto.Message{{Role: "user", Content: "Hello."}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Tools)
+	require.NotNil(t, trace.ScriptResponse)
+	assert.NotEmpty(t, trace.ScriptResponse.ownedTools)
+	for _, message := range result.Messages {
+		if text, ok := message.Content.(string); ok {
+			assert.NotContains(t, text, "<run_tool_replacement>")
+		}
+	}
+	output, err := trace.ScriptResponse.restoreTools([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"game_content\":\"Hello, reader.\"}"}}]},"finish_reason":"tool_calls"}]}`), false, time.Now().Add(time.Second))
+	require.NoError(t, err)
+	assert.Contains(t, string(output), "Hello, reader.")
+	assert.NotContains(t, string(output), `"tool_calls":[`)
+}
+
+func TestSillyTavernScriptRuntimeResponsePipeline(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{
+		"ToolBindings": map[string]any{"reply": map[string]any{
+			"enabled": true, "code": `return {name:"answer",parameters:{type:"object",properties:{text:{type:"string"}}}}`,
+		}},
+		"OutputPreprocessing": map[string]any{
+			"enabled": true, "consumeToolCalls": true,
+			"script": `({buffer, final}) => { if (!final) throw Error("expected complete response"); return {output:buffer.toUpperCase(),hold:"",state:{accepted:true}}; }`,
+			"toolCallFormatter": map[string]any{
+				"enabled": true, "script": `({calls}) => calls.map(c => c.arguments.text).join("|")`,
+			},
+		},
+	})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	for _, stream := range []bool{false, true} {
+		t.Run(strconv.FormatBool(stream), func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			AttachPresetScriptResponse(context, trace)
+			filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+			require.NotNil(t, filter)
+			body := `{"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"unchanged","tool_calls":[{"id":"a","type":"function","function":{"name":"answer","arguments":"{\"text\":\"one\"}"}},{"id":"b","type":"function","function":{"name":"answer","arguments":"{\"text\":\"two\"}"}},{"id":"c","type":"function","function":{"name":"client_tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":23}}`
+			if stream {
+				context.Writer.Header().Set("Content-Type", "text/event-stream")
+				body = "data: " + `{"choices":[{"index":0,"delta":{"reasoning_content":"unchanged","tool_calls":[{"index":0,"id":"a","function":{"name":"ans","arguments":"{\"text\":"}}]},"finish_reason":null}]}` + "\n\n" +
+					"data: " + `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"wer","arguments":"\"one\"}"}},{"index":1,"id":"b","function":{"name":"answer","arguments":"{\"text\":\"two\"}"}},{"index":2,"id":"c","function":{"name":"client_tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":23}}` + "\n\n" +
+					"data: [DONE]\n\n"
+			} else {
+				context.Writer.Header().Set("Content-Type", "application/json")
+			}
+			_, err := context.Writer.Write([]byte(body))
+			require.NoError(t, err)
+			require.NoError(t, filter.Finish(context, true))
+			result := recorder.Body.String()
+			assert.Contains(t, result, `"content":"ONE|TWO"`)
+			assert.Contains(t, result, `"name":"client_tool"`)
+			assert.NotContains(t, result, `"name":"answer"`)
+			assert.Contains(t, result, `"reasoning_content":"unchanged"`)
+			assert.Contains(t, result, `"total_tokens":23`)
+			assert.Contains(t, result, `"finish_reason":"tool_calls"`)
+		})
+	}
+}
 
 func TestSillyTavernUnknownEnabledOrderEntryIsDiagnosed(t *testing.T) {
 	config := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"missing","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}

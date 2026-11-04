@@ -1,0 +1,395 @@
+package service
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/gin-gonic/gin"
+)
+
+type presetScriptHook struct {
+	Enabled bool   `json:"enabled"`
+	Script  string `json:"script"`
+}
+
+// SPreset is an adapter for a plugin configuration contract, not a preset name.
+// Browser script bodies are retained in the original JSON and never evaluated.
+type spresetSettings struct {
+	ChatSquash             presetChatSquash `json:"ChatSquash"`
+	FinalRequestProcessing presetScriptHook `json:"FinalRequestProcessing"`
+	OutputPreprocessing    struct {
+		presetScriptHook
+		ConsumeToolCalls  bool             `json:"consumeToolCalls"`
+		ToolCallFormatter presetScriptHook `json:"toolCallFormatter"`
+	} `json:"OutputPreprocessing"`
+	ToolBindings map[string]struct {
+		Enabled bool   `json:"enabled"`
+		Code    string `json:"code"`
+	} `json:"ToolBindings"`
+}
+
+// The response side receives only this request's registered tool ownership.
+// It must never infer ownership from the provider's response.
+type PresetScriptResponse struct {
+	settings    *spresetSettings
+	ownedTools  map[string]bool
+	fingerprint [32]byte
+	tavern      *presetTavernSession
+}
+
+func AttachPresetScriptResponse(c *gin.Context, trace PresetCompileTrace) {
+	c.Set("preset_script_response", trace.ScriptResponse)
+}
+
+func presetScriptFingerprint(config *dto.SillyTavernPresetConfig) [32]byte {
+	// Receive regex switches/model scopes may legitimately differ on a retry.
+	// The controller independently checks whether outbound settings are reusable.
+	// Ownership here belongs to the exact script definition and active entries.
+	data, _ := common.Marshal(struct {
+		Preset  json.RawMessage
+		Runtime string
+		Entries map[string]bool
+		Modules map[string]string
+	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules})
+	return sha256.Sum256(data)
+}
+
+func parseSPresetSettings(config *dto.SillyTavernPresetConfig) (*spresetSettings, error) {
+	if config == nil || config.ScriptRuntime == "" {
+		return nil, nil
+	}
+	var envelope struct {
+		Extensions struct {
+			SPreset *spresetSettings `json:"SPreset"`
+		} `json:"extensions"`
+	}
+	if err := common.Unmarshal(config.Preset, &envelope); err != nil {
+		return nil, fmt.Errorf("invalid preset script settings")
+	}
+	if envelope.Extensions.SPreset == nil {
+		return nil, fmt.Errorf("spreset-v1 requires extensions.SPreset; browser scripts are not executable hooks")
+	}
+	return envelope.Extensions.SPreset, nil
+}
+
+func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.SillyTavernPreset, request *dto.GeneralOpenAIRequest, macro *presetMacroContext) (*PresetScriptResponse, []string, error) {
+	if config.ScriptRuntime == "tavern-v1" {
+		clientTools := append([]dto.ToolCallRequest(nil), request.Tools...)
+		response, warnings, err := prepareTavernScripts(config, request, macro)
+		if err != nil {
+			return nil, nil, err
+		}
+		response.ownedTools = map[string]bool{}
+		if err := validatePresetScriptTools(request.Tools, clientTools, response.ownedTools); err != nil {
+			response.tavern.Close()
+			return nil, nil, err
+		}
+		return response, warnings, nil
+	}
+	settings, err := parseSPresetSettings(config)
+	if err != nil || settings == nil {
+		return nil, nil, err
+	}
+	response := &PresetScriptResponse{settings: settings, ownedTools: map[string]bool{}, fingerprint: presetScriptFingerprint(config)}
+	clientTools := append([]dto.ToolCallRequest(nil), request.Tools...)
+	order := preset.PromptOrder[0].Order
+	for _, group := range preset.PromptOrder {
+		if group.CharacterID == 100001 {
+			order = group.Order
+			break
+		}
+	}
+	enabled := map[string]bool{}
+	for _, entry := range order {
+		enabled[entry.Identifier] = entry.Enabled
+	}
+	for identifier, value := range config.EntryOverrides {
+		enabled[identifier] = value
+	}
+	deadline := time.Now().Add(time.Second)
+	if err := applyPresetChatSquash(settings.ChatSquash, request, macro, deadline); err != nil {
+		return nil, nil, err
+	}
+	for _, prompt := range preset.Prompts {
+		binding, exists := settings.ToolBindings[prompt.Identifier]
+		if !exists || !binding.Enabled || !enabled[prompt.Identifier] ||
+			len(prompt.InjectionTrigger) > 0 && !slices.Contains(prompt.InjectionTrigger, "normal") {
+			continue
+		}
+		var definition dto.FunctionRequest
+		if err := runPresetScript("() => {\n"+binding.Code+"\n}", nil, &definition, deadline); err != nil {
+			return nil, nil, fmt.Errorf("ToolBindings: %w", err)
+		}
+		for _, tool := range request.Tools {
+			if tool.Function.Name == definition.Name {
+				return nil, nil, fmt.Errorf("ToolBindings has a duplicate or conflicting tool name")
+			}
+		}
+		request.Tools = append(request.Tools, dto.ToolCallRequest{Type: "function", Function: definition})
+	}
+	if settings.FinalRequestProcessing.Enabled {
+		if err := applyPresetRequestScript(settings.FinalRequestProcessing.Script, request, deadline); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := validatePresetScriptTools(request.Tools, clientTools, response.ownedTools); err != nil {
+		return nil, nil, err
+	}
+	warnings := []string{"SPreset data hooks run in an isolated server runtime; browser APIs, remote scripts, tool actions and log uploads are not executed"}
+	// Do not pretend that other enabled plugin features are supported.
+	var raw struct {
+		Extensions struct {
+			SPreset map[string]json.RawMessage `json:"SPreset"`
+		} `json:"extensions"`
+	}
+	if err := common.Unmarshal(config.Preset, &raw); err != nil {
+		return nil, nil, err
+	}
+	for key, value := range raw.Extensions.SPreset {
+		if slices.Contains([]string{"ToolBindings", "FinalRequestProcessing", "OutputPreprocessing", "RegexBinding", "ChatSquash"}, key) {
+			continue
+		}
+		var feature struct {
+			Enabled bool `json:"enabled"`
+		}
+		_ = common.Unmarshal(value, &feature)
+		if feature.Enabled || string(value) == "true" {
+			warnings = append(warnings, fmt.Sprintf("SPreset feature %s is preserved but not executed by spreset-v1", key))
+		}
+		if key == "MessageInjections" {
+			var entries map[string]struct {
+				Enabled bool `json:"enabled"`
+			}
+			_ = common.Unmarshal(value, &entries)
+			for _, entry := range entries {
+				if entry.Enabled {
+					warnings = append(warnings, "SPreset MessageInjections are preserved but not executed by spreset-v1")
+					break
+				}
+			}
+		}
+	}
+	return response, warnings, nil
+}
+
+func validatePresetScriptTools(tools, clientTools []dto.ToolCallRequest, owned map[string]bool) error {
+	if len(tools) > 128 {
+		return fmt.Errorf("preset scripts allow at most 128 tools")
+	}
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		original := slices.IndexFunc(clientTools, func(client dto.ToolCallRequest) bool {
+			return client.Function.Name == tool.Function.Name && client.Type == tool.Type
+		})
+		if original >= 0 {
+			left, _ := common.Marshal(clientTools[original])
+			right, _ := common.Marshal(tool)
+			if !samePresetJSON(left, right) {
+				return fmt.Errorf("preset scripts cannot modify client tools")
+			}
+		} else {
+			if tool.Type != "function" || !presetScriptToolName.MatchString(tool.Function.Name) ||
+				len(tool.Function.Parameters) == 0 || common.GetJsonType(tool.Function.Parameters) != "object" {
+				return fmt.Errorf("preset scripts must declare named function tools with object parameters")
+			}
+			owned[tool.Function.Name] = true
+		}
+		key := tool.Type + ":" + tool.Function.Name
+		if seen[key] {
+			return fmt.Errorf("preset scripts returned duplicate tools")
+		}
+		seen[key] = true
+	}
+	for _, client := range clientTools {
+		if !seen[client.Type+":"+client.Function.Name] {
+			return fmt.Errorf("preset scripts cannot remove client tools")
+		}
+	}
+	return nil
+}
+
+var presetScriptToolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func applyPresetRequestScript(script string, request *dto.GeneralOpenAIRequest, deadline time.Time) error {
+	encoded, err := common.Marshal(request)
+	if err != nil {
+		return err
+	}
+	var after map[string]json.RawMessage
+	source := strings.TrimRight(strings.TrimSpace(script), "; \r\n\t")
+	source = "input => { const result = (" + source + ")(input); return result === undefined ? input.request : result; }"
+	err = runPresetScript(source, map[string]any{
+		"request": json.RawMessage(encoded), "model": request.Model,
+		"source": "openai", "stream": request.Stream != nil && *request.Stream, "preview": false,
+		"provider": map[string]string{"adapter": "openai", "model": request.Model},
+	}, &after, deadline)
+	if err != nil {
+		return fmt.Errorf("FinalRequestProcessing: %w", err)
+	}
+	return applyPresetRequestChanges(encoded, after, request)
+}
+
+func applyPresetRequestChanges(encoded []byte, after map[string]json.RawMessage, request *dto.GeneralOpenAIRequest) error {
+	var before map[string]json.RawMessage
+	if err := common.Unmarshal(encoded, &before); err != nil {
+		return err
+	}
+	if after == nil {
+		return fmt.Errorf("FinalRequestProcessing must return a request object")
+	}
+	// ST's final-fetch hook can contain provider transport settings. Accept
+	// only configurations exactly represented by the normalized OpenAI fields.
+	if value, exists := after["toolConfig"]; exists {
+		var config struct {
+			FunctionCallingConfig struct {
+				Mode    string   `json:"mode"`
+				Allowed []string `json:"allowedFunctionNames"`
+			} `json:"functionCallingConfig"`
+		}
+		var tools []dto.ToolCallRequest
+		var choice string
+		if common.Unmarshal(value, &config) != nil || common.Unmarshal(after["tools"], &tools) != nil ||
+			common.Unmarshal(after["tool_choice"], &choice) != nil {
+			return fmt.Errorf("FinalRequestProcessing toolConfig cannot be represented by tool_choice")
+		}
+		normalizedConfig, err := common.Marshal(config)
+		if err != nil || !presetScriptJSONPreserved(value, normalizedConfig) {
+			return fmt.Errorf("FinalRequestProcessing toolConfig contains unsupported options")
+		}
+		mode := config.FunctionCallingConfig.Mode
+		if !(mode == "ANY" && choice == "required" || mode == "AUTO" && choice == "auto" || mode == "NONE" && choice == "none") {
+			return fmt.Errorf("FinalRequestProcessing toolConfig conflicts with tool_choice")
+		}
+		if len(config.FunctionCallingConfig.Allowed) > 0 {
+			names := config.FunctionCallingConfig.Allowed
+			if len(names) != len(tools) {
+				return fmt.Errorf("FinalRequestProcessing restricted toolConfig is unsupported")
+			}
+			for _, tool := range tools {
+				if !slices.Contains(names, tool.Function.Name) {
+					return fmt.Errorf("FinalRequestProcessing restricted toolConfig is unsupported")
+				}
+			}
+		}
+		delete(after, "toolConfig")
+	}
+	if value, exists := after["custom_include_body"]; exists {
+		var body, effort string
+		if common.Unmarshal(value, &body) != nil || common.Unmarshal(after["reasoning_effort"], &effort) != nil ||
+			strings.TrimSpace(body) != "reasoning_effort: "+effort {
+			return fmt.Errorf("FinalRequestProcessing custom_include_body only supports a matching reasoning_effort")
+		}
+		delete(after, "custom_include_body")
+	}
+	// A preset is not allowed to change routing, streaming, billing limits, or
+	// inject arbitrary provider fields after the gateway's request validation.
+	allowed := []string{"messages", "tools", "tool_choice", "response_format", "stop", "reasoning_effort"}
+	for key := range before {
+		if !slices.Contains(allowed, key) && !samePresetJSON(before[key], after[key]) {
+			return fmt.Errorf("FinalRequestProcessing cannot change request field %q", key)
+		}
+	}
+	for key := range after {
+		if !slices.Contains(allowed, key) && !samePresetJSON(before[key], after[key]) {
+			return fmt.Errorf("FinalRequestProcessing returned unsupported request field %q", key)
+		}
+	}
+	encoded, err := common.Marshal(after)
+	if err != nil {
+		return err
+	}
+	var changed dto.GeneralOpenAIRequest
+	if err := common.Unmarshal(encoded, &changed); err != nil {
+		return fmt.Errorf("FinalRequestProcessing returned invalid request fields")
+	}
+	// A successful unmarshal is not proof of compatibility: typed DTOs ignore
+	// unknown nested properties. Reject data loss before sending upstream.
+	normalized, err := common.Marshal(changed)
+	if err != nil {
+		return fmt.Errorf("FinalRequestProcessing returned invalid request fields")
+	}
+	var represented map[string]json.RawMessage
+	if err := common.Unmarshal(normalized, &represented); err != nil {
+		return err
+	}
+	for _, field := range allowed {
+		if value, exists := after[field]; exists && !presetScriptJSONPreserved(value, represented[field]) {
+			return fmt.Errorf("FinalRequestProcessing contains unsupported nested data in %q", field)
+		}
+	}
+	if len(changed.Messages) == 0 || len(changed.Messages) > 4096 {
+		return fmt.Errorf("FinalRequestProcessing requires 1 to 4096 messages")
+	}
+	for _, message := range changed.Messages {
+		if !slices.Contains([]string{"system", "developer", "user", "assistant", "tool", "function"}, message.Role) {
+			return fmt.Errorf("FinalRequestProcessing returned an unsupported message role")
+		}
+	}
+	// Apply only the permitted fields; round-tripping the complete request would
+	// discard provider metadata in DTO fields marked json:\"-\".
+	request.Messages, request.Tools, request.ToolChoice = changed.Messages, changed.Tools, changed.ToolChoice
+	request.ResponseFormat, request.Stop, request.ReasoningEffort = changed.ResponseFormat, changed.Stop, changed.ReasoningEffort
+	return nil
+}
+
+func presetScriptJSONPreserved(input, output json.RawMessage) bool {
+	var source, result any
+	if common.UnmarshalPreservingNumbers(input, &source) != nil {
+		return false
+	}
+	if len(output) == 0 {
+		// Known optional top-level fields may normalize an explicit empty value.
+		return source == nil || source == ""
+	}
+	if common.UnmarshalPreservingNumbers(output, &result) != nil {
+		return false
+	}
+	var contains func(any, any) bool
+	contains = func(a, b any) bool {
+		switch value := a.(type) {
+		case map[string]any:
+			target, ok := b.(map[string]any)
+			if !ok {
+				return false
+			}
+			for key, item := range value {
+				other, exists := target[key]
+				if !exists || !contains(item, other) {
+					return false
+				}
+			}
+			return true
+		case []any:
+			target, ok := b.([]any)
+			if !ok || len(value) != len(target) {
+				return false
+			}
+			for i, item := range value {
+				if !contains(item, target[i]) {
+					return false
+				}
+			}
+			return true
+		default:
+			return reflect.DeepEqual(a, b)
+		}
+	}
+	return contains(source, result)
+}
+
+func samePresetJSON(a, b json.RawMessage) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	var left, right any
+	return common.UnmarshalPreservingNumbers(a, &left) == nil &&
+		common.UnmarshalPreservingNumbers(b, &right) == nil && reflect.DeepEqual(left, right)
+}

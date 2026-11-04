@@ -144,8 +144,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 	originalRequest := request
+	defer service.ClosePresetScriptResponse(c)
 	initialChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	initialOtherSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	if err := validatePresetScriptEndpoint(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName, relayInfo.RelayMode); err != nil {
+		newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		return
+	}
 	request, err = applySelectedRequestTextRegex(c, request, relayInfo.OriginModelName)
 	if err != nil {
 		newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -218,6 +223,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		service.AppendUsedChannel(c, channel.Id)
+		selectedSettingsForScripts, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+		if err := validatePresetScriptEndpoint(selectedSettingsForScripts.SillyTavernPreset, relayInfo.OriginModelName, relayInfo.RelayMode); err != nil {
+			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			break
+		}
 		if sendRegexApplied && selectedChannelUsesBodyPassthrough(c, relayInfo.OriginModelName) {
 			newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot use body passthrough after send-side regex"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 			break
@@ -375,6 +385,15 @@ func selectedChannelUsesBodyPassthrough(c *gin.Context, modelName string) bool {
 	return passThrough
 }
 
+func validatePresetScriptEndpoint(preset *kitdto.SillyTavernPresetConfig, model string, relayMode int) error {
+	if preset != nil && preset.ScriptRuntime != "" &&
+		(len(preset.Models) == 0 || slices.Contains(preset.Models, model)) &&
+		relayMode != relayconstant.RelayModeChatCompletions {
+		return fmt.Errorf("preset script runtime currently requires the chat completions endpoint")
+	}
+	return nil
+}
+
 func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request) (kitdto.Request, any, error) {
 	settings, ok := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	if !ok || settings.SillyTavernPreset == nil {
@@ -425,6 +444,7 @@ func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request) (k
 	if err != nil || compiled == chatRequest {
 		return compiled, nil, err
 	}
+	service.AttachPresetScriptResponse(c, trace)
 	return compiled, trace, nil
 }
 

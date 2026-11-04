@@ -18,6 +18,8 @@ type presetToolTextCall struct {
 	last      map[string]any
 	lastFrame int
 	text      string
+	choice    string
+	id        string
 }
 
 type presetToolTextFrame struct {
@@ -30,6 +32,23 @@ func restorePresetToolText(body []byte, stream bool, config *dto.SillyTavernTool
 	if config == nil || !config.Enabled {
 		return body, nil
 	}
+	return restorePresetToolCalls(body, stream, map[string]bool{config.Name: true}, false,
+		func(calls []*presetToolTextCall) (string, error) {
+			var arguments map[string]any
+			if err := common.UnmarshalPreservingNumbers([]byte(calls[0].arguments.String()), &arguments); err != nil {
+				return "", fmt.Errorf("invalid tool text arguments")
+			}
+			text, ok := arguments[config.Argument].(string)
+			if !ok {
+				return "", fmt.Errorf("tool text argument must be a string")
+			}
+			return text, nil
+		}, deadline)
+}
+
+// Batch formatters see all owned calls in a choice, in first-appearance order.
+// Non-batched declarative transports retain their original emission behavior.
+func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, batch bool, format func([]*presetToolTextCall) (string, error), deadline time.Time) ([]byte, error) {
 	var frames []presetToolTextFrame
 	if !stream {
 		var payload map[string]any
@@ -61,6 +80,7 @@ func restorePresetToolText(body []byte, stream bool, config *dto.SillyTavernTool
 		}
 	}
 	calls := map[string]*presetToolTextCall{}
+	var callOrder []string
 	choiceHasClientTools := map[string]bool{}
 	choiceHasTransport := map[string]bool{}
 	for frameIndex, frame := range frames {
@@ -96,13 +116,23 @@ func restorePresetToolText(body []byte, stream bool, config *dto.SillyTavernTool
 					if len(calls) >= 128 {
 						return nil, fmt.Errorf("tool text call limit exceeded")
 					}
-					call = &presetToolTextCall{}
+					call = &presetToolTextCall{choice: choiceKey}
 					calls[key] = call
+					callOrder = append(callOrder, key)
+				}
+				if id, ok := tool["id"].(string); ok && id != "" {
+					call.id = id
 				}
 				function, _ := tool["function"].(map[string]any)
 				if name, ok := function["name"].(string); ok {
-					if name != "" && call.name.String() != name {
-						if call.name.String() == config.Name {
+					// Names are deltas too: an intermediate prefix may itself
+					// name another owned tool. Resolve ownership after assembly.
+					// The older single-tool transport explicitly tolerates
+					// providers repeating its full name; retain that behavior.
+					if batch {
+						call.name.WriteString(name)
+					} else if name != "" && call.name.String() != name {
+						if owned[call.name.String()] {
 							return nil, fmt.Errorf("tool text name changed during streaming")
 						}
 						call.name.WriteString(name)
@@ -119,31 +149,50 @@ func restorePresetToolText(body []byte, stream bool, config *dto.SillyTavernTool
 	changed := false
 	// Decode all targeted calls before changing any payload. A malformed transport
 	// cannot leak half-transformed internal tool arguments to the client.
-	for _, call := range calls {
+	groups := map[string][]*presetToolTextCall{}
+	var groupOrder []string
+	for _, key := range callOrder {
+		call := calls[key]
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, fmt.Errorf("tool text transformation timed out")
 		}
-		if call.name.String() != config.Name {
+		if !owned[call.name.String()] {
 			continue
-		}
-		var arguments map[string]any
-		if err := common.UnmarshalPreservingNumbers([]byte(call.arguments.String()), &arguments); err != nil {
-			return nil, fmt.Errorf("invalid tool text arguments")
-		}
-		text, ok := arguments[config.Argument].(string)
-		if !ok {
-			return nil, fmt.Errorf("tool text argument must be a string")
 		}
 		if content, exists := call.last["content"]; exists && content != nil {
 			if _, ok := content.(string); !ok {
 				return nil, fmt.Errorf("tool text cannot replace structured content")
 			}
 		}
-		call.text = text
+		groupKey := key
+		if batch {
+			groupKey = call.choice
+		}
+		if len(groups[groupKey]) == 0 {
+			groupOrder = append(groupOrder, groupKey)
+		}
+		groups[groupKey] = append(groups[groupKey], call)
 		changed = true
 	}
 	if !changed {
 		return body, nil
+	}
+	for _, key := range groupOrder {
+		group := groups[key]
+		text, err := format(group)
+		if err != nil {
+			return nil, err
+		}
+		if len(text) > maxFilteredResponseBytes {
+			return nil, fmt.Errorf("tool formatter exceeded response limit")
+		}
+		last := group[0]
+		for _, call := range group[1:] {
+			if call.lastFrame >= last.lastFrame {
+				last = call
+			}
+		}
+		last.text = text
 	}
 	// Walk in wire order, not map order, so multiple text calls remain ordered.
 	emitted := map[string]bool{}
@@ -166,7 +215,7 @@ func restorePresetToolText(body []byte, stream bool, config *dto.SillyTavernTool
 				tool := toolValue.(map[string]any)
 				key := presetToolTextCallKey(choiceKey, tool, position, frameIndex, stream)
 				call := calls[key]
-				if call.name.String() != config.Name {
+				if !owned[call.name.String()] {
 					retained = append(retained, toolValue)
 					choiceHasClientTools[choiceKey] = true
 					continue

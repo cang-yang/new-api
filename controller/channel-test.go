@@ -245,6 +245,10 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 
 	info.IsChannelTest = true
 	info.InitChannelMeta(c)
+	defer service.ClosePresetScriptResponse(c)
+	if err := validatePresetScriptEndpoint(channel.GetOtherSettings().SillyTavernPreset, info.OriginModelName, info.RelayMode); err != nil {
+		return testResult{context: c, localErr: err, newAPIError: types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())}
+	}
 	request, err = applySelectedRequestTextRegex(c, request, info.OriginModelName)
 	if err != nil {
 		return testResult{context: c, localErr: err, newAPIError: types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())}
@@ -268,6 +272,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 				request = compiled
 				info.Request = compiled
 				info.PresetAudit = trace
+				service.AttachPresetScriptResponse(c, trace)
 			}
 		}
 	}

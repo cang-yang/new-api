@@ -12,6 +12,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '**/*.go'
+      - 'service/preset_tavern_host.js'
       - 'relaykit/**'
       - 'web/**'
 
@@ -48,7 +49,7 @@ jobs:
           git diff --exit-code -- go.mod go.sum
           go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident|ChannelRegexPreview' -count=1
           go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay|ErrorIncident' -count=1
-          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern' -count=1
+          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime' -count=1
           go test ./relay/common -run 'TestApplyParamOverride|TestCompileParamOverride|TestSimulateParamOverride|TestStreamStatus' -count=1
           go test ./relay/helper -run 'TestStreamScannerHandler' -count=1
           go test ./relay/channel/openai -run 'Empty|OaiStreamHandler|OaiResponsesStreamHandler' -count=1

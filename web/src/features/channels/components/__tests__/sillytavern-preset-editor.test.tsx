@@ -29,11 +29,154 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 
+import { PresetScriptSettings } from '../preset-script-settings'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('script compatibility is explicit, preserves the preset and disables the conflicting transport', async () => {
+  const user = userEvent.setup()
+  const withHooks = {
+    ...preset,
+    extensions: {
+      SPreset: {
+        FinalRequestProcessing: {
+          enabled: true,
+          script: '({request}) => request',
+        },
+      },
+    },
+  }
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        preset: withHooks,
+        tool_text: { enabled: true, name: 'reply', argument: 'text' },
+      })}
+    />
+  )
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
+  const toggle = screen.getByRole('switch', {
+    name: 'Enable SPreset data hooks',
+  })
+  expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await user.click(toggle)
+  expect(
+    screen.getByText(
+      'Browser pages, remote loaders, persistent state and tool actions are not executed. This is not full Tavern Helper emulation.'
+    )
+  ).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
+  const saved = JSON.parse(
+    screen.getByLabelText('Saved config').textContent || '{}'
+  )
+  expect(saved.script_runtime).toBe('spreset-v1')
+  expect(saved.tool_text.enabled).toBe(false)
+  expect(saved.preset).toEqual(withHooks)
+})
+
+test('script compatibility cannot be enabled when the preset has no supported adapter', async () => {
+  const user = userEvent.setup()
+  render(<Editor />)
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
+  expect(
+    screen.getByRole('switch', { name: 'Enable SPreset data hooks' })
+  ).toHaveAttribute('aria-disabled', 'true')
+})
+
+test('generic Tavern scripts select a distinct runtime and preserve pinned dependencies', async () => {
+  const user = userEvent.setup()
+  const modules = {
+    'https://example.invalid/helper.js': 'export const value = 1',
+  }
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        preset: {
+          ...preset,
+          extensions: {
+            tavern_helper: {
+              scripts: [
+                {
+                  type: 'script',
+                  id: 'generic',
+                  enabled: true,
+                  content: 'eventOn("local",()=>{})',
+                },
+              ],
+            },
+          },
+        },
+        script_runtime: 'spreset-v1',
+        script_modules: modules,
+        tool_text: { enabled: true, name: 'reply', argument: 'text' },
+      })}
+    />
+  )
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
+  await user.click(
+    screen.getByRole('switch', { name: 'Enable Tavern Helper data scripts' })
+  )
+  expect(
+    screen.getByRole('switch', { name: 'Enable SPreset data hooks' })
+  ).toHaveAttribute('aria-checked', 'false')
+  await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
+  const saved = JSON.parse(
+    screen.getByLabelText('Saved config').textContent || '{}'
+  )
+  expect(saved.script_runtime).toBe('tavern-v1')
+  expect(saved.script_modules).toEqual(modules)
+  expect(saved.tool_text.enabled).toBe(false)
+})
+
+test('module imports validate input and cannot overwrite a newer channel draft', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const initial = { preset, script_runtime: '' }
+  const { rerender } = render(
+    <PresetScriptSettings config={initial} onChange={onChange} />
+  )
+  const input = screen.getByLabelText('Import module bundle', {
+    selector: 'input',
+  })
+  const invalid = new File(['[]'], 'invalid.json', { type: 'application/json' })
+  Object.defineProperty(invalid, 'text', { value: async () => '[]' })
+  await user.upload(input, invalid)
+  expect(await screen.findByText(/^Invalid module bundle/)).toBeVisible()
+  expect(onChange).not.toHaveBeenCalled()
+  let resolveRead!: (value: string) => void
+  const pending = new File(['{}'], 'modules.json', { type: 'application/json' })
+  Object.defineProperty(pending, 'text', {
+    value: () =>
+      new Promise<string>((resolve) => {
+        resolveRead = resolve
+      }),
+  })
+  await user.upload(input, pending)
+  const newer = { ...initial, script_runtime: 'tavern-v1' }
+  rerender(<PresetScriptSettings config={newer} onChange={onChange} />)
+  resolveRead('{"example":"export const a=1"}')
+  await waitFor(() =>
+    expect(screen.getByText(/^Invalid module bundle/)).toBeVisible()
+  )
+  expect(onChange).not.toHaveBeenCalled()
+  const valid = new File(['{}'], 'valid.json', { type: 'application/json' })
+  Object.defineProperty(valid, 'text', {
+    value: async () => '{"example":"export const a=1"}',
+  })
+  await user.upload(input, valid)
+  await waitFor(() =>
+    expect(onChange).toHaveBeenCalledWith({
+      ...newer,
+      script_modules: { example: 'export const a=1' },
+    })
+  )
 })
 
 test('editing an entry applies the draft and preserves marker content protection', async () => {

@@ -32,6 +32,8 @@ type SillyTavernPresetConfig struct {
 	MacroValues         map[string]string        `json:"macro_values,omitempty"`
 	TimeZone            string                   `json:"time_zone,omitempty"`
 	ToolText            *SillyTavernToolText     `json:"tool_text,omitempty"`
+	ScriptRuntime       string                   `json:"script_runtime,omitempty"` // empty (off), spreset-v1, tavern-v1
+	ScriptModules       map[string]string        `json:"script_modules,omitempty"` // administrator-pinned JS modules; never fetched
 }
 
 // SillyTavernToolText is a declarative transport, not an executable preset
@@ -129,6 +131,12 @@ const MaxSillyTavernPresetBytes = 6 << 20
 func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error) {
 	if c == nil {
 		return nil, nil
+	}
+	if c.ScriptRuntime != "" && c.ScriptRuntime != "spreset-v1" && c.ScriptRuntime != "tavern-v1" {
+		return nil, fmt.Errorf("unsupported preset script_runtime version")
+	}
+	if c.ScriptRuntime != "" && c.ToolText != nil && c.ToolText.Enabled {
+		return nil, fmt.Errorf("preset script runtime and native tool_text transport cannot both be enabled")
 	}
 	if c.ToolText != nil && c.ToolText.Enabled {
 		for _, value := range []string{c.ToolText.Name, c.ToolText.Argument} {

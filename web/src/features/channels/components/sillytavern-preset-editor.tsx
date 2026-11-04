@@ -37,6 +37,7 @@ import {
 import { PresetEntryFields } from './preset-entry-fields'
 import { PresetEntryList } from './preset-entry-list'
 import { PresetRegexSettings } from './preset-regex-settings'
+import { PresetScriptSettings } from './preset-script-settings'
 import { SillyTavernMacroEditor } from './sillytavern-macro-editor'
 
 type Props = {
@@ -129,7 +130,7 @@ export function SillyTavernPresetEditor(props: Props) {
               </>
             )}
           </div>
-          {hasBrowserScripts && (
+          {hasBrowserScripts && parsed?.config.script_runtime !== 'tavern-v1' && (
             <p className='text-xs text-amber-600 dark:text-amber-400'>
               {t(
                 'Browser scripts are preserved but not executed. Configure native compatibility in the preset editor.'
@@ -270,6 +271,9 @@ export function SillyTavernPresetEditor(props: Props) {
                   </TabsTrigger>
                   <TabsTrigger value='macros'>
                     {t('Macro values and time')}
+                  </TabsTrigger>
+                  <TabsTrigger value='scripts'>
+                    {t('Script compatibility')}
                   </TabsTrigger>
                 </TabsList>
               </div>
@@ -423,6 +427,17 @@ export function SillyTavernPresetEditor(props: Props) {
                 className='min-h-0 overflow-y-auto overscroll-contain p-5'
               >
                 <SillyTavernMacroEditor
+                  config={draft}
+                  onChange={setDraft}
+                  disabled={locked}
+                />
+              </TabsContent>
+              <TabsContent
+                value='scripts'
+                keepMounted
+                className='min-h-0 overflow-y-auto overscroll-contain p-5'
+              >
+                <PresetScriptSettings
                   config={draft}
                   onChange={setDraft}
                   disabled={locked}
