@@ -1,5 +1,15 @@
 {
   "translation": {
+    "Reply": "Reply",
+    "Response inspection": "Response inspection",
+    "Compare with upstream": "Compare with upstream",
+    "Comparison source": "Comparison source",
+    "Before processing · Upstream": "Before processing · Upstream",
+    "After processing · Client": "After processing · Client",
+    "The captured responses differ.": "The captured responses differ.",
+    "Upstream and client responses are identical.": "Upstream and client responses are identical.",
+    "Capture is missing or incomplete; a full comparison is unavailable.": "Capture is missing or incomplete; a full comparison is unavailable.",
+    "Compares captured bodies, content types and HTTP status. Formatting differences also count.": "Compares captured bodies, content types and HTTP status. Formatting differences also count.",
     "How should this preset be processed?": "How should this preset be processed?",
     "Choose how this preset handles messages and replies. Only run extras from authors you trust.": "Choose how this preset handles messages and replies. Only run extras from authors you trust.",
     "Do not use preset extras": "Do not use preset extras",

@@ -1,5 +1,15 @@
 {
   "translation": {
+    "Reply": "返信内容",
+    "Response inspection": "返信の表示方法",
+    "Compare with upstream": "上流と比較",
+    "Comparison source": "比較対象",
+    "Before processing · Upstream": "処理前 · 上流",
+    "After processing · Client": "処理後 · クライアント",
+    "The captured responses differ.": "記録された応答に差異があります。",
+    "Upstream and client responses are identical.": "上流とクライアントの応答は一致しています。",
+    "Capture is missing or incomplete; a full comparison is unavailable.": "記録がないか不完全なため、完全な比較はできません。",
+    "Compares captured bodies, content types and HTTP status. Formatting differences also count.": "記録された本文、コンテンツタイプ、HTTP ステータスを比較します。書式の違いも差異として扱います。",
     "How should this preset be processed?": "プリセットの処理方法",
     "Choose how this preset handles messages and replies. Only run extras from authors you trust.": "メッセージと返信の処理方法を選択します。信頼できる作者の追加機能のみ実行してください。",
     "Do not use preset extras": "追加機能を使わない",

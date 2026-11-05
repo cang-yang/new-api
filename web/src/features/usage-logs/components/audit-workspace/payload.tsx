@@ -42,6 +42,7 @@ export function AuditPayload(props: {
   final?: boolean
   notice?: string
   emptyMessage?: string
+  fixedView?: 'readable' | 'raw' | 'formatted'
 }) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
@@ -175,6 +176,34 @@ export function AuditPayload(props: {
           {notice}
           <TextBlock text={formatted} code />
         </ReadingViewport>
+      </div>
+    )
+  }
+
+  if (props.fixedView) {
+    return (
+      <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+        <div className='flex shrink-0 items-center justify-end gap-2 border-b px-3 py-1'>
+          {props.fixedView === 'readable' && documents.length === 1 && (
+            <CopyButton
+              size='sm'
+              value={displayValue(documents[0].value)}
+              tooltip={t('Copy document')}
+            />
+          )}
+          {captureActions}
+        </div>
+        {props.fixedView === 'readable' ? (
+          <DocumentBrowser documents={documents} notice={notice} />
+        ) : (
+          <ReadingViewport>
+            {notice}
+            <TextBlock
+              text={props.fixedView === 'raw' ? props.capture.body : formatted}
+              code
+            />
+          </ReadingViewport>
+        )}
       </div>
     )
   }

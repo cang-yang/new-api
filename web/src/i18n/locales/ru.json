@@ -1,5 +1,15 @@
 {
   "translation": {
+    "Reply": "Ответ",
+    "Response inspection": "Просмотр ответа",
+    "Compare with upstream": "Сравнить с провайдером",
+    "Comparison source": "Источник сравнения",
+    "Before processing · Upstream": "До обработки · Провайдер",
+    "After processing · Client": "После обработки · Клиент",
+    "The captured responses differ.": "Записанные ответы различаются.",
+    "Upstream and client responses are identical.": "Ответы провайдера и клиента идентичны.",
+    "Capture is missing or incomplete; a full comparison is unavailable.": "Запись отсутствует или неполна; полное сравнение невозможно.",
+    "Compares captured bodies, content types and HTTP status. Formatting differences also count.": "Сравниваются записанные тела, типы содержимого и статусы HTTP. Различия форматирования также учитываются.",
     "How should this preset be processed?": "Как обрабатывать этот пресет?",
     "Choose how this preset handles messages and replies. Only run extras from authors you trust.": "Выберите обработку сообщений и ответов. Используйте дополнения только от авторов, которым доверяете.",
     "Do not use preset extras": "Отключить дополнения пресета",

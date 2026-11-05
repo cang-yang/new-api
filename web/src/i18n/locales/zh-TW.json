@@ -1,5 +1,15 @@
 {
   "translation": {
+    "Reply": "回覆內容",
+    "Response inspection": "回覆檢視方式",
+    "Compare with upstream": "對比上游",
+    "Comparison source": "檢視哪一側",
+    "Before processing · Upstream": "處理前 · 上游回應",
+    "After processing · Client": "處理後 · 回傳用戶端",
+    "The captured responses differ.": "處理前後的回應存在差異。",
+    "Upstream and client responses are identical.": "上游與用戶端回應一致，以下只顯示一份。",
+    "Capture is missing or incomplete; a full comparison is unavailable.": "記錄缺失或擷取不完整，無法確認完整回應是否一致。",
+    "Compares captured bodies, content types and HTTP status. Formatting differences also count.": "比較原始本文、內容類型及 HTTP 狀態；格式不同也會計為差異。",
     "How should this preset be processed?": "選擇處理方式",
     "Choose how this preset handles messages and replies. Only run extras from authors you trust.": "選擇如何處理傳送的訊息和收到的回覆。僅執行可信作者提供的附加功能。",
     "Do not use preset extras": "關閉附加功能",

@@ -94,13 +94,14 @@ function mount(enabled = true) {
     </I18nextProvider>
   )
 }
-test('opens the final result directly with flat source navigation', async () => {
+test('opens one reply entry without duplicate response source tabs', async () => {
   mount()
-  expect(
-    await screen.findByRole('tab', { name: 'Final Result' })
-  ).toHaveAttribute('aria-selected', 'true')
-  expect(screen.getByRole('tab', { name: 'Client Response' })).toBeVisible()
-  expect(screen.getByRole('tab', { name: 'Upstream Response' })).toBeVisible()
+  expect(await screen.findByRole('tab', { name: 'Reply' })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
+  expect(screen.queryByRole('tab', { name: 'Client Response' })).toBeNull()
+  expect(screen.queryByRole('tab', { name: 'Upstream Response' })).toBeNull()
   expect(screen.getByText('Delivered answer')).toBeVisible()
   expect(
     screen.queryByRole('tab', { name: 'Response' })
@@ -128,18 +129,23 @@ test('copies captured bytes even while displaying a decoded final answer', async
   await user.click(await screen.findByRole('button', { name: 'Copy raw body' }))
   expect(await navigator.clipboard.readText()).toBe(audit.client_response_body)
 })
-test('switching upstream does not reuse client text and raw mode retains the payload', async () => {
+test('comparison keeps upstream and delivered payloads distinct and raw view preserves client bytes', async () => {
   const user = userEvent.setup()
   mount()
   await user.click(
-    await screen.findByRole('tab', { name: 'Upstream Response' })
+    await screen.findByRole('tab', { name: 'Compare with upstream' })
   )
-  expect(screen.getByText('Upstream answer')).toBeVisible()
-  expect(screen.queryByText('Delivered answer')).not.toBeInTheDocument()
+  expect(screen.getByText('The captured responses differ.')).toBeVisible()
+  expect(
+    screen.getByRole('region', { name: 'Before processing · Upstream' })
+  ).toHaveTextContent('Upstream answer')
+  expect(
+    screen.getByRole('region', { name: 'After processing · Client' })
+  ).toHaveTextContent('Delivered answer')
   await user.click(screen.getByRole('tab', { name: 'Raw data' }))
   expect(
     screen.getByRole('region', { name: 'Reading content' })
-  ).toHaveTextContent(audit.response_body)
+  ).toHaveTextContent(audit.client_response_body)
 })
 test('missing client capture explicitly marks the upstream fallback', async () => {
   audit.client_response_status = 0
@@ -150,8 +156,39 @@ test('missing client capture explicitly marks the upstream fallback', async () =
   expect(
     await screen.findByText(/delivery to the client is unverified/)
   ).toBeVisible()
-  await user.click(screen.getByRole('tab', { name: 'Client Response' }))
+  await user.click(screen.getByRole('tab', { name: 'Raw data' }))
   expect(screen.getByText(/legacy record/)).toBeVisible()
+})
+test('identical complete captures show one shared payload with an explicit comparison result', async () => {
+  audit.response_body = audit.client_response_body
+  const user = userEvent.setup()
+  mount()
+  await user.click(
+    await screen.findByRole('tab', { name: 'Compare with upstream' })
+  )
+  expect(
+    screen.getByText('Upstream and client responses are identical.')
+  ).toBeVisible()
+  expect(
+    screen.getAllByRole('region', { name: 'Reading content' })
+  ).toHaveLength(1)
+})
+test('matching partial captures never claim full response equality', async () => {
+  audit.response_body = audit.client_response_body
+  audit.response_body_truncated = true
+  const user = userEvent.setup()
+  mount()
+  await user.click(
+    await screen.findByRole('tab', { name: 'Compare with upstream' })
+  )
+  expect(
+    screen.getByText(
+      'Capture is missing or incomplete; a full comparison is unavailable.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByText('Upstream and client responses are identical.')
+  ).toBeNull()
 })
 test('truncated and interrupted captures show separate warnings', async () => {
   audit.client_response_complete = false

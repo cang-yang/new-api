@@ -1,5 +1,15 @@
 {
   "translation": {
+    "Reply": "Nội dung trả lời",
+    "Response inspection": "Cách xem phản hồi",
+    "Compare with upstream": "So sánh với upstream",
+    "Comparison source": "Nguồn so sánh",
+    "Before processing · Upstream": "Trước xử lý · Upstream",
+    "After processing · Client": "Sau xử lý · Máy khách",
+    "The captured responses differ.": "Các phản hồi đã ghi nhận có sự khác biệt.",
+    "Upstream and client responses are identical.": "Phản hồi upstream và máy khách giống nhau.",
+    "Capture is missing or incomplete; a full comparison is unavailable.": "Bản ghi bị thiếu hoặc không đầy đủ; không thể so sánh toàn bộ.",
+    "Compares captured bodies, content types and HTTP status. Formatting differences also count.": "So sánh nội dung đã ghi, loại nội dung và trạng thái HTTP. Khác biệt định dạng cũng được tính.",
     "How should this preset be processed?": "Chọn cách xử lý mẫu",
     "Choose how this preset handles messages and replies. Only run extras from authors you trust.": "Chọn cách xử lý tin nhắn và phản hồi. Chỉ chạy tính năng bổ sung từ tác giả đáng tin cậy.",
     "Do not use preset extras": "Tắt tính năng bổ sung",
