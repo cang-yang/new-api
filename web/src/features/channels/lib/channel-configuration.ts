@@ -57,6 +57,7 @@ const CONFIGURATION_BLOCKS = {
       'param_override',
       'header_override',
       'response_text_filter',
+      'worldbook',
       'sillytavern_preset',
       'sillytavern_preset_patches',
       'sillytavern_user',
@@ -165,6 +166,7 @@ export function getChannelConfigurationState(
       hasConfiguredJson(values.param_override) ||
       hasConfiguredJson(values.header_override) ||
       hasConfiguredJson(values.response_text_filter) ||
+      hasConfiguredJson(values.worldbook) ||
       hasConfiguredJson(values.sillytavern_preset),
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||

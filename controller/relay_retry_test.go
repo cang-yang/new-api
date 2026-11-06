@@ -127,6 +127,59 @@ func TestSillyTavernRejectsRoutePassthrough(t *testing.T) {
 	require.ErrorContains(t, err, "disable body passthrough")
 }
 
+func TestWorldbookSelectedChannelRequestIsolation(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("opaque body"))
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "first lore"}}}}}
+	settings := dto.ChannelOtherSettings{Worldbook: config, SillyTavernPreset: &dto.SillyTavernPresetConfig{Models: []string{"other"}, Preset: []byte("inactive")}}
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, settings)
+	source := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "moon"}}}
+	compiled, _, err := compileSelectedSillyTavernPreset(c, source)
+	require.NoError(t, err)
+	assert.Equal(t, "first lore", compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content)
+	baseValue, ok := c.Get("worldbook_base_request")
+	require.True(t, ok)
+	base := baseValue.(*dto.GeneralOpenAIRequest)
+	second := *config
+	second.Books = []dto.Worldbook{{ID: "b2", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e2", Enabled: true, Constant: true, Content: "second lore"}}}}
+	settings.Worldbook = &second
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, settings)
+	retry, _ := applySelectedWorldbook(c, source, base, service.PresetCompileTrace{})
+	require.Len(t, retry.Messages, 2)
+	assert.Equal(t, "second lore", retry.Messages[0].Content)
+	retry.Messages[1].Content = "mutated upstream"
+	assert.Equal(t, "moon", source.Messages[0].Content)
+	assert.Equal(t, "moon", base.Messages[0].Content)
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: true})
+	passthrough, trace := applySelectedWorldbook(c, source, base, service.PresetCompileTrace{})
+	assert.Len(t, passthrough.Messages, 1)
+	require.NotNil(t, trace.Worldbook)
+	assert.NotEmpty(t, trace.Worldbook.Warnings)
+}
+
+func TestWorldbookAPIContract(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/channel/worldbook/import", strings.NewReader(`{"name":"Lore","book":{"entries":[{"key":["moon"],"content":"lore"}]}}`))
+	ImportChannelWorldbook(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.True(t, gjson.Get(recorder.Body.String(), "success").Bool())
+	var book dto.Worldbook
+	require.NoError(t, common.Unmarshal([]byte(gjson.Get(recorder.Body.String(), "data").Raw), &book))
+	payload, err := common.Marshal(map[string]any{"config": dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{book}}, "request": map[string]any{"messages": []dto.Message{{Role: "user", Content: "moon"}}}})
+	require.NoError(t, err)
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/channel/worldbook/preview", strings.NewReader(string(payload)))
+	PreviewChannelWorldbook(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.True(t, gjson.Get(recorder.Body.String(), "success").Bool())
+	assert.Equal(t, "lore", gjson.Get(recorder.Body.String(), "data.text").String())
+	assert.Equal(t, "included", gjson.Get(recorder.Body.String(), "data.entries.0.status").String())
+	assert.Equal(t, "included", gjson.Get(recorder.Body.String(), "data.entries.0.reason").String())
+	assert.True(t, gjson.Get(recorder.Body.String(), "data.warnings").IsArray())
+}
+
 func TestSillyTavernInactivePresetPreservesGatewayRequest(t *testing.T) {
 	for _, name := range []string{"no preset", "different model"} {
 		t.Run(name, func(t *testing.T) {

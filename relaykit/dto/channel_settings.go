@@ -110,6 +110,7 @@ const (
 )
 
 type ChannelOtherSettings struct {
+	Worldbook                             *WorldbookConfig         `json:"worldbook,omitempty"`
 	ResponseTextFilter                    *ResponseTextFilter      `json:"response_text_filter,omitempty"`
 	SillyTavernPreset                     *SillyTavernPresetConfig `json:"sillytavern_preset,omitempty"`
 	AzureResponsesVersion                 string                   `json:"azure_responses_version,omitempty"`

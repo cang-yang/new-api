@@ -43,6 +43,7 @@ import {
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
 import { regexRulesSchema } from './regex-rules'
 import { supportsResponsesWebSocket } from './responses-websocket'
+import { parseWorldbook } from './worldbook'
 
 // ============================================================================
 // Form Validation Schema
@@ -310,6 +311,13 @@ export const channelFormSchema = z
           return false
         }
       }, 'Enter a valid response text filter'),
+    worldbook: z
+      .string()
+      .optional()
+      .refine(
+        (value) => parseWorldbook(value) !== null,
+        'Invalid worldbook settings'
+      ),
     sillytavern_preset: z
       .string()
       .optional()
@@ -560,6 +568,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   header_override: '',
   settings: '{}',
   response_text_filter: '',
+  worldbook: '',
   sillytavern_preset: '',
   sillytavern_preset_patches: '',
   sillytavern_user: '',
@@ -682,6 +691,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let worldbook = ''
   let responseTextFilter = ''
   let sillytavernPreset = ''
   let sillytavernPresetPatches = ''
@@ -734,6 +744,9 @@ export function transformChannelToFormDefaults(
           null,
           2
         )
+      }
+      if (parsed.worldbook) {
+        worldbook = JSON.stringify(parsed.worldbook)
       }
       if (parsed.sillytavern_preset) {
         sillytavernPreset = JSON.stringify(parsed.sillytavern_preset)
@@ -807,6 +820,7 @@ export function transformChannelToFormDefaults(
     param_override: channel.param_override || '',
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
+    worldbook,
     response_text_filter: responseTextFilter,
     sillytavern_preset: sillytavernPreset,
     sillytavern_preset_patches: sillytavernPresetPatches,
@@ -913,6 +927,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     )
   } else {
     delete settingsObj.response_text_filter
+  }
+
+  if (formData.worldbook?.trim()) {
+    settingsObj.worldbook = JSON.parse(formData.worldbook)
+  } else {
+    delete settingsObj.worldbook
   }
 
   if (formData.sillytavern_preset?.trim()) {

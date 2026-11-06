@@ -40,6 +40,8 @@ func joinPaths(absolutePath, relativePath string) string {
 func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	channelRoute := apiRouter.Group("/channel")
 	channelRoute.Use(middleware.AdminAuth())
+	handlePermissionRoute(channelRoute, http.MethodPost, "/worldbook/import", authz.ChannelWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.ImportChannelWorldbook)
+	handlePermissionRoute(channelRoute, http.MethodPost, "/worldbook/preview", authz.ChannelWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewChannelWorldbook)
 	channelRoute.POST("/regex/preview", middleware.RequirePermission(authz.ChannelWrite), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewChannelRegex)
 	handlePermissionRoute(channelRoute, http.MethodPost, "/preset/scripts/prepare", authz.ChannelWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PrepareChannelPresetScripts)
 

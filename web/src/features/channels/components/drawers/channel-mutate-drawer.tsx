@@ -245,6 +245,7 @@ import { RegexSettings } from '../regex-settings'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 import { UpstreamModelSelection } from '../upstream-model-selection'
+import { WorldbookSettings } from '../worldbook-settings'
 import {
   ChannelConfiguration,
   ChannelConfigurationStatusIndicator,
@@ -2946,6 +2947,22 @@ export function ChannelMutateDrawer({
                 onChange={field.onChange}
                 presetValue={formValues.sillytavern_preset}
                 presetModels={formValues.sillytavern_models}
+                disabled={sensitiveLocked || isSubmitting}
+              />
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='worldbook'
+          render={({ field }) => (
+            <FormItem className='space-y-3 border-t pt-4'>
+              <WorldbookSettings
+                scopeKey={channelId ?? 'new'}
+                value={field.value || ''}
+                onChange={field.onChange}
                 disabled={sensitiveLocked || isSubmitting}
               />
               <FormMessage />

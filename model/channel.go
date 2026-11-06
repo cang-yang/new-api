@@ -1023,6 +1023,12 @@ func (channel *Channel) ValidateSettings() error {
 	if _, err := channelOtherSettings.SillyTavernPreset.ParseAndValidate(); err != nil {
 		return err
 	}
+	if err := channelOtherSettings.Worldbook.Validate(); err != nil {
+		return err
+	}
+	if channelOtherSettings.Worldbook != nil && channelOtherSettings.Worldbook.Enabled && channelParams.PassThroughBodyEnabled {
+		return fmt.Errorf("worldbook cannot be combined with pass_through_body_enabled")
+	}
 	if channelOtherSettings.SillyTavernPreset != nil && channelParams.PassThroughBodyEnabled {
 		return fmt.Errorf("sillytavern_preset cannot be combined with pass_through_body_enabled")
 	}
@@ -1035,6 +1041,13 @@ func (channel *Channel) ValidateSettings() error {
 		}
 	}
 	if channelOtherSettings.AdvancedCustom != nil {
+		if channelOtherSettings.Worldbook != nil && channelOtherSettings.Worldbook.Enabled {
+			for _, route := range channelOtherSettings.AdvancedCustom.Routes {
+				if route.IncomingPath == "/v1/chat/completions" && route.PassThroughBodyEnabled {
+					return fmt.Errorf("worldbook cannot be combined with chat route pass_through_body_enabled")
+				}
+			}
+		}
 		if channelOtherSettings.SillyTavernPreset != nil {
 			for _, route := range channelOtherSettings.AdvancedCustom.Routes {
 				if route.IncomingPath == "/v1/chat/completions" && route.PassThroughBodyEnabled {

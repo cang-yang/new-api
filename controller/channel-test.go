@@ -27,6 +27,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
@@ -256,8 +257,23 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	info.Request = request
 	if info.RelayMode == relayconstant.RelayModeChatCompletions {
 		if chat, ok := request.(*dto.GeneralOpenAIRequest); ok {
-			if preset := channel.GetOtherSettings().SillyTavernPreset; preset != nil {
-				compiled, trace, compileErr := service.CompileSillyTavernPreset(preset, chat, service.SillyTavernContext{})
+			settings := channel.GetOtherSettings()
+			if preset := settings.SillyTavernPreset; preset != nil || settings.Worldbook != nil {
+				channelSettings := channel.GetSetting()
+				worldbook := settings.Worldbook
+				passthrough := channelSettings.PassThroughBodyEnabled || model_setting.GetGlobalSettings().PassThroughRequestEnabled
+				if settings.AdvancedCustom != nil && c.Request != nil {
+					if route, matched := settings.AdvancedCustom.MatchPathForModel(c.Request.URL.Path, chat.Model); matched && route.PassThroughBodyEnabled {
+						passthrough = true
+					}
+				}
+				if passthrough {
+					worldbook = nil
+				}
+				compiled, trace, compileErr := service.CompileWorldbook(worldbook, preset, chat, service.SillyTavernContext{})
+				if passthrough && settings.Worldbook != nil && settings.Worldbook.Enabled {
+					trace.Worldbook = &service.WorldbookPreview{Entries: []service.WorldbookDecision{}, Warnings: []string{"Worldbook was skipped because body passthrough is enabled"}}
+				}
 				if compileErr != nil {
 					return testResult{
 						context:     c,

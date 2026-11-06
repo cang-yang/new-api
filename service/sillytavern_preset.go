@@ -25,18 +25,19 @@ import (
 // A plain OpenAI client can omit it: incoming system messages remain generic
 // chat history and are never guessed to be a particular SillyTavern marker.
 type SillyTavernContext struct {
-	User             string            `json:"user,omitempty"`
-	Char             string            `json:"char,omitempty"`
-	LastUserMessage  string            `json:"last_user_message,omitempty"`
-	Markers          map[string]string `json:"markers,omitempty"`
-	ChatHistory      []dto.Message     `json:"chat_history,omitempty"`
-	DialogueExamples [][]dto.Message   `json:"dialogue_examples,omitempty"`
-	Variables        map[string]string `json:"variables,omitempty"`
-	GlobalVariables  map[string]string `json:"global_variables,omitempty"`
-	MacroValues      map[string]string `json:"macro_values,omitempty"`
-	ChatID           string            `json:"chat_id,omitempty"`
-	Input            *string           `json:"input,omitempty"`
-	Now              time.Time         `json:"-"`
+	RetainWorldbookMarkers bool              `json:"-"`
+	User                   string            `json:"user,omitempty"`
+	Char                   string            `json:"char,omitempty"`
+	LastUserMessage        string            `json:"last_user_message,omitempty"`
+	Markers                map[string]string `json:"markers,omitempty"`
+	ChatHistory            []dto.Message     `json:"chat_history,omitempty"`
+	DialogueExamples       [][]dto.Message   `json:"dialogue_examples,omitempty"`
+	Variables              map[string]string `json:"variables,omitempty"`
+	GlobalVariables        map[string]string `json:"global_variables,omitempty"`
+	MacroValues            map[string]string `json:"macro_values,omitempty"`
+	ChatID                 string            `json:"chat_id,omitempty"`
+	Input                  *string           `json:"input,omitempty"`
+	Now                    time.Time         `json:"-"`
 }
 
 type PresetMessageSource struct {
@@ -47,6 +48,7 @@ type PresetMessageSource struct {
 }
 
 type PresetCompileTrace struct {
+	Worldbook      *WorldbookPreview     `json:"worldbook,omitempty"`
 	Name           string                `json:"name"`
 	Mode           string                `json:"mode"`
 	Messages       []PresetMessageSource `json:"messages"`
@@ -351,7 +353,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		if compiledPresetTextBytes > maxCompiledPresetTextBytes {
 			return nil, trace, fmt.Errorf("sillytavern_preset compiled text exceeds 16 MiB")
 		}
-		if strings.TrimSpace(content) == "" {
+		if strings.TrimSpace(content) == "" && !(context.RetainWorldbookMarkers && prompt.Marker && (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter")) {
 			continue
 		}
 		prompt.Content = content

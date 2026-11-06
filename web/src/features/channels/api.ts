@@ -23,6 +23,11 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 import type { PriorityMove, PriorityOrder } from './lib/channel-priority-order'
 import type { InferenceStatus } from './lib/inference-status'
 import type { ParamOverrideSimulationResponse } from './lib/param-override-simulator'
+import {
+  worldbookBookSchema,
+  type WorldbookConfig,
+  type WorldbookPreviewResult,
+} from './lib/worldbook'
 import type {
   AddChannelRequest,
   BatchDeleteParams,
@@ -51,6 +56,25 @@ const channelActionConfig = (
   skipBusinessError: true,
   skipErrorHandler: true,
 })
+
+export async function importWorldbook(name: string, book: unknown) {
+  const response = await api.post('/api/channel/worldbook/import', {
+    name,
+    book,
+  })
+  return worldbookBookSchema.parse(requireServerSuccess(response.data).data)
+}
+
+export async function previewWorldbook(
+  config: WorldbookConfig,
+  request: unknown
+): Promise<WorldbookPreviewResult> {
+  const response = await api.post('/api/channel/worldbook/preview', {
+    config,
+    request,
+  })
+  return requireServerSuccess(response.data).data
+}
 
 export async function getChannelPriorityOrder(): Promise<PriorityOrder> {
   const response = await api.get<{ success: boolean; data: PriorityOrder }>(
