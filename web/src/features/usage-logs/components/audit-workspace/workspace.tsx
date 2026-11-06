@@ -20,7 +20,13 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import type { AuditCapture } from '../../lib/audit-workspace'
@@ -98,18 +104,30 @@ export function AuditWorkspace(props: {
             </TabsTrigger>
           ))}
         </TabsList>
-        <NativeSelect
-          className='min-w-0 flex-1 lg:hidden'
-          aria-label={t('Audit source')}
+        <Select
           value={source}
-          onChange={(event) => setSource(event.target.value)}
+          onValueChange={(value) => {
+            if (value) setSource(value)
+          }}
+          items={sources.map((item) => ({
+            value: item.id,
+            label: item.label,
+          }))}
         >
-          {sources.map((item) => (
-            <NativeSelectOption key={item.id} value={item.id}>
-              {item.label}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          <SelectTrigger
+            className='min-w-0 flex-1 lg:hidden'
+            aria-label={t('Audit source')}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {sources.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <div className='ml-auto shrink-0'>
           {responseStatus > 0 &&
             source !== 'execution' &&

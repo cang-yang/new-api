@@ -42,6 +42,11 @@ const task = {
   locked_by: 'history-runner',
 }
 
+async function chooseSelectOption(trigger: HTMLElement, option: string) {
+  await userEvent.click(trigger)
+  await userEvent.click(await screen.findByRole('option', { name: option }))
+}
+
 function renderPanel() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -95,11 +100,11 @@ it('filters history on the server and resets pagination without hiding active ta
       })
     )
   )
-  await userEvent.selectOptions(
+  await chooseSelectOption(
     screen.getByRole('combobox', { name: 'Type' }),
-    'model_update'
+    'Batch upstream model update'
   )
-  await userEvent.selectOptions(
+  await chooseSelectOption(
     screen.getByRole('combobox', { name: 'Status' }),
     'failed'
   )
@@ -147,9 +152,9 @@ it('requires confirmation and cleans all matching history pages using the select
     .spyOn(api, 'delete')
     .mockResolvedValue({ data: { success: true, data: { deleted_count: 20 } } })
   const client = renderPanel()
-  await userEvent.selectOptions(
+  await chooseSelectOption(
     await screen.findByRole('combobox', { name: 'Type' }),
-    'model_update'
+    'Batch upstream model update'
   )
   await waitFor(() =>
     expect(

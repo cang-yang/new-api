@@ -30,7 +30,13 @@ import {
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { listSystemTasks } from '@/features/system-settings/api'
 import type {
@@ -136,47 +142,65 @@ export function SystemTaskHistory(props: { activeRefreshAt: number }) {
         }}
         customSearch={
           <>
-            <NativeSelect
-              aria-label={t('Type')}
-              className='max-w-full'
-              value={filters.type}
-              onChange={(event) => {
+            <Select
+              value={filters.type || 'all'}
+              onValueChange={(value) => {
+                const nextType = value ?? 'all'
                 setFilters((previous) => ({
                   ...previous,
-                  type: event.target.value,
+                  type: nextType === 'all' ? '' : nextType,
                 }))
                 setPagination((previous) => ({ ...previous, pageIndex: 0 }))
               }}
+              items={[
+                { value: 'all', label: t('All Types') },
+                ...Object.entries(SYSTEM_TASK_TYPE_LABEL).map(
+                  ([value, label]) => ({ value, label: t(label) })
+                ),
+              ]}
             >
-              <NativeSelectOption value=''>{t('All Types')}</NativeSelectOption>
-              {Object.entries(SYSTEM_TASK_TYPE_LABEL).map(([value, label]) => (
-                <NativeSelectOption key={value} value={value}>
-                  {t(label)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <NativeSelect
-              aria-label={t('Status')}
-              className='max-w-full'
-              value={filters.status}
-              onChange={(event) => {
+              <SelectTrigger aria-label={t('Type')} className='max-w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='all'>{t('All Types')}</SelectItem>
+                {Object.entries(SYSTEM_TASK_TYPE_LABEL).map(
+                  ([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {t(label)}
+                    </SelectItem>
+                  )
+                )}
+              </SelectContent>
+            </Select>
+            <Select
+              value={filters.status || 'all'}
+              onValueChange={(value) => {
+                const nextStatus = value ?? 'all'
                 setFilters((previous) => ({
                   ...previous,
-                  status: event.target.value as '' | 'succeeded' | 'failed',
+                  status:
+                    nextStatus === 'all'
+                      ? ''
+                      : (nextStatus as 'succeeded' | 'failed'),
                 }))
                 setPagination((previous) => ({ ...previous, pageIndex: 0 }))
               }}
+              items={[
+                { value: 'all', label: t('All Status') },
+                { value: 'succeeded', label: t('succeeded') },
+                { value: 'failed', label: t('failed') },
+              ]}
             >
-              <NativeSelectOption value=''>
-                {t('All Status')}
-              </NativeSelectOption>
-              <NativeSelectOption value='succeeded'>
-                {t('succeeded')}
-              </NativeSelectOption>
-              <NativeSelectOption value='failed'>
-                {t('failed')}
-              </NativeSelectOption>
-            </NativeSelect>
+              <SelectTrigger aria-label={t('Status')} className='max-w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='all'>{t('All Status')}</SelectItem>
+                <SelectItem value='succeeded'>{t('succeeded')}</SelectItem>
+                <SelectItem value='failed'>{t('failed')}</SelectItem>
+              </SelectContent>
+            </Select>
           </>
         }
         preActions={

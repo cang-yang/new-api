@@ -23,6 +23,15 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { RegexRulesEditor } from '../regex-rules-editor'
 
+async function chooseSelectOption(
+  user: ReturnType<typeof userEvent.setup>,
+  trigger: HTMLElement,
+  option: string
+) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
+
 afterEach(cleanup)
 
 test('imported rules display their origin and retain it when switched off', async () => {
@@ -129,15 +138,18 @@ test('stored rules inherit strict behavior until explicitly changed and keep unk
       })}
     />
   )
-  expect(screen.getByLabelText('Regex failure policy')).toHaveValue('legacy')
+  expect(screen.getByLabelText('Regex failure policy')).toHaveTextContent(
+    'legacy'
+  )
   await user.click(screen.getByRole('button', { name: 'Add regex rule' }))
   let saved = JSON.parse(
     screen.getByLabelText('Saved rules').textContent || '{}'
   )
   expect(saved.failure_policy).toBeUndefined()
-  await user.selectOptions(
+  await chooseSelectOption(
+    user,
     screen.getByLabelText('Regex failure policy'),
-    'passthrough'
+    'Keep original on failure (recommended for availability)'
   )
   expect(
     screen.getByText(
@@ -149,18 +161,20 @@ test('stored rules inherit strict behavior until explicitly changed and keep unk
     failure_policy: 'passthrough',
     custom_option: { keep: true },
   })
-  await user.selectOptions(
+  await chooseSelectOption(
+    user,
     screen.getByLabelText('Regex failure policy'),
-    'error'
+    'Return an error on failure'
   )
   expect(
     screen.getByText(
       'Processing errors stop the request. An upstream-generated response may be lost and may still be billed.'
     )
   ).toBeVisible()
-  await user.selectOptions(
+  await chooseSelectOption(
+    user,
     screen.getByLabelText('Regex failure policy'),
-    'legacy'
+    'Inherited / legacy behavior (strict)'
   )
   expect(
     JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
@@ -281,7 +295,7 @@ test('new send rules use their individual switch without a global send control',
     enable_send: true,
     rules: [{ pattern: 'secret', replacement: '', stage: 'receive' }],
   })
-  await user.selectOptions(screen.getByLabelText('Direction'), 'send')
+  await chooseSelectOption(user, screen.getByLabelText('Direction'), 'Send')
   expect(
     screen.queryByText('Applicable receive rules buffer streaming responses.')
   ).toBeNull()

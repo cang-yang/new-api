@@ -27,7 +27,13 @@ import {
 } from '@/components/ui/accordion'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -55,47 +61,57 @@ export function RegexRuleFields(props: {
       <div className='grid gap-3 sm:grid-cols-2'>
         <Field>
           <FieldLabel htmlFor={`${id}-stage`}>{t('Direction')}</FieldLabel>
-          <NativeSelect
-            id={`${id}-stage`}
+          <Select
             disabled={props.disabled}
             value={rule.stage}
-            onChange={(e) =>
+            onValueChange={(value) =>
               props.onChange({
                 ...rule,
-                stage: e.target.value as RegexRule['stage'],
+                stage: value as RegexRule['stage'],
               })
             }
+            items={[
+              { value: 'receive', label: t('Receive') },
+              { value: 'send', label: t('Send') },
+            ]}
           >
-            <NativeSelectOption value='receive'>
-              {t('Receive')}
-            </NativeSelectOption>
-            <NativeSelectOption value='send'>{t('Send')}</NativeSelectOption>
-          </NativeSelect>
+            <SelectTrigger id={`${id}-stage`} className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='receive'>{t('Receive')}</SelectItem>
+              <SelectItem value='send'>{t('Send')}</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
         <Field>
           <FieldLabel htmlFor={`${id}-action`}>{t('Action')}</FieldLabel>
-          <NativeSelect
-            id={`${id}-action`}
+          <Select
             disabled={props.disabled}
             value={rule.action}
-            onChange={(e) =>
+            onValueChange={(value) =>
               props.onChange({
                 ...rule,
-                action: e.target.value as RegexRule['action'],
+                action: value as RegexRule['action'],
                 replacement:
-                  e.target.value === 'extract' && rule.replacement === ''
+                  value === 'extract' && rule.replacement === ''
                     ? '$1'
                     : rule.replacement,
               })
             }
+            items={[
+              { value: 'replace', label: t('Replace / delete') },
+              { value: 'extract', label: t('Extract captures') },
+            ]}
           >
-            <NativeSelectOption value='replace'>
-              {t('Replace / delete')}
-            </NativeSelectOption>
-            <NativeSelectOption value='extract'>
-              {t('Extract captures')}
-            </NativeSelectOption>
-          </NativeSelect>
+            <SelectTrigger id={`${id}-action`} className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='replace'>{t('Replace / delete')}</SelectItem>
+              <SelectItem value='extract'>{t('Extract captures')}</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
       </div>
       <Field>
@@ -202,25 +218,32 @@ export function RegexRuleFields(props: {
                 <FieldLabel htmlFor={`${id}-missing`}>
                   {t('When nothing matches')}
                 </FieldLabel>
-                <NativeSelect
-                  id={`${id}-missing`}
+                <Select
                   disabled={props.disabled}
                   value={rule.missing_match || 'passthrough'}
-                  onChange={(e) =>
+                  onValueChange={(value) =>
                     props.onChange({
                       ...rule,
-                      missing_match: e.target
-                        .value as RegexRule['missing_match'],
+                      missing_match: value as RegexRule['missing_match'],
                     })
                   }
+                  items={[
+                    { value: 'passthrough', label: t('Keep original text') },
+                    { value: 'empty', label: t('Return empty text') },
+                  ]}
                 >
-                  <NativeSelectOption value='passthrough'>
-                    {t('Keep original text')}
-                  </NativeSelectOption>
-                  <NativeSelectOption value='empty'>
-                    {t('Return empty text')}
-                  </NativeSelectOption>
-                </NativeSelect>
+                  <SelectTrigger id={`${id}-missing`} className='w-full'>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='passthrough'>
+                      {t('Keep original text')}
+                    </SelectItem>
+                    <SelectItem value='empty'>
+                      {t('Return empty text')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </Field>
             </FieldGroup>
           </AccordionContent>

@@ -30,6 +30,8 @@ test('channel save preserves worldbook separately from preset and other settings
     scan_depth: 4,
     max_chars: 12000,
     recursive: false,
+    injection_mode: 'inherit',
+    injection_depth: 0,
     books: [
       {
         id: 'book',
@@ -80,4 +82,45 @@ test('invalid worldbook settings remain invalid rather than silently clearing bo
       recursive: false,
     }).success
   ).toBe(false)
+})
+
+test('normalized and invalid entry metadata survive parsing', () => {
+  const parsed = parseWorldbook(
+    JSON.stringify({
+      enabled: true,
+      scan_depth: 4,
+      max_chars: 12000,
+      recursive: false,
+      injection_mode: 'before_last_user',
+      injection_depth: 0,
+      books: [
+        {
+          id: 'book',
+          name: 'Book',
+          enabled: true,
+          entries: [
+            {
+              id: 'entry',
+              name: 'Entry',
+              content: 'Lore',
+              enabled: true,
+              constant: false,
+              keys: ['moon'],
+              secondary_keys: [],
+              secondary_logic: 'none',
+              case_sensitive: false,
+              whole_words: false,
+              priority: 0,
+              normalized_rules: [
+                { field: 'probability', action: 'ignored' },
+              ],
+              issues: ['regex'],
+            },
+          ],
+        },
+      ],
+    })
+  )
+  expect(parsed?.books[0].entries[0].normalized_rules).toHaveLength(1)
+  expect(parsed?.books[0].entries[0].issues).toEqual(['regex'])
 })

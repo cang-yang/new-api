@@ -39,6 +39,16 @@ beforeEach(async () => {
 function mount(element: ReactNode) {
   return render(<I18nextProvider i18n={i18n}>{element}</I18nextProvider>)
 }
+
+async function chooseComboboxOption(
+  user: ReturnType<typeof userEvent.setup>,
+  trigger: HTMLElement,
+  option: string | RegExp
+) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
+
 test('unknown tool schemas open one level at a time instead of flattening paths', async () => {
   const user = userEvent.setup()
   mount(
@@ -57,9 +67,10 @@ test('unknown tool schemas open one level at a time instead of flattening paths'
   expect(
     screen.queryByText('$["changes"][0]["fields"]["body"]')
   ).not.toBeInTheDocument()
-  await user.selectOptions(
+  await chooseComboboxOption(
+    user,
     screen.getByRole('combobox', { name: 'Data location' }),
-    '0'
+    'Data root'
   )
   expect(screen.getByText('false')).toBeVisible()
 })
@@ -128,18 +139,20 @@ test('mixed output keeps answers, tools and reasoning selectable without treatin
     />
   )
   expect(screen.getByText('Answer text')).toBeVisible()
-  await user.selectOptions(
+  await chooseComboboxOption(
+    user,
     screen.getByRole('combobox', { name: 'Reading section' }),
-    screen.getByRole('option', { name: /unknown_tool/ })
+    /unknown_tool/
   )
   expect(
     screen.getByText('Tool call arguments, not an execution result.')
   ).toBeVisible()
   expect(screen.getByText('<script>safe text</script>')).toBeVisible()
   expect(document.querySelector('script')).toBeNull()
-  await user.selectOptions(
+  await chooseComboboxOption(
+    user,
     screen.getByRole('combobox', { name: 'Reading section' }),
-    screen.getByRole('option', { name: /Reasoning/ })
+    /Reasoning/
   )
   expect(screen.getByText('Separate analysis')).toBeVisible()
 })
@@ -256,9 +269,10 @@ test('empty leading messages remain selectable but do not hide the first readabl
     />
   )
   expect(screen.getByText('Read this request first')).toBeVisible()
-  await user.selectOptions(
+  await chooseComboboxOption(
+    user,
     screen.getByRole('combobox', { name: 'Reading section' }),
-    'messages:0'
+    /^1 · System/
   )
   expect(screen.getByText('This message has no text content.')).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Copy document' }))
@@ -345,9 +359,10 @@ test.each([false, true])(
         ).getByRole('button', { name: /80 ·/ })
       ).toHaveAttribute('aria-current', 'true')
     }
-    await user.selectOptions(
+    await chooseComboboxOption(
+      user,
       screen.getByRole('combobox', { name: 'Reading section' }),
-      'messages:79'
+      /^80 · User/
     )
     expect(
       within(

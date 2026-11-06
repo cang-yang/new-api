@@ -38,24 +38,24 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 			return book, fmt.Errorf("invalid worldbook enabled flag")
 		}
 	}
-	var bookRestrictions []string
+	var bookRestrictions []dto.WorldbookNormalizedRule
 	for field, value := range root {
 		switch field {
 		case "id", "name", "description", "enabled", "entries", "warnings":
 		case "extensions":
 			var extensions map[string]json.RawMessage
 			if err := common.Unmarshal(value, &extensions); err != nil {
-				bookRestrictions = append(bookRestrictions, "book.extensions")
+				bookRestrictions = append(bookRestrictions, worldbookIgnoredRule("book.extensions", "invalid book extensions were ignored"))
 				continue
 			}
 			for key, setting := range extensions {
 				if worldbookBehaviorActive(setting) {
-					bookRestrictions = append(bookRestrictions, "book.extensions."+key)
+					bookRestrictions = append(bookRestrictions, worldbookIgnoredRule("book.extensions."+key, "book extensions are not used by the gateway"))
 				}
 			}
 		default:
 			if worldbookBehaviorActive(value) {
-				bookRestrictions = append(bookRestrictions, "book."+field)
+				bookRestrictions = append(bookRestrictions, worldbookIgnoredRule("book."+field, "book-level override is not used by the gateway"))
 			}
 		}
 	}
@@ -144,13 +144,21 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 			if fields["insertion_order"] != nil {
 				_ = common.Unmarshal(fields["insertion_order"], &entry.Priority)
 			}
+			if value := fields["preventRecursion"]; value != nil && string(value) != "null" {
+				var preventRecursion bool
+				if err := common.Unmarshal(value, &preventRecursion); err != nil {
+					entry.Issues = append(entry.Issues, "preventRecursion")
+				} else {
+					entry.PreventRecursion = preventRecursion
+				}
+			}
 			var selective bool
 			_ = common.Unmarshal(fields["selective"], &selective)
 			for _, field := range []string{"constant", "enabled", "disable", "caseSensitive", "case_sensitive", "matchWholeWords", "whole_words", "selective"} {
 				if value := fields[field]; value != nil && string(value) != "null" {
 					var flag bool
 					if err := common.Unmarshal(value, &flag); err != nil {
-						entry.Unsupported = append(entry.Unsupported, field)
+						entry.Issues = append(entry.Issues, field)
 					}
 				}
 			}
@@ -158,7 +166,7 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 				if value := fields[field]; value != nil && string(value) != "null" {
 					var number int
 					if err := common.Unmarshal(value, &number); err != nil {
-						entry.Unsupported = append(entry.Unsupported, field)
+						entry.Issues = append(entry.Issues, field)
 					}
 				}
 			}
@@ -175,19 +183,18 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 				case 3:
 					entry.SecondaryLogic = "all"
 				default:
-					entry.Unsupported = append(entry.Unsupported, "selectiveLogic")
+					entry.Issues = append(entry.Issues, "selectiveLogic")
 				}
 			}
 			for _, key := range append(slices.Clone(entry.Keys), entry.SecondaryKeys...) {
 				if _, err := dto.CompileWorldbookKey(key, entry.CaseSensitive); err != nil {
-					entry.Unsupported = append(entry.Unsupported, "regex")
+					entry.Issues = append(entry.Issues, "regex")
 					break
 				}
 			}
-			slices.Sort(entry.Unsupported)
-			entry.Unsupported = slices.Compact(entry.Unsupported)
-			if len(entry.Unsupported) > 0 {
-				book.Warnings = append(book.Warnings, fmt.Sprintf("Entry %s is blocked by unsupported rules: %s", entry.ID, strings.Join(entry.Unsupported, ", ")))
+			entry.Issues = compactWorldbookStrings(entry.Issues)
+			if len(entry.Issues) > 0 {
+				book.Warnings = append(book.Warnings, fmt.Sprintf("Entry %s has invalid data: %s", entry.ID, strings.Join(entry.Issues, ", ")))
 			}
 			book.Entries = append(book.Entries, entry)
 		}
@@ -216,23 +223,24 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 				}
 			}
 		}
-		restrictions := worldbookImportedEntryRestrictions(fields)
+		normalizedRules := worldbookImportedEntryNormalization(fields)
 		if canonical {
-			// A canonical DTO does not interpret ST aliases. Keep any active
-			// aliases blocking rather than silently weakening their conditions.
 			for _, alias := range []string{"key", "keysecondary", "disable", "caseSensitive", "matchWholeWords", "order", "insertion_order", "selective", "selectiveLogic"} {
 				if worldbookBehaviorActive(fields[alias]) {
-					restrictions = append(restrictions, alias)
+					normalizedRules = append(normalizedRules, worldbookIgnoredRule(alias, "canonical entry repeats a SillyTavern alias"))
 				}
 			}
 		}
-		book.Entries[i].Unsupported = append(book.Entries[i].Unsupported, restrictions...)
-		if len(restrictions) > 0 {
+		book.Entries[i].NormalizedRules = append(book.Entries[i].NormalizedRules, normalizedRules...)
+		if len(normalizedRules) > 0 {
 			if len(book.Entries[i].Source) == 0 {
 				book.Entries[i].Source = entries[i]
 			}
-			slices.Sort(restrictions)
-			book.Warnings = append(book.Warnings, fmt.Sprintf("Entry %s is blocked by unsupported rules: %s", book.Entries[i].ID, strings.Join(restrictions, ", ")))
+			fields := make([]string, 0, len(normalizedRules))
+			for _, rule := range normalizedRules {
+				fields = append(fields, rule.Field)
+			}
+			book.Warnings = append(book.Warnings, fmt.Sprintf("Entry %s was normalized: %s", book.Entries[i].ID, strings.Join(compactWorldbookStrings(fields), ", ")))
 		}
 		if book.Entries[i].Keys == nil {
 			book.Entries[i].Keys = []string{}
@@ -240,9 +248,9 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 		if book.Entries[i].SecondaryKeys == nil {
 			book.Entries[i].SecondaryKeys = []string{}
 		}
-		book.Entries[i].Unsupported = append(book.Entries[i].Unsupported, bookRestrictions...)
-		slices.Sort(book.Entries[i].Unsupported)
-		book.Entries[i].Unsupported = slices.Compact(book.Entries[i].Unsupported)
+		book.Entries[i].NormalizedRules = append(book.Entries[i].NormalizedRules, bookRestrictions...)
+		book.Entries[i].NormalizedRules = compactWorldbookNormalizedRules(book.Entries[i].NormalizedRules)
+		book.Entries[i].Issues = compactWorldbookStrings(book.Entries[i].Issues)
 		original := book.Entries[i].ID
 		if original == "" {
 			original = strconv.Itoa(i)
@@ -256,8 +264,11 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 		book.Entries = []dto.WorldbookEntry{}
 	}
 	if len(bookRestrictions) > 0 {
-		slices.Sort(bookRestrictions)
-		book.Warnings = append(book.Warnings, "Book is blocked by unsupported rules: "+strings.Join(bookRestrictions, ", "))
+		fields := make([]string, 0, len(bookRestrictions))
+		for _, rule := range bookRestrictions {
+			fields = append(fields, rule.Field)
+		}
+		book.Warnings = append(book.Warnings, "Book was normalized: "+strings.Join(compactWorldbookStrings(fields), ", "))
 	}
 	config := dto.WorldbookConfig{Books: []dto.Worldbook{book}}
 	if err := config.Validate(); err != nil {
@@ -266,42 +277,79 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 	return book, nil
 }
 
-// Inspect active fields on both canonical and ST entries. The optional source
-// is inspection data, so a user who explicitly simplified an entry is not
-// reblocked merely because its original source retained unsupported fields.
-func worldbookImportedEntryRestrictions(fields map[string]json.RawMessage) []string {
-	var restrictions []string
+// Inspect active fields on both canonical and ST entries. Gateway-only
+// normalization keeps imported entries runnable while making every ignored
+// behavior visible in the editor.
+func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dto.WorldbookNormalizedRule {
+	var rules []dto.WorldbookNormalizedRule
 	for key, value := range fields {
 		switch key {
-		case "uid", "id", "name", "comment", "content", "key", "keys", "keysecondary", "secondary_keys", "constant", "enabled", "disable", "caseSensitive", "case_sensitive", "matchWholeWords", "whole_words", "order", "insertion_order", "selective", "selectiveLogic", "position", "displayIndex", "addMemo", "memo", "priority", "secondary_logic", "unsupported", "source":
+		case "uid", "id", "name", "comment", "content", "key", "keys", "keysecondary", "secondary_keys", "constant", "enabled", "disable", "caseSensitive", "case_sensitive", "matchWholeWords", "whole_words", "order", "insertion_order", "selective", "selectiveLogic", "priority", "secondary_logic", "normalized_rules", "issues", "prevent_recursion", "source":
 		case "extensions":
 			var extensions map[string]json.RawMessage
 			if err := common.Unmarshal(value, &extensions); err != nil {
-				restrictions = append(restrictions, key)
+				rules = append(rules, worldbookIgnoredRule(key, "invalid extensions were ignored"))
 				continue
 			}
 			for extension, setting := range extensions {
 				switch extension {
 				case "position", "depth", "display_index":
+					if worldbookBehaviorActive(setting) {
+						rules = append(rules, worldbookIgnoredRule("extensions."+extension, "per-entry placement is handled by the global injection mode"))
+					}
 					continue
 				}
 				if worldbookBehaviorActive(setting) {
-					restrictions = append(restrictions, "extensions."+extension)
+					rules = append(rules, worldbookIgnoredRule("extensions."+extension, "extension behavior is not used by the gateway"))
 				}
 			}
-		case "probability":
-			var probability float64
-			if err := common.Unmarshal(value, &probability); err != nil || probability < 100 {
-				restrictions = append(restrictions, key)
+		case "probability", "useProbability":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookIgnoredRule(key, "probability is treated as always eligible after matching"))
 			}
-		case "useProbability":
+		case "position", "displayIndex", "depth", "characterFilter", "group", "groupWeight", "groupScoring", "sticky", "cooldown", "delay", "role":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookIgnoredRule(key, "field is not used by the gateway"))
+			}
+		case "addMemo", "memo":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookIgnoredRule(key, "memo data is not used by the gateway"))
+			}
+		case "unsupported":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookIgnoredRule(key, "legacy unsupported metadata no longer blocks execution"))
+			}
 		default:
 			if worldbookBehaviorActive(value) {
-				restrictions = append(restrictions, key)
+				rules = append(rules, worldbookIgnoredRule(key, "unknown imported behavior is ignored"))
 			}
 		}
 	}
-	return restrictions
+	return compactWorldbookNormalizedRules(rules)
+}
+
+func worldbookIgnoredRule(field, detail string) dto.WorldbookNormalizedRule {
+	return dto.WorldbookNormalizedRule{Field: field, Action: "ignored", Detail: detail}
+}
+
+func compactWorldbookStrings(values []string) []string {
+	slices.Sort(values)
+	return slices.Compact(values)
+}
+
+func compactWorldbookNormalizedRules(rules []dto.WorldbookNormalizedRule) []dto.WorldbookNormalizedRule {
+	slices.SortFunc(rules, func(a, b dto.WorldbookNormalizedRule) int {
+		if order := strings.Compare(a.Field, b.Field); order != 0 {
+			return order
+		}
+		if order := strings.Compare(a.Action, b.Action); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Detail, b.Detail)
+	})
+	return slices.CompactFunc(rules, func(a, b dto.WorldbookNormalizedRule) bool {
+		return a == b
+	})
 }
 
 func worldbookBehaviorActive(value json.RawMessage) bool {

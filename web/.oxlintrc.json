@@ -48,6 +48,17 @@
     "no-nested-ternary": "error",
     "no-new-wrappers": "error",
     "no-regex-spaces": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "@/components/ui/native-select",
+            "message": "Use Select for short lists or Combobox for long lists."
+          }
+        ]
+      }
+    ],
     "no-unsafe-finally": "warn",
     "no-unsafe-negation": "error",
     "no-unused-expressions": "warn",

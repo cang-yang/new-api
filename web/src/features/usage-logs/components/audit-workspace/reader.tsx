@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Combobox } from '@/components/ui/combobox'
 import { cn } from '@/lib/utils'
 
 import {
@@ -83,7 +83,7 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
   const { t } = useTranslation()
   const [path, setPath] = useState<string[]>([])
   const [page, setPage] = useState(0)
-  const locationRef = useRef<HTMLSelectElement>(null)
+  const locationRef = useRef<HTMLInputElement>(null)
   const value = valueAtPath(props.value, path)
   const structured = value !== null && typeof value === 'object'
   const entries = structured ? Object.entries(value) : []
@@ -114,28 +114,27 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
           >
             <ArrowLeft className='size-4' />
           </Button>
-          <NativeSelect
+          <Combobox
             ref={locationRef}
             className='min-w-0 flex-1'
             aria-label={t('Data location')}
             value={String(path.length)}
-            onChange={(event) =>
-              navigate(path.slice(0, Number(event.target.value)))
+            onValueChange={(value) =>
+              navigate(path.slice(0, Number(value ?? 0)))
             }
-          >
-            <NativeSelectOption value='0'>{t('Data root')}</NativeSelectOption>
-            {path.map((_, index) => (
-              <NativeSelectOption
-                key={JSON.stringify(path.slice(0, index + 1))}
-                value={String(index + 1)}
-              >
-                {path
+            searchPlaceholder={t('Search data locations...')}
+            emptyText={t('No locations found')}
+            options={[
+              { value: '0', label: t('Data root') },
+              ...path.map((_, index) => ({
+                value: String(index + 1),
+                label: path
                   .slice(0, index + 1)
                   .map((part) => JSON.stringify(part))
-                  .join(' / ')}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+                  .join(' / '),
+              })),
+            ]}
+          />
           <CopyButton
             value={displayValue(value)}
             size='sm'

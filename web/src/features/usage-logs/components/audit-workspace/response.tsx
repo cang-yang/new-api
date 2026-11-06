@@ -19,7 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import type { AuditCapture } from '../../lib/audit-workspace'
@@ -134,18 +140,30 @@ export function AuditResponse(props: {
               />
             ) : (
               <>
-                <NativeSelect
-                  aria-label={t('Comparison source')}
+                <Select
                   value={mobileSource}
-                  onChange={(event) => setMobileSource(event.target.value)}
-                  className='m-2 shrink-0 lg:hidden'
+                  onValueChange={(value) => {
+                    if (value) setMobileSource(value)
+                  }}
+                  items={sources.map((source) => ({
+                    value: source.id,
+                    label: source.title,
+                  }))}
                 >
-                  {sources.map((source) => (
-                    <NativeSelectOption key={source.id} value={source.id}>
-                      {source.title}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                  <SelectTrigger
+                    aria-label={t('Comparison source')}
+                    className='m-2 shrink-0 lg:hidden'
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sources.map((source) => (
+                      <SelectItem key={source.id} value={source.id}>
+                        {source.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <div className='flex min-h-0 min-w-0 flex-1 overflow-hidden lg:divide-x'>
                   {sources.map((source) => (
                     <section

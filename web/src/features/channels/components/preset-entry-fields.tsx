@@ -21,7 +21,13 @@ import { useTranslation } from 'react-i18next'
 
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 import type { PresetEntry, PresetEntryChanges } from '../lib/sillytavern-editor'
@@ -49,18 +55,28 @@ export function PresetEntryFields(props: {
         {!props.entry.marker && (
           <Field data-disabled={props.disabled}>
             <FieldLabel htmlFor={`${id}-role`}>{t('Message role')}</FieldLabel>
-            <NativeSelect
-              id={`${id}-role`}
+            <Select
               value={props.entry.role}
               disabled={props.disabled}
-              onChange={(event) => update({ role: event.target.value })}
+              onValueChange={(value) => {
+                if (value) update({ role: value })
+              }}
+              items={['system', 'user', 'assistant'].map((role) => ({
+                value: role,
+                label: role,
+              }))}
             >
-              {['system', 'user', 'assistant'].map((role) => (
-                <NativeSelectOption key={role} value={role}>
-                  {role}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              <SelectTrigger id={`${id}-role`} className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {['system', 'user', 'assistant'].map((role) => (
+                  <SelectItem key={role} value={role}>
+                    {role}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
         )}
       </div>
@@ -74,21 +90,25 @@ export function PresetEntryFields(props: {
             <FieldLabel htmlFor={`${id}-position`}>
               {t('Injection placement')}
             </FieldLabel>
-            <NativeSelect
-              id={`${id}-position`}
-              value={props.entry.injection_position}
+            <Select
+              value={String(props.entry.injection_position)}
               disabled={props.disabled}
-              onChange={(event) =>
-                update({ injection_position: Number(event.target.value) })
+              onValueChange={(value) =>
+                update({ injection_position: Number(value) })
               }
+              items={[
+                { value: '0', label: t('In preset order') },
+                { value: '1', label: t('At chat depth') },
+              ]}
             >
-              <NativeSelectOption value={0}>
-                {t('In preset order')}
-              </NativeSelectOption>
-              <NativeSelectOption value={1}>
-                {t('At chat depth')}
-              </NativeSelectOption>
-            </NativeSelect>
+              <SelectTrigger id={`${id}-position`} className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='0'>{t('In preset order')}</SelectItem>
+                <SelectItem value='1'>{t('At chat depth')}</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
           {props.entry.injection_position === 1 && (
             <div className='flex shrink-0 flex-col gap-2'>

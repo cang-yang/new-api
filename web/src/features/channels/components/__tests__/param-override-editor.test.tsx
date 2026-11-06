@@ -16,8 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
 import { afterAll, beforeAll, expect, test, vi } from 'vitest'
 
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
@@ -46,11 +48,22 @@ afterAll(() => {
   }
 })
 
+function renderEditor(children: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      {children}
+    </QueryClientProvider>
+  )
+}
+
 async function renderPruneRules(
   conditions: { path: string; mode: string; value: string }[]
 ) {
   const onSave = vi.fn()
-  render(
+  renderEditor(
     <ParamOverrideEditorDialog
       open
       value={JSON.stringify({
@@ -197,7 +210,7 @@ test('an imported prune rule with an explicit empty type is preserved when saved
       { mode: 'prune_objects', path: 'messages', value: { type: '' } },
     ],
   }
-  render(
+  renderEditor(
     <ParamOverrideEditorDialog
       open
       value={JSON.stringify(payload)}
@@ -213,7 +226,7 @@ test('an imported prune rule with an explicit empty type is preserved when saved
 test('selecting Regex saves a literal Go pattern with the condition flags', async () => {
   const user = userEvent.setup()
   const onSave = vi.fn()
-  render(
+  renderEditor(
     <ParamOverrideEditorDialog
       open
       value={JSON.stringify({
@@ -285,7 +298,7 @@ test('importing and duplicating regex rules preserves patterns through JSON and 
     logic: 'AND',
     conditions,
   }
-  render(
+  renderEditor(
     <ParamOverrideEditorDialog
       open
       value={JSON.stringify({ operations: [operation] })}
@@ -313,7 +326,7 @@ test('prune-object conditions offer Regex and preserve literal and empty pattern
       conditions: [{ path: 'role', mode: 'full', value: 'system' }],
     },
   }
-  render(
+  renderEditor(
     <ParamOverrideEditorDialog
       open
       value={JSON.stringify({ operations: [operation] })}

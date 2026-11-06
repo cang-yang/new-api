@@ -23,7 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { CopyButton } from '@/components/copy-button'
 import { EmptyState } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Combobox } from '@/components/ui/combobox'
 
 import {
   displayValue,
@@ -196,18 +196,18 @@ export function DocumentBrowser(props: {
             <PanelLeft className='size-4' aria-hidden='true' />
             {t('Content index')}
           </Button>
-          <NativeSelect
+          <Combobox
             className='min-w-0 flex-1 sm:max-w-md'
             aria-label={t('Reading section')}
             value={active.id}
-            onChange={(event) => selectDocument(event.target.value)}
-          >
-            {props.documents.map((doc) => (
-              <NativeSelectOption key={doc.id} value={doc.id}>
-                {documentTitle(doc, t)}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            onValueChange={(value) => value && selectDocument(value)}
+            searchPlaceholder={t('Search sections...')}
+            emptyText={t('No sections found')}
+            options={props.documents.map((doc) => ({
+              value: doc.id,
+              label: documentTitle(doc, t),
+            }))}
+          />
           <span className='text-muted-foreground ml-auto shrink-0 text-xs tabular-nums'>
             {props.documents.indexOf(active) + 1} / {props.documents.length}
           </span>

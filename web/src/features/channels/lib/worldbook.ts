@@ -18,20 +18,28 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+export const worldbookNormalizedRuleSchema = z.object({
+  field: z.string(),
+  action: z.enum(['mapped', 'ignored']),
+  detail: z.string().optional(),
+})
+
 export const worldbookEntrySchema = z
   .object({
     id: z.string().min(1),
     name: z.string(),
-    content: z.string().max(128000),
+    content: z.string().max(64000),
     enabled: z.boolean(),
     constant: z.boolean(),
-    keys: z.array(z.string().max(512)).max(64),
-    secondary_keys: z.array(z.string().max(512)).max(64),
+    keys: z.array(z.string().max(256)).max(64),
+    secondary_keys: z.array(z.string().max(256)).max(64),
     secondary_logic: z.enum(['none', 'any', 'all', 'not_any', 'not_all']),
     case_sensitive: z.boolean(),
     whole_words: z.boolean(),
     priority: z.number().int(),
-    unsupported: z.array(z.string()).optional(),
+    prevent_recursion: z.boolean().optional(),
+    normalized_rules: z.array(worldbookNormalizedRuleSchema).optional(),
+    issues: z.array(z.string()).optional(),
     source: z.unknown().optional(),
   })
   .passthrough()
@@ -52,6 +60,10 @@ export const worldbookSchema = z
     scan_depth: z.number().int().min(1).max(50),
     max_chars: z.number().int().min(256).max(64000),
     recursive: z.boolean(),
+    injection_mode: z
+      .enum(['inherit', 'system_prelude', 'before_last_user', 'at_depth'])
+      .default('inherit'),
+    injection_depth: z.number().int().min(0).max(20).default(0),
     books: z.array(worldbookBookSchema).max(16),
   })
   .passthrough()
@@ -63,6 +75,12 @@ export const worldbookSchema = z
 export type WorldbookConfig = z.infer<typeof worldbookSchema>
 export type Worldbook = z.infer<typeof worldbookBookSchema>
 export type WorldbookEntry = z.infer<typeof worldbookEntrySchema>
+export type WorldbookPlacement = {
+  mode: 'inherit' | 'system_prelude' | 'before_last_user' | 'at_depth'
+  index: number
+  role: string
+  fallback: boolean
+}
 export type WorldbookPreviewResult = {
   text: string
   entries: {
@@ -73,6 +91,7 @@ export type WorldbookPreviewResult = {
     reason: string
   }[]
   warnings: string[]
+  placement?: WorldbookPlacement
 }
 
 export function createWorldbookConfig(): WorldbookConfig {
@@ -81,6 +100,8 @@ export function createWorldbookConfig(): WorldbookConfig {
     scan_depth: 4,
     max_chars: 12000,
     recursive: false,
+    injection_mode: 'inherit',
+    injection_depth: 0,
     books: [],
   }
 }

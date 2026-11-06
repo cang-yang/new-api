@@ -27,7 +27,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { api } from '@/lib/api'
@@ -196,24 +202,29 @@ function ScopedRegexPlayground(props: RegexPlaygroundProps) {
           </Field>
           <Field>
             <FieldLabel htmlFor={`${id}-role`}>{t('Message role')}</FieldLabel>
-            <NativeSelect
-              id={`${id}-role`}
-              className='w-full'
+            <Select
               value={stage === 'receive' ? 'assistant' : role}
               disabled={disabled || stage === 'receive'}
-              onChange={(event) => setRole(event.target.value)}
+              onValueChange={(value) => {
+                if (value) setRole(value)
+              }}
+              items={[
+                { value: 'user', label: t('User') },
+                { value: 'assistant', label: t('Assistant') },
+                { value: 'system', label: t('System') },
+                { value: 'developer', label: t('Developer') },
+              ]}
             >
-              <NativeSelectOption value='user'>{t('User')}</NativeSelectOption>
-              <NativeSelectOption value='assistant'>
-                {t('Assistant')}
-              </NativeSelectOption>
-              <NativeSelectOption value='system'>
-                {t('System')}
-              </NativeSelectOption>
-              <NativeSelectOption value='developer'>
-                {t('Developer')}
-              </NativeSelectOption>
-            </NativeSelect>
+              <SelectTrigger id={`${id}-role`} className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='user'>{t('User')}</SelectItem>
+                <SelectItem value='assistant'>{t('Assistant')}</SelectItem>
+                <SelectItem value='system'>{t('System')}</SelectItem>
+                <SelectItem value='developer'>{t('Developer')}</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
           <Field data-invalid={!validDepth}>
             <FieldLabel htmlFor={`${id}-depth`}>

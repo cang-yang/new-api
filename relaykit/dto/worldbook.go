@@ -12,12 +12,21 @@ import (
 
 const MaxWorldbookBytes = 6 << 20
 
+const (
+	WorldbookInjectionInherit        = "inherit"
+	WorldbookInjectionSystemPrelude  = "system_prelude"
+	WorldbookInjectionBeforeLastUser = "before_last_user"
+	WorldbookInjectionAtDepth        = "at_depth"
+)
+
 type WorldbookConfig struct {
-	Enabled   bool        `json:"enabled"`
-	ScanDepth int         `json:"scan_depth"`
-	MaxChars  int         `json:"max_chars"`
-	Recursive bool        `json:"recursive"`
-	Books     []Worldbook `json:"books"`
+	Enabled        bool        `json:"enabled"`
+	ScanDepth      int         `json:"scan_depth"`
+	MaxChars       int         `json:"max_chars"`
+	Recursive      bool        `json:"recursive"`
+	InjectionMode  string      `json:"injection_mode,omitempty"`
+	InjectionDepth int         `json:"injection_depth,omitempty"`
+	Books          []Worldbook `json:"books"`
 }
 
 type Worldbook struct {
@@ -29,19 +38,34 @@ type Worldbook struct {
 }
 
 type WorldbookEntry struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name"`
-	Content        string          `json:"content"`
-	Enabled        bool            `json:"enabled"`
-	Constant       bool            `json:"constant"`
-	Keys           []string        `json:"keys"`
-	SecondaryKeys  []string        `json:"secondary_keys"`
-	SecondaryLogic string          `json:"secondary_logic"`
-	CaseSensitive  bool            `json:"case_sensitive"`
-	WholeWords     bool            `json:"whole_words"`
-	Priority       int             `json:"priority"`
-	Unsupported    []string        `json:"unsupported,omitempty"`
-	Source         json.RawMessage `json:"source,omitempty"`
+	ID               string                    `json:"id"`
+	Name             string                    `json:"name"`
+	Content          string                    `json:"content"`
+	Enabled          bool                      `json:"enabled"`
+	Constant         bool                      `json:"constant"`
+	Keys             []string                  `json:"keys"`
+	SecondaryKeys    []string                  `json:"secondary_keys"`
+	SecondaryLogic   string                    `json:"secondary_logic"`
+	CaseSensitive    bool                      `json:"case_sensitive"`
+	WholeWords       bool                      `json:"whole_words"`
+	Priority         int                       `json:"priority"`
+	PreventRecursion bool                      `json:"prevent_recursion,omitempty"`
+	NormalizedRules  []WorldbookNormalizedRule `json:"normalized_rules,omitempty"`
+	Issues           []string                  `json:"issues,omitempty"`
+	Source           json.RawMessage           `json:"source,omitempty"`
+}
+
+type WorldbookNormalizedRule struct {
+	Field  string `json:"field"`
+	Action string `json:"action"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type WorldbookPlacement struct {
+	Mode     string `json:"mode"`
+	Index    int    `json:"index"`
+	Role     string `json:"role"`
+	Fallback bool   `json:"fallback"`
 }
 
 // Limits returns effective defaults without modifying cached channel settings.
@@ -63,6 +87,11 @@ func (c *WorldbookConfig) Validate() error {
 	depth, budget := c.Limits()
 	if depth < 1 || depth > 50 || budget < 256 || budget > 64000 || len(c.Books) > 16 {
 		return fmt.Errorf("worldbook settings exceed supported limits")
+	}
+	switch c.InjectionMode {
+	case "", WorldbookInjectionInherit, WorldbookInjectionSystemPrelude, WorldbookInjectionBeforeLastUser, WorldbookInjectionAtDepth:
+	default:
+		return fmt.Errorf("invalid worldbook injection mode")
 	}
 	count := 0
 	for _, book := range c.Books {
@@ -90,7 +119,7 @@ func (c *WorldbookConfig) Validate() error {
 					if utf8.RuneCountInString(key) > 256 {
 						return fmt.Errorf("worldbook key exceeds 256 characters")
 					}
-					if len(entry.Unsupported) == 0 {
+					if len(entry.Issues) == 0 {
 						if _, err := CompileWorldbookKey(key, entry.CaseSensitive); err != nil {
 							return err
 						}

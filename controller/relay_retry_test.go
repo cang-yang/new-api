@@ -178,6 +178,8 @@ func TestWorldbookAPIContract(t *testing.T) {
 	assert.Equal(t, "included", gjson.Get(recorder.Body.String(), "data.entries.0.status").String())
 	assert.Equal(t, "included", gjson.Get(recorder.Body.String(), "data.entries.0.reason").String())
 	assert.True(t, gjson.Get(recorder.Body.String(), "data.warnings").IsArray())
+	assert.Equal(t, "system_prelude", gjson.Get(recorder.Body.String(), "data.placement.mode").String())
+	assert.Equal(t, int64(0), gjson.Get(recorder.Body.String(), "data.placement.index").Int())
 }
 
 func TestSillyTavernInactivePresetPreservesGatewayRequest(t *testing.T) {

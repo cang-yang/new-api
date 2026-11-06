@@ -23,15 +23,18 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
+import type { WorldbookConfig } from '../../lib/worldbook'
 import { WorldbookSettings } from '../worldbook-settings'
 
 afterEach(() => vi.restoreAllMocks())
 
-const config = {
+const config: WorldbookConfig = {
   enabled: true,
   scan_depth: 4,
   max_chars: 12000,
   recursive: false,
+  injection_mode: 'inherit',
+  injection_depth: 0,
   books: [
     {
       id: 'book',
@@ -109,6 +112,12 @@ test('preview uses backend results and disappears when input changes', async () 
           },
         ],
         warnings: [],
+        placement: {
+          mode: 'system_prelude',
+          index: 0,
+          role: 'system',
+          fallback: false,
+        },
       },
     },
   })
@@ -130,4 +139,60 @@ test('preview uses backend results and disappears when input changes', async () 
     expect(screen.queryByText('Selected background')).toBeNull()
   )
   post.mockRestore()
+})
+
+test('normalized worldbook entries remain directly toggleable', async () => {
+  const user = userEvent.setup()
+  const normalized = structuredClone(config)
+  normalized.books[0].entries[0].normalized_rules = [
+    { field: 'probability', action: 'ignored', detail: 'always eligible' },
+  ]
+  const onChange = mount(JSON.stringify(normalized))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  const toggle = screen.getByRole('switch', { name: 'Enable entry' })
+  expect(toggle).toBeEnabled()
+  await user.click(toggle)
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(
+    JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0].enabled
+  ).toBe(false)
+})
+
+test('invalid worldbook entries show the issue and keep the toggle editable', async () => {
+  const user = userEvent.setup()
+  const invalid = structuredClone(config)
+  invalid.books[0].entries[0].issues = ['regex']
+  mount(JSON.stringify(invalid))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  expect(screen.getByText(/Invalid data/)).toBeVisible()
+  expect(screen.getByText('regex')).toBeVisible()
+  expect(screen.getByRole('switch', { name: 'Enable entry' })).toBeEnabled()
+})
+
+test('searches worldbook entries and selects one with the keyboard', async () => {
+  const user = userEvent.setup()
+  const multiple = structuredClone(config)
+  multiple.books[0].entries.push({
+    ...multiple.books[0].entries[0],
+    id: 'tower',
+    name: 'Tower district',
+    content: 'Tower background',
+    keys: ['tower'],
+  })
+  mount(JSON.stringify(multiple))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+
+  const entry = screen.getByRole('combobox', { name: 'Entry' })
+  await user.click(entry)
+  await user.type(entry, 'tower')
+  expect(
+    screen.getByRole('option', { name: 'Tower district' })
+  ).toBeVisible()
+  await user.keyboard('{ArrowDown}{Enter}')
+
+  await waitFor(() =>
+    expect(screen.getByLabelText('Entry content')).toHaveValue(
+      'Tower background'
+    )
+  )
 })

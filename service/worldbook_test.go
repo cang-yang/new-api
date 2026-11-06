@@ -43,14 +43,16 @@ func TestWorldbookBudgetRecursionAndImport(t *testing.T) {
 	}}}}
 	result, err := MatchWorldbook(config, &dto.GeneralOpenAIRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "silver\n\nmoon\n\nstars", result.Text)
+	assert.Equal(t, "moon\n\nstars\n\nsilver", result.Text)
 	assert.Equal(t, "no_match", result.Entries[3].Reason)
 	assert.Equal(t, "budget", result.Entries[4].Reason)
 	assert.Equal(t, "duplicate", result.Entries[5].Reason)
 	book, err := ImportWorldbook("Lore", []byte(`{"entries":{"0":{"uid":0,"key":["moon"],"keysecondary":["night"],"selective":true,"selectiveLogic":1,"content":"lore","probability":50,"position":4}}}`))
 	require.NoError(t, err)
 	require.Len(t, book.Entries, 1)
-	assert.NotEmpty(t, book.Entries[0].Unsupported)
+	assert.Empty(t, book.Entries[0].Issues)
+	assertWorldbookNormalizedField(t, book.Entries[0], "probability")
+	assertWorldbookNormalizedField(t, book.Entries[0], "position")
 	assert.Equal(t, "not_all", book.Entries[0].SecondaryLogic)
 	assert.NotEmpty(t, book.Entries[0].Source)
 	config.Books[0].Entries = []dto.WorldbookEntry{{ID: "unicode", Enabled: true, Constant: true, Content: strings.Repeat("界", 256)}}
@@ -68,7 +70,7 @@ func TestWorldbookRegexAndValidation(t *testing.T) {
 	assert.Error(t, config.Validate(), "unsupported regex flag accepted")
 	book, err := ImportWorldbook("invalid regex", []byte(`{"entries":[{"key":["/(?=moon)/"],"content":"lore"}]}`))
 	require.NoError(t, err)
-	assert.NotEmpty(t, book.Entries[0].Unsupported, "invalid imported regex must be blocked")
+	assert.Contains(t, book.Entries[0].Issues, "regex", "invalid imported regex must be blocked")
 }
 
 func TestWorldbookSecondaryConditionsAndTextScope(t *testing.T) {
@@ -106,13 +108,13 @@ func TestWorldbookFinalPriorityAndImportedRestrictions(t *testing.T) {
 	}}}}
 	result, err := MatchWorldbook(config, &dto.GeneralOpenAIRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "priority\n\nsilver", result.Text)
+	assert.Equal(t, "silver\n\npriority", result.Text)
 	book, err := ImportWorldbook("malformed", []byte(`{"entries":[{"key":["moon"],"content":"lore","selective":"true"}]}`))
 	require.NoError(t, err)
-	assert.NotEmpty(t, book.Entries[0].Unsupported, "malformed restriction must block")
+	assert.NotEmpty(t, book.Entries[0].Issues, "malformed restriction must block")
 	book, err = ImportWorldbook("override", []byte(`{"scan_depth":2,"entries":[{"constant":true,"content":"lore"}]}`))
 	require.NoError(t, err)
-	assert.Contains(t, book.Entries[0].Unsupported, "book.scan_depth")
+	assertWorldbookNormalizedField(t, book.Entries[0], "book.scan_depth")
 	assert.NotNil(t, book.Entries[0].Keys)
 	assert.NotNil(t, book.Entries[0].SecondaryKeys)
 	book, err = ImportWorldbook("empty", []byte(`{"id":"exported","enabled":true,"entries":[]}`))
@@ -167,6 +169,50 @@ func TestWorldbookPresetHistoryAndRetryBase(t *testing.T) {
 	assert.Len(t, base.Messages, 2)
 }
 
+func TestWorldbookPlacementModes(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: "lore"}}}}}
+	base := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "reply"},
+		{Role: "user", Content: "second"},
+	}}
+	tests := []struct {
+		name  string
+		mode  string
+		depth int
+		index int
+	}{
+		{name: "system prelude", mode: dto.WorldbookInjectionSystemPrelude, index: 1},
+		{name: "before last user", mode: dto.WorldbookInjectionBeforeLastUser, index: 3},
+		{name: "at depth", mode: dto.WorldbookInjectionAtDepth, depth: 1, index: 2},
+		{name: "depth clamps", mode: dto.WorldbookInjectionAtDepth, depth: 99, index: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config.InjectionMode = test.mode
+			config.InjectionDepth = test.depth
+			compiled, _, err := ApplyWorldbook(config, base, base, PresetCompileTrace{})
+			require.NoError(t, err)
+			require.Greater(t, len(compiled.Messages), test.index)
+			assert.Equal(t, "system", compiled.Messages[test.index].Role)
+			assert.Equal(t, "lore", compiled.Messages[test.index].Content)
+		})
+	}
+}
+
+func TestWorldbookPlacementFallsBackWithoutUserMessage(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, InjectionMode: dto.WorldbookInjectionBeforeLastUser, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: "lore"}}}}}
+	base := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "system", Content: "system"}, {Role: "assistant", Content: "reply"}}}
+	compiled, trace, err := ApplyWorldbook(config, base, base, PresetCompileTrace{})
+	require.NoError(t, err)
+	require.Len(t, compiled.Messages, 3)
+	assert.Equal(t, "lore", compiled.Messages[1].Content)
+	require.NotNil(t, trace.Worldbook)
+	require.NotNil(t, trace.Worldbook.Placement)
+	assert.True(t, trace.Worldbook.Placement.Fallback)
+}
+
 func TestWorldbookMatchingWorkBoundPreservesConstants(t *testing.T) {
 	entries := make([]dto.WorldbookEntry, 600)
 	for i := range entries {
@@ -180,25 +226,59 @@ func TestWorldbookMatchingWorkBoundPreservesConstants(t *testing.T) {
 	assert.Contains(t, result.Warnings, "Worldbook matching stopped after its work limit")
 }
 
-func TestWorldbookImportDoesNotBypassRestrictions(t *testing.T) {
+func TestWorldbookImportNormalizesPersonalGatewaySemantics(t *testing.T) {
 	for _, raw := range []string{
 		`{"id":"book","enabled":true,"entries":[{"id":"entry","enabled":true,"constant":true,"content":"lore","sticky":3,"probability":50}]}`,
 		`{"entries":[{"constant":true,"content":"lore","sticky":3,"probability":50}]}`,
 	} {
 		book, err := ImportWorldbook("restrictions", []byte(raw))
 		require.NoError(t, err)
-		assert.Contains(t, book.Entries[0].Unsupported, "sticky")
-		assert.Contains(t, book.Entries[0].Unsupported, "probability")
+		assert.Empty(t, book.Entries[0].Issues)
+		assertWorldbookNormalizedField(t, book.Entries[0], "sticky")
+		assertWorldbookNormalizedField(t, book.Entries[0], "probability")
 	}
-	book, err := ImportWorldbook("simplified", []byte(`{"id":"book","enabled":true,"entries":[{"id":"entry","enabled":true,"constant":true,"content":"lore","keys":[],"secondary_keys":[],"secondary_logic":"none","unsupported":[],"source":{"sticky":3,"probability":50}}]}`))
+	book, err := ImportWorldbook("simplified", []byte(`{"id":"book","enabled":true,"entries":[{"id":"entry","enabled":true,"constant":true,"content":"lore","keys":[],"secondary_keys":[],"secondary_logic":"none","source":{"sticky":3,"probability":50}}]}`))
 	require.NoError(t, err)
-	assert.Empty(t, book.Entries[0].Unsupported, "inspection source must not reblock an explicitly simplified entry")
+	assert.Empty(t, book.Entries[0].Issues, "inspection source must not reblock an explicitly simplified entry")
+	assert.Empty(t, book.Entries[0].NormalizedRules)
 	for _, field := range []string{"key", "keys", "keysecondary", "secondary_keys"} {
 		for _, prefix := range []string{"", `"id":"book","enabled":true,`} {
 			_, err = ImportWorldbook("malformed", []byte(fmt.Sprintf(`{%s"entries":[{"key":["moon"],"selective":true,"selectiveLogic":2,"content":"lore",%q:[7]}]}`, prefix, field)))
 			assert.Error(t, err, "malformed alias %s must not weaken a trigger", field)
 		}
 	}
+}
+
+func TestWorldbookPreventRecursionStopsAssociation(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, Recursive: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+		{ID: "a", Enabled: true, Constant: true, Content: "silver", PreventRecursion: true},
+		{ID: "b", Enabled: true, Keys: []string{"silver"}, Content: "moon"},
+		{ID: "c", Enabled: true, Keys: []string{"moon"}, Content: "stars"},
+	}}}}
+	result, err := MatchWorldbook(config, &dto.GeneralOpenAIRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "silver", result.Text)
+}
+
+func TestWorldbookIssueOnlyBlocksMatching(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+		{ID: "invalid", Enabled: true, Constant: true, Content: "bad", Issues: []string{"regex"}},
+		{ID: "valid", Enabled: true, Constant: true, Content: "good"},
+	}}}}
+	result, err := MatchWorldbook(config, &dto.GeneralOpenAIRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "good", result.Text)
+	assert.Equal(t, "invalid", result.Entries[0].Reason)
+}
+
+func assertWorldbookNormalizedField(t *testing.T, entry dto.WorldbookEntry, field string) {
+	t.Helper()
+	for _, rule := range entry.NormalizedRules {
+		if rule.Field == field {
+			return
+		}
+	}
+	t.Fatalf("normalized field %q not found: %#v", field, entry.NormalizedRules)
 }
 
 func TestWorldbookRegexWholeWordAndBoundedMediaTail(t *testing.T) {

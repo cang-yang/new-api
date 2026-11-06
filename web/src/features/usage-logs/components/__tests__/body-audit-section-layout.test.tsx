@@ -40,6 +40,16 @@ vi.mock('../../api', () => ({
 }))
 const i18n = createInstance()
 let audit: BodyAudit
+
+async function chooseSelectOption(
+  user: ReturnType<typeof userEvent.setup>,
+  trigger: HTMLElement,
+  option: string
+) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
+
 beforeEach(async () => {
   vi.clearAllMocks()
   await i18n.init({
@@ -268,18 +278,20 @@ test('execution loads attempt bodies on demand and preserves configuration prove
   expect(getAudit).toHaveBeenCalledTimes(1)
   await user.click(screen.getByRole('tab', { name: 'Execution details' }))
   await waitFor(() => expect(getAudit).toHaveBeenCalledWith('request-1', true))
-  await user.selectOptions(
+  await chooseSelectOption(
+    user,
     screen.getByRole('combobox', { name: 'Attempt content' }),
-    'request'
+    'Attempt request'
   )
   expect(screen.queryByRole('tablist', { name: 'Display mode' })).toBeNull()
   expect(
     screen.getByRole('region', { name: 'Reading content' }).querySelector('pre')
       ?.textContent
   ).toBe('{\n  "x": 2\n}')
-  await user.selectOptions(
+  await chooseSelectOption(
+    user,
     screen.getByRole('combobox', { name: 'Attempt content' }),
-    'config'
+    'Execution config'
   )
   expect(await screen.findByText(/test-digest/)).toBeVisible()
   expect(screen.getByRole('button', { name: 'Copy data' })).toBeVisible()

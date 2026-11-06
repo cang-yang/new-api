@@ -24,9 +24,16 @@ import { useTranslation } from 'react-i18next'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import { Combobox } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -283,22 +290,26 @@ function ScopedWorldbookSettings(props: Props) {
                           <Label htmlFor='worldbook-book'>
                             {t('Worldbook')}
                           </Label>
-                          <NativeSelect
-                            id='worldbook-book'
-                            className='w-full'
-                            disabled={locked}
+                          <Select
                             value={book.id}
-                            onChange={(event) => {
-                              setBookID(event.target.value)
+                            onValueChange={(value) => {
+                              if (!value) return
+                              setBookID(value)
                               setEntryID('')
                             }}
+                            disabled={locked}
                           >
-                            {draft.books.map((item) => (
-                              <NativeSelectOption key={item.id} value={item.id}>
-                                {item.name}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
+                            <SelectTrigger id='worldbook-book' className='w-full'>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent alignItemWithTrigger={false}>
+                              {draft.books.map((item) => (
+                                <SelectItem key={item.id} value={item.id}>
+                                  {item.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
                         <Label className='h-8 gap-3'>
                           {t('Enable book')}
@@ -342,22 +353,32 @@ function ScopedWorldbookSettings(props: Props) {
                       {!!book.entries.length && (
                         <div className='space-y-2'>
                           <Label htmlFor='worldbook-entry'>{t('Entry')}</Label>
-                          <NativeSelect
-                            id='worldbook-entry'
-                            className='w-full'
+                          <Combobox
+                            value={entry?.id ?? null}
+                            onValueChange={(value) => {
+                              if (value) setEntryID(value)
+                            }}
+                            options={book.entries.map((item) => {
+                              let description: string | undefined
+                              if (item.issues?.length) {
+                                description = t('Invalid data')
+                              } else if (item.normalized_rules?.length) {
+                                description = t('Normalized for the gateway')
+                              }
+                              return {
+                                value: item.id,
+                                label: item.name || item.id,
+                                description,
+                              }
+                            })}
+                            aria-label={t('Entry')}
+                            placeholder={t('Search entries...')}
+                            searchPlaceholder={t('Search entries...')}
+                            emptyText={t('No entries found')}
                             disabled={locked}
-                            value={entry?.id}
-                            onChange={(event) => setEntryID(event.target.value)}
-                          >
-                            {book.entries.map((item) => (
-                              <NativeSelectOption key={item.id} value={item.id}>
-                                {item.name || item.id}
-                                {item.unsupported?.length
-                                  ? ` · ${t('Needs review')}`
-                                  : ''}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
+                            className='w-full'
+                            popupClassName='w-[min(42rem,calc(100vw-2rem))]'
+                          />
                         </div>
                       )}
                       {entry && (
@@ -448,6 +469,73 @@ function ScopedWorldbookSettings(props: Props) {
                       )}
                     </p>
                   </div>
+                  <div className='space-y-2'>
+                    <Label htmlFor='worldbook-injection-mode'>
+                      {t('Insertion position')}
+                    </Label>
+                    <Select
+                      value={draft.injection_mode}
+                      onValueChange={(value) =>
+                        setDraft({
+                          ...draft,
+                          injection_mode:
+                            value as WorldbookConfig['injection_mode'],
+                        })
+                      }
+                      disabled={locked}
+                    >
+                      <SelectTrigger
+                        id='worldbook-injection-mode'
+                        className='w-full'
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectItem value='inherit'>
+                          {t('Use preset marker when available')}
+                        </SelectItem>
+                        <SelectItem value='system_prelude'>
+                          {t('System prelude')}
+                        </SelectItem>
+                        <SelectItem value='before_last_user'>
+                          {t('Before the latest user message')}
+                        </SelectItem>
+                        <SelectItem value='at_depth'>
+                          {t('At a fixed conversation depth')}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Per-entry placement fields are normalized to this global position.'
+                      )}
+                    </p>
+                  </div>
+                  {draft.injection_mode === 'at_depth' && (
+                    <div className='space-y-2'>
+                      <Label htmlFor='worldbook-injection-depth'>
+                        {t('Conversation depth')}
+                      </Label>
+                      <Input
+                        id='worldbook-injection-depth'
+                        type='number'
+                        min={0}
+                        max={20}
+                        value={draft.injection_depth}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            injection_depth: Number(event.target.value),
+                          })
+                        }
+                      />
+                      <p className='text-muted-foreground text-xs'>
+                        {t(
+                          'Zero targets the latest user or assistant message. Values are clamped to 0-20.'
+                        )}
+                      </p>
+                    </div>
+                  )}
                 </fieldset>
               )}
               {tab === 'preview' && (

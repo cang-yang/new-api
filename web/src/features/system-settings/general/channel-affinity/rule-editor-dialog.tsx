@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Plus, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { Controller, useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -32,7 +32,6 @@ import {
 } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
   Select,
   SelectContent,
@@ -314,25 +313,50 @@ export function RuleEditorDialog(props: Props) {
 
         <div className='space-y-1.5'>
           <Label htmlFor='rule-session-mode'>{t('Session behavior')}</Label>
-          <NativeSelect
-            id='rule-session-mode'
-            className='w-full'
-            aria-describedby='rule-session-mode-description'
-            {...form.register('session_mode')}
-          >
-            <NativeSelectOption value='inherit'>
-              {t('Inherit global default')}
-            </NativeSelectOption>
-            <NativeSelectOption value='off'>
-              {t('Do not keep sessions')}
-            </NativeSelectOption>
-            <NativeSelectOption value='prefer'>
-              {t('Prefer the original channel, allow switching')}
-            </NativeSelectOption>
-            <NativeSelectOption value='strict'>
-              {t('Require the original channel')}
-            </NativeSelectOption>
-          </NativeSelect>
+          <Controller
+            control={form.control}
+            name='session_mode'
+            render={({ field }) => (
+              <Select
+                value={field.value ?? 'inherit'}
+                onValueChange={(value) => field.onChange(value)}
+                items={[
+                  { value: 'inherit', label: t('Inherit global default') },
+                  { value: 'off', label: t('Do not keep sessions') },
+                  {
+                    value: 'prefer',
+                    label: t('Prefer the original channel, allow switching'),
+                  },
+                  {
+                    value: 'strict',
+                    label: t('Require the original channel'),
+                  },
+                ]}
+              >
+                <SelectTrigger
+                  id='rule-session-mode'
+                  className='w-full'
+                  aria-describedby='rule-session-mode-description'
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='inherit'>
+                    {t('Inherit global default')}
+                  </SelectItem>
+                  <SelectItem value='off'>
+                    {t('Do not keep sessions')}
+                  </SelectItem>
+                  <SelectItem value='prefer'>
+                    {t('Prefer the original channel, allow switching')}
+                  </SelectItem>
+                  <SelectItem value='strict'>
+                    {t('Require the original channel')}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          />
           <p
             id='rule-session-mode-description'
             className='text-muted-foreground text-xs'

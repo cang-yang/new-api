@@ -24,6 +24,15 @@ import { api } from '@/lib/api'
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import { RoutingPolicySection } from '../routing-section'
 
+async function chooseSelectOption(
+  user: Pick<typeof userEvent, 'click'>,
+  trigger: HTMLElement,
+  option: string
+) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
+
 const options = {
   RetryTimes: '2',
   'channel_affinity_setting.enabled': 'true',
@@ -206,8 +215,14 @@ it('editing a rule and retries saves one draft without dropping transforms or ex
   const behavior = within(dialog).getByRole('combobox', {
     name: 'Session behavior',
   })
-  expect(behavior).toHaveValue('prefer')
-  await userEvent.selectOptions(behavior, 'strict')
+  expect(behavior).toHaveTextContent(
+    'Prefer the original channel, allow switching'
+  )
+  await chooseSelectOption(
+    userEvent,
+    behavior,
+    'Require the original channel'
+  )
   fireEvent.change(within(dialog).getByRole('textbox', { name: /^Name/ }), {
     target: { value: 'Renamed session' },
   })
@@ -378,7 +393,7 @@ it.each([
     const dialog = screen.getByRole('dialog')
     expect(
       within(dialog).getByRole('combobox', { name: 'Session behavior' })
-    ).toHaveValue('inherit')
+    ).toHaveTextContent('Inherit global default')
     expect(dialog).toHaveTextContent(`Global default: ${label}`)
   }
 )
@@ -431,8 +446,14 @@ it('editing a rule without a session mode saves the chosen override with the ret
   const behavior = within(dialog).getByRole('combobox', {
     name: 'Session behavior',
   })
-  expect(behavior).toHaveValue('prefer')
-  await userEvent.selectOptions(behavior, 'strict')
+  expect(behavior).toHaveTextContent(
+    'Prefer the original channel, allow switching'
+  )
+  await chooseSelectOption(
+    userEvent,
+    behavior,
+    'Require the original channel'
+  )
   fireEvent.change(within(dialog).getByRole('textbox', { name: /^Name/ }), {
     target: { value: 'Renamed rule' },
   })
@@ -472,9 +493,10 @@ it('switches a rule between inheritance and override while preserving other rule
     ).getByRole('button', { name: 'Edit Rule' })
   )
   let dialog = screen.getByRole('dialog')
-  await userEvent.selectOptions(
+  await chooseSelectOption(
+    userEvent,
     within(dialog).getByRole('combobox', { name: 'Session behavior' }),
-    'inherit'
+    'Inherit global default'
   )
   await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
   expect(
@@ -499,10 +521,11 @@ it('switches a rule between inheritance and override while preserving other rule
   dialog = screen.getByRole('dialog')
   expect(
     within(dialog).getByRole('combobox', { name: 'Session behavior' })
-  ).toHaveValue('inherit')
-  await userEvent.selectOptions(
+  ).toHaveTextContent('Inherit global default')
+  await chooseSelectOption(
+    userEvent,
     within(dialog).getByRole('combobox', { name: 'Session behavior' }),
-    'off'
+    'Do not keep sessions'
   )
   await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
   expect(
@@ -536,7 +559,7 @@ it('a new blank rule inherits the global default', async () => {
     within(screen.getByRole('dialog')).getByRole('combobox', {
       name: 'Session behavior',
     })
-  ).toHaveValue('inherit')
+  ).toHaveTextContent('Inherit global default')
 })
 
 it('refreshing settings preserves unsaved rule and retry edits', async () => {

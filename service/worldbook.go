@@ -22,9 +22,10 @@ type WorldbookDecision struct {
 }
 
 type WorldbookPreview struct {
-	Text     string              `json:"text"`
-	Entries  []WorldbookDecision `json:"entries"`
-	Warnings []string            `json:"warnings"`
+	Text      string                  `json:"text"`
+	Entries   []WorldbookDecision     `json:"entries"`
+	Warnings  []string                `json:"warnings"`
+	Placement *dto.WorldbookPlacement `json:"placement,omitempty"`
 }
 
 type worldbookCandidate struct {
@@ -78,8 +79,8 @@ func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 			decision := WorldbookDecision{BookID: book.ID, ID: entry.ID, Name: entry.Name, Status: "skipped", Reason: "no_match"}
 			if !config.Enabled || !book.Enabled || !entry.Enabled {
 				decision.Reason = "disabled"
-			} else if len(entry.Unsupported) > 0 {
-				decision.Reason = "unsupported"
+			} else if len(entry.Issues) > 0 {
+				decision.Reason = "invalid"
 			}
 			index := len(result.Entries)
 			result.Entries = append(result.Entries, decision)
@@ -126,7 +127,9 @@ func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 			seenContent[entry.Content] = true
 			used += cost
 			included = append(included, entry.Content)
-			association = append(association, entry.Content)
+			if !entry.PreventRecursion {
+				association = append(association, entry.Content)
+			}
 		}
 		if len(association) == 0 || work.exhausted {
 			break
@@ -141,15 +144,24 @@ func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 			}
 		}
 	}
-	// Association discovers entries in passes, while final placement follows
-	// the same stable priority order regardless of when a match was discovered.
-	included = included[:0]
+	// Association discovers entries in passes. Final placement puts higher
+	// priority entries later so they are closer to the end of the block.
+	orderedIncluded := make([]worldbookCandidate, 0, len(included))
 	for _, candidate := range candidates {
 		if result.Entries[candidate.index].Status == "included" {
-			included = append(included, candidate.entry.Content)
+			orderedIncluded = append(orderedIncluded, candidate)
 		}
 	}
+	slices.SortStableFunc(orderedIncluded, func(a, b worldbookCandidate) int {
+		return cmp.Compare(a.entry.Priority, b.entry.Priority)
+	})
+	included = included[:0]
+	for _, candidate := range orderedIncluded {
+		included = append(included, candidate.entry.Content)
+	}
 	result.Text = strings.Join(included, "\n\n")
+	placement := resolveWorldbookPlacement(config, request.Messages, PresetCompileTrace{})
+	result.Placement = &placement
 	if work.exhausted {
 		result.Warnings = append(result.Warnings, "Worldbook matching stopped after its work limit")
 	}
@@ -348,31 +360,26 @@ func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAI
 	}
 	trace.Messages = slices.Clone(trace.Messages)
 	if preview.Text != "" {
-		inserted := false
-		for _, message := range trace.Messages {
-			if (message.Identifier == "worldInfoBefore" || message.Identifier == "worldInfoAfter") && message.Index >= 0 && message.Index < len(compiled.Messages) {
-				if content, ok := compiled.Messages[message.Index].Content.(string); ok {
-					if content != "" {
-						content += "\n\n"
-					}
-					compiled.Messages[message.Index].Content = content + preview.Text
-					inserted = true
-					break
+		placement := resolveWorldbookPlacement(config, compiled.Messages, trace)
+		if placement.Mode == dto.WorldbookInjectionInherit && placement.Index >= 0 && placement.Index < len(compiled.Messages) {
+			if content, ok := compiled.Messages[placement.Index].Content.(string); ok {
+				if content != "" {
+					content += "\n\n"
 				}
+				compiled.Messages[placement.Index].Content = content + preview.Text
+				preview.Placement = &placement
 			}
-		}
-		if !inserted {
-			index := 0
-			for index < len(compiled.Messages) && (compiled.Messages[index].Role == "system" || compiled.Messages[index].Role == "developer") {
-				index++
-			}
-			compiled.Messages = insertWorldbookMessage(compiled.Messages, preview.Text)
+		} else {
+			index := max(0, min(placement.Index, len(compiled.Messages)))
+			compiled.Messages = insertWorldbookMessageAt(compiled.Messages, index, preview.Text)
 			for i := range trace.Messages {
 				if trace.Messages[i].Index >= index {
 					trace.Messages[i].Index++
 				}
 			}
 			trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: "system", Source: "worldbook"})
+			placement.Index = index
+			preview.Placement = &placement
 		}
 	}
 	// Empty markers were retained only to locate a possible insertion point.
@@ -405,18 +412,99 @@ func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAI
 		}
 	}
 	if config != nil {
-		trace.Worldbook = &WorldbookPreview{Entries: preview.Entries, Warnings: preview.Warnings}
+		trace.Worldbook = &WorldbookPreview{Entries: preview.Entries, Warnings: preview.Warnings, Placement: preview.Placement}
 	}
 	return compiled, trace, nil
 }
 
-func insertWorldbookMessage(messages []dto.Message, text string) []dto.Message {
-	index := 0
-	for index < len(messages) && (messages[index].Role == "system" || messages[index].Role == "developer") {
-		index++
-	}
+func insertWorldbookMessageAt(messages []dto.Message, index int, text string) []dto.Message {
+	index = max(0, min(index, len(messages)))
 	result := make([]dto.Message, 0, len(messages)+1)
 	result = append(result, messages[:index]...)
 	result = append(result, dto.Message{Role: "system", Content: text})
 	return append(result, messages[index:]...)
+}
+
+func resolveWorldbookPlacement(config *dto.WorldbookConfig, messages []dto.Message, trace PresetCompileTrace) dto.WorldbookPlacement {
+	mode := dto.WorldbookInjectionInherit
+	depth := 0
+	if config != nil {
+		if config.InjectionMode != "" {
+			mode = config.InjectionMode
+		}
+		depth = config.InjectionDepth
+	}
+	placement := dto.WorldbookPlacement{Mode: mode, Role: "system", Index: worldbookSystemPreludeIndex(messages)}
+	switch mode {
+	case dto.WorldbookInjectionInherit:
+		if index, ok := worldbookMarkerIndex(trace, messages); ok {
+			placement.Index = index
+			placement.Role = messages[index].Role
+			return placement
+		}
+		placement.Mode = dto.WorldbookInjectionSystemPrelude
+		placement.Fallback = true
+	case dto.WorldbookInjectionBeforeLastUser:
+		if index := worldbookLastRoleIndex(messages, "user"); index >= 0 {
+			placement.Index = index
+			return placement
+		}
+		placement.Mode = dto.WorldbookInjectionSystemPrelude
+		placement.Index = worldbookSystemPreludeIndex(messages)
+		placement.Fallback = true
+	case dto.WorldbookInjectionAtDepth:
+		if index := worldbookDepthIndex(messages, depth); index >= 0 {
+			placement.Index = index
+			return placement
+		}
+		placement.Mode = dto.WorldbookInjectionSystemPrelude
+		placement.Index = worldbookSystemPreludeIndex(messages)
+		placement.Fallback = true
+	case dto.WorldbookInjectionSystemPrelude:
+	}
+	return placement
+}
+
+func worldbookMarkerIndex(trace PresetCompileTrace, messages []dto.Message) (int, bool) {
+	for _, message := range trace.Messages {
+		if message.Identifier != "worldInfoBefore" && message.Identifier != "worldInfoAfter" {
+			continue
+		}
+		if message.Index >= 0 && message.Index < len(messages) {
+			return message.Index, true
+		}
+	}
+	return 0, false
+}
+
+func worldbookSystemPreludeIndex(messages []dto.Message) int {
+	index := 0
+	for index < len(messages) && (messages[index].Role == "system" || messages[index].Role == "developer") {
+		index++
+	}
+	return index
+}
+
+func worldbookLastRoleIndex(messages []dto.Message, role string) int {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == role {
+			return index
+		}
+	}
+	return -1
+}
+
+func worldbookDepthIndex(messages []dto.Message, depth int) int {
+	depth = max(0, min(depth, 20))
+	seen := 0
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role != "user" && messages[index].Role != "assistant" {
+			continue
+		}
+		if seen == depth {
+			return index
+		}
+		seen++
+	}
+	return -1
 }

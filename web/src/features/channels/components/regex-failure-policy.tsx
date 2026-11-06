@@ -20,7 +20,13 @@ import { useId } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 export function RegexFailurePolicy(props: {
   value: unknown
@@ -41,29 +47,45 @@ export function RegexFailurePolicy(props: {
           ? t('Embedded regex failure policy')
           : t('Regex failure policy')}
       </FieldLabel>
-      <NativeSelect
-        id={id}
+      <Select
         value={value}
         disabled={props.disabled}
-        aria-describedby={`${id}-help`}
-        onChange={(e) =>
+        onValueChange={(next) =>
           props.onChange(
-            e.target.value === 'legacy'
-              ? undefined
-              : (e.target.value as 'passthrough' | 'error')
+            next === 'legacy' ? undefined : (next as 'passthrough' | 'error')
           )
         }
+        items={[
+          {
+            value: 'legacy',
+            label: t('Inherited / legacy behavior (strict)'),
+          },
+          {
+            value: 'passthrough',
+            label: t('Keep original on failure (recommended for availability)'),
+          },
+          { value: 'error', label: t('Return an error on failure') },
+        ]}
       >
-        <NativeSelectOption value='legacy'>
-          {t('Inherited / legacy behavior (strict)')}
-        </NativeSelectOption>
-        <NativeSelectOption value='passthrough'>
-          {t('Keep original on failure (recommended for availability)')}
-        </NativeSelectOption>
-        <NativeSelectOption value='error'>
-          {t('Return an error on failure')}
-        </NativeSelectOption>
-      </NativeSelect>
+        <SelectTrigger
+          id={id}
+          className='w-full'
+          aria-describedby={`${id}-help`}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value='legacy'>
+            {t('Inherited / legacy behavior (strict)')}
+          </SelectItem>
+          <SelectItem value='passthrough'>
+            {t('Keep original on failure (recommended for availability)')}
+          </SelectItem>
+          <SelectItem value='error'>
+            {t('Return an error on failure')}
+          </SelectItem>
+        </SelectContent>
+      </Select>
       <FieldDescription id={`${id}-help`}>
         {value === 'passthrough'
           ? t(

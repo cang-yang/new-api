@@ -19,11 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { ConfirmDialog } from '@/components/confirm-dialog'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -36,41 +40,48 @@ export function WorldbookEntryFields(props: {
 }) {
   const { t } = useTranslation()
   const id = useId()
-  const [simplify, setSimplify] = useState(false)
   const [keys, setKeys] = useState(props.entry.keys.join('\n'))
   const [secondary, setSecondary] = useState(
     props.entry.secondary_keys.join('\n')
   )
-  const blocked = !!props.entry.unsupported?.length
+  const invalid = !!props.entry.issues?.length
+  const normalized = props.entry.normalized_rules ?? []
   const update = (patch: Partial<WorldbookEntry>) =>
     props.onChange({ ...props.entry, ...patch })
   return (
     <fieldset disabled={props.disabled} className='min-w-0 space-y-4'>
-      {blocked && (
+      {invalid && (
         <div
-          role='status'
-          className='bg-muted/40 space-y-2 rounded-lg border p-3 text-sm'
+          role='alert'
+          className='border-destructive/30 bg-destructive/5 space-y-2 rounded-lg border p-3 text-sm'
         >
-          <p>{t('This entry has unsupported conditions and will not run.')}</p>
+          <p>{t('Invalid data; this entry will not run.')}</p>
           <p className='text-muted-foreground text-xs break-words'>
-            {props.entry.unsupported?.join(' · ')}
+            {props.entry.issues?.join(' · ')}
           </p>
-          <Button
-            type='button'
-            size='sm'
-            variant='outline'
-            onClick={() => setSimplify(true)}
-          >
-            {t('Use supported conditions only')}
-          </Button>
         </div>
+      )}
+      {!!normalized.length && (
+        <details className='bg-muted/40 rounded-lg border p-3 text-sm'>
+          <summary className='cursor-pointer font-medium'>
+            {t('Normalized for the gateway')}
+          </summary>
+          <ul className='text-muted-foreground mt-2 space-y-1 text-xs'>
+            {normalized.map((rule) => (
+              <li key={`${rule.field}:${rule.action}:${rule.detail}`}>
+                <span className='font-medium'>{rule.field}</span>
+                {rule.detail ? ` · ${rule.detail}` : ''}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <Label htmlFor={`${id}-enabled`}>{t('Enable entry')}</Label>
         <Switch
           id={`${id}-enabled`}
           checked={props.entry.enabled}
-          disabled={blocked || props.disabled}
+          disabled={props.disabled}
           onCheckedChange={(enabled) => update({ enabled })}
         />
       </div>
@@ -85,25 +96,27 @@ export function WorldbookEntryFields(props: {
       <div className='grid gap-4 sm:grid-cols-2'>
         <div className='space-y-2'>
           <Label htmlFor={`${id}-trigger`}>{t('When to include')}</Label>
-          <NativeSelect
-            id={`${id}-trigger`}
-            className='w-full'
+          <Select
             value={props.entry.constant ? 'always' : 'keywords'}
-            onChange={(event) =>
-              update({ constant: event.target.value === 'always' })
+            onValueChange={(value) =>
+              update({ constant: value === 'always' })
             }
+            disabled={props.disabled}
           >
-            <NativeSelectOption value='keywords'>
-              {t('When keywords match')}
-            </NativeSelectOption>
-            <NativeSelectOption value='always'>
-              {t('Always include')}
-            </NativeSelectOption>
-          </NativeSelect>
+            <SelectTrigger id={`${id}-trigger`} className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectItem value='keywords'>
+                {t('When keywords match')}
+              </SelectItem>
+              <SelectItem value='always'>{t('Always include')}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className='space-y-2'>
           <Label htmlFor={`${id}-priority`}>
-            {t('Priority (higher first)')}
+            {t('Priority (higher near the end)')}
           </Label>
           <Input
             id={`${id}-priority`}
@@ -162,33 +175,40 @@ export function WorldbookEntryFields(props: {
               {t('Additional keyword conditions')}
             </summary>
             <div className='mt-3 space-y-3'>
-              <NativeSelect
-                aria-label={t('Additional keyword conditions')}
-                className='w-full'
+              <Select
                 value={props.entry.secondary_logic}
-                onChange={(event) =>
+                onValueChange={(value) =>
                   update({
-                    secondary_logic: event.target
-                      .value as WorldbookEntry['secondary_logic'],
+                    secondary_logic:
+                      value as WorldbookEntry['secondary_logic'],
                   })
                 }
+                disabled={props.disabled}
               >
-                <NativeSelectOption value='none'>
-                  {t('No additional condition')}
-                </NativeSelectOption>
-                <NativeSelectOption value='any'>
-                  {t('Also match any of these')}
-                </NativeSelectOption>
-                <NativeSelectOption value='all'>
-                  {t('Also match all of these')}
-                </NativeSelectOption>
-                <NativeSelectOption value='not_any'>
-                  {t('Must not match any of these')}
-                </NativeSelectOption>
-                <NativeSelectOption value='not_all'>
-                  {t('Must not match all of these')}
-                </NativeSelectOption>
-              </NativeSelect>
+                <SelectTrigger
+                  aria-label={t('Additional keyword conditions')}
+                  className='w-full'
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value='none'>
+                    {t('No additional condition')}
+                  </SelectItem>
+                  <SelectItem value='any'>
+                    {t('Also match any of these')}
+                  </SelectItem>
+                  <SelectItem value='all'>
+                    {t('Also match all of these')}
+                  </SelectItem>
+                  <SelectItem value='not_any'>
+                    {t('Must not match any of these')}
+                  </SelectItem>
+                  <SelectItem value='not_all'>
+                    {t('Must not match all of these')}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
               <Textarea
                 aria-label={t('Additional keywords')}
                 rows={3}
@@ -207,6 +227,24 @@ export function WorldbookEntryFields(props: {
           </details>
         </>
       )}
+      <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3'>
+        <div className='space-y-1'>
+          <Label htmlFor={`${id}-prevent-recursion`}>
+            {t('Prevent recursive matching')}
+          </Label>
+          <p className='text-muted-foreground text-xs'>
+            {t('This entry cannot trigger additional entries.')}
+          </p>
+        </div>
+        <Switch
+          id={`${id}-prevent-recursion`}
+          checked={!!props.entry.prevent_recursion}
+          disabled={props.disabled}
+          onCheckedChange={(prevent_recursion) =>
+            update({ prevent_recursion })
+          }
+        />
+      </div>
       <div className='space-y-2'>
         <Label htmlFor={`${id}-content`}>{t('Entry content')}</Label>
         <Textarea
@@ -217,19 +255,6 @@ export function WorldbookEntryFields(props: {
           onChange={(event) => update({ content: event.target.value })}
         />
       </div>
-      <ConfirmDialog
-        open={simplify}
-        onOpenChange={setSimplify}
-        title={t('Remove unsupported conditions?')}
-        desc={t(
-          'This changes when the entry can activate. Review the remaining keywords before enabling it. The original imported data is kept.'
-        )}
-        confirmText={t('Use supported conditions only')}
-        handleConfirm={() => {
-          update({ unsupported: [], enabled: false })
-          setSimplify(false)
-        }}
-      />
     </fieldset>
   )
 }

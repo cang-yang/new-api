@@ -35,6 +35,15 @@ import { applyScriptPreparation } from '../../lib/preset-script-preparation'
 import { PresetScriptSettings } from '../preset-script-settings'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
 
+async function chooseSelectOption(
+  user: ReturnType<typeof userEvent.setup>,
+  trigger: HTMLElement,
+  option: string
+) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
@@ -425,7 +434,7 @@ test('editing an entry applies the draft and preserves marker content protection
     screen.getByRole('textbox', { name: 'Prompt content' }),
     'Revised content'
   )
-  await user.selectOptions(screen.getByLabelText('Message role'), 'user')
+  await chooseSelectOption(user, screen.getByLabelText('Message role'), 'user')
   expect(screen.getByLabelText('Saved config').textContent).not.toContain(
     'Revised content'
   )
@@ -452,8 +461,10 @@ test('preset failure policy remains inherited on unrelated changes and explicit 
   )
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   await user.click(screen.getByRole('tab', { name: 'Embedded regex scripts' }))
-  expect(screen.getByLabelText('Embedded regex failure policy')).toHaveValue(
-    'legacy'
+  expect(
+    screen.getByLabelText('Embedded regex failure policy')
+  ).toHaveTextContent(
+    'Inherited / legacy behavior (strict)'
   )
   await user.click(
     screen.getByRole('switch', { name: 'Enable embedded send-side regex' })
@@ -462,9 +473,10 @@ test('preset failure policy remains inherited on unrelated changes and explicit 
     JSON.parse(screen.getByLabelText('Saved config').textContent || '{}')
       .regex_failure_policy
   ).toBeUndefined()
-  await user.selectOptions(
+  await chooseSelectOption(
+    user,
     screen.getByLabelText('Embedded regex failure policy'),
-    'passthrough'
+    'Keep original on failure (recommended for availability)'
   )
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   expect(
@@ -897,7 +909,11 @@ test('depth fields are conditional and focus mode retains edited content', async
   render(<Editor />)
   await user.click(screen.getByRole('button', { name: 'Edit preset' }))
   expect(screen.queryByLabelText('Chat depth')).toBeNull()
-  await user.selectOptions(screen.getByLabelText('Injection placement'), '1')
+  await chooseSelectOption(
+    user,
+    screen.getByLabelText('Injection placement'),
+    'At chat depth'
+  )
   expect(screen.getByLabelText('Chat depth')).toHaveValue(0)
   expect(
     screen.getByText(

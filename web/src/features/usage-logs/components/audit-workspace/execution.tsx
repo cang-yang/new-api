@@ -22,7 +22,13 @@ import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
 import { Button } from '@/components/ui/button'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 
 import { getBodyAudit } from '../../api'
@@ -133,44 +139,63 @@ export function AuditExecution(props: { audit: BodyAudit }) {
         data-audit-chrome='execution'
         className='flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2'
       >
-        <NativeSelect
-          className='min-w-0 flex-1'
-          aria-label={t('Upstream attempt timeline')}
+        <Select
           value={String(selected.id)}
-          onChange={(event) => setSelectedId(Number(event.target.value))}
+          onValueChange={(value) => {
+            if (value) setSelectedId(Number(value))
+          }}
+          items={attempts.map((item) => ({
+            value: String(item.id),
+            label: `${t('Attempt {{number}}', { number: item.attempt_no + 1 })} · #${item.channel_id} · HTTP ${item.http_status}`,
+          }))}
         >
-          {attempts.map((item) => (
-            <NativeSelectOption key={item.id} value={String(item.id)}>
-              {t('Attempt {{number}}', { number: item.attempt_no + 1 })} · #
-              {item.channel_id} · HTTP {item.http_status}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          <SelectTrigger
+            className='min-w-0 flex-1'
+            aria-label={t('Upstream attempt timeline')}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {attempts.map((item) => (
+              <SelectItem key={item.id} value={String(item.id)}>
+                {t('Attempt {{number}}', { number: item.attempt_no + 1 })} · #
+                {item.channel_id} · HTTP {item.http_status}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button size='sm' variant='outline' onClick={() => setReplayOpen(true)}>
           {t('Replay selected attempt')}
         </Button>
-        <NativeSelect
-          className='w-full sm:w-auto'
-          aria-label={t('Attempt content')}
+        <Select
           value={part}
-          onChange={(event) => setPart(event.target.value)}
+          onValueChange={(value) => {
+            if (value) setPart(value)
+          }}
+          items={[
+            { value: 'overview', label: t('Overview') },
+            { value: 'request', label: t('Attempt request') },
+            { value: 'response', label: t('Attempt response') },
+            { value: 'diff', label: t('Changes from previous attempt') },
+            { value: 'config', label: t('Execution config') },
+          ]}
         >
-          <NativeSelectOption value='overview'>
-            {t('Overview')}
-          </NativeSelectOption>
-          <NativeSelectOption value='request'>
-            {t('Attempt request')}
-          </NativeSelectOption>
-          <NativeSelectOption value='response'>
-            {t('Attempt response')}
-          </NativeSelectOption>
-          <NativeSelectOption value='diff'>
-            {t('Changes from previous attempt')}
-          </NativeSelectOption>
-          <NativeSelectOption value='config'>
-            {t('Execution config')}
-          </NativeSelectOption>
-        </NativeSelect>
+          <SelectTrigger
+            className='w-full sm:w-auto'
+            aria-label={t('Attempt content')}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='overview'>{t('Overview')}</SelectItem>
+            <SelectItem value='request'>{t('Attempt request')}</SelectItem>
+            <SelectItem value='response'>{t('Attempt response')}</SelectItem>
+            <SelectItem value='diff'>
+              {t('Changes from previous attempt')}
+            </SelectItem>
+            <SelectItem value='config'>{t('Execution config')}</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       {multiple && query.isLoading && (
         <Skeleton className='m-4 min-h-24 flex-1' />

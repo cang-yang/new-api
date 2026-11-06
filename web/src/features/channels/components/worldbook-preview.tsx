@@ -70,7 +70,7 @@ export function WorldbookPreview(props: {
   const reasons: Record<string, string> = {
     included: t('Included'),
     disabled: t('Disabled'),
-    unsupported: t('Unsupported conditions'),
+    invalid: t('Invalid data'),
     no_match: t('No keyword match'),
     budget: t('Content limit reached'),
     duplicate: t('Duplicate content'),
@@ -107,6 +107,20 @@ export function WorldbookPreview(props: {
               {warning}
             </p>
           ))}
+          {result.placement && (
+            <div className='bg-muted/30 rounded-lg border p-3 text-sm'>
+              <p className='font-medium'>{t('Resolved insertion position')}</p>
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {t('Mode')}: {result.placement.mode} · {t('Message index')}:{' '}
+                {result.placement.index} · {t('Role')}:
+                {' '}
+                {result.placement.role}
+                {result.placement.fallback
+                  ? ` · ${t('Fallback applied')}`
+                  : ''}
+              </p>
+            </div>
+          )}
           <div className='divide-y rounded-lg border px-3'>
             {result.entries.map((entry) => (
               <div
