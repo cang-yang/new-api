@@ -492,7 +492,7 @@ func TestOaiResponsesHandlersKeepCacheWriteTTLSplit(t *testing.T) {
 	})
 
 	const usage = `"usage":{"input_tokens":12000,"output_tokens":0,"total_tokens":12000,"input_tokens_details":{"cached_tokens":4000,"cache_write_tokens":7000,"cache_write_tokens_details":{"ttl_30m_tokens":3000,"ttl_12h_tokens":4000}}}`
-	const response = `{"id":"resp_1","object":"response","model":"gpt-6-astra","status":"completed","output":[],` + usage + `}`
+	const response = `{"id":"resp_1","object":"response","model":"gpt-6-astra","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],` + usage + `}`
 	for _, tt := range []struct {
 		name, contentType, body string
 	}{

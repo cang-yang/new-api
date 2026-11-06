@@ -144,6 +144,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 	originalRequest := request
+	var rawWorldbookScanRequest *kitdto.GeneralOpenAIRequest
+	if chat, ok := request.(*kitdto.GeneralOpenAIRequest); ok {
+		if copied, copyErr := common.DeepCopy(chat); copyErr == nil {
+			rawWorldbookScanRequest = copied
+		}
+	}
 	defer service.ClosePresetScriptResponse(c)
 	initialChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	initialOtherSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
@@ -160,7 +166,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	originalRequest = request
 	relayInfo.Request = request
 	if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions {
-		compiled, trace, compileErr := compileSelectedSillyTavernPreset(c, originalRequest)
+		compiled, trace, compileErr := compileSelectedSillyTavernPreset(c, originalRequest, rawWorldbookScanRequest)
 		if compileErr != nil {
 			newAPIError = types.NewErrorWithStatusCode(compileErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			return
@@ -173,9 +179,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	initialCompiledRequest := relayInfo.Request
 	initialPresetAudit := relayInfo.PresetAudit
-	worldbookBase, _ := c.Get("worldbook_base_request")
-	worldbookBaseTrace, _ := c.Get("worldbook_base_trace")
-	worldbookScanRequest, _ := c.Get("worldbook_scan_request")
 
 	defer func() {
 		recovered := recover()
@@ -245,21 +248,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions {
 			if channel.Id != initialChannelID {
 				selectedSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
-				if !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName), presetRequestRetrySettings(selectedSettings.SillyTavernPreset, relayInfo.OriginModelName)) {
-					newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry a chat request across channels with different SillyTavern presets"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+				if !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName), presetRequestRetrySettings(selectedSettings.SillyTavernPreset, relayInfo.OriginModelName)) ||
+					!reflect.DeepEqual(worldbookRequestRetrySettings(initialOtherSettings.Worldbook), worldbookRequestRetrySettings(selectedSettings.Worldbook)) {
+					newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry a chat request across channels with different SillyTavern request processors"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 					break
 				}
 			}
 			relayInfo.Request, relayInfo.PresetAudit = initialCompiledRequest, initialPresetAudit
-			base, baseOK := worldbookBase.(*kitdto.GeneralOpenAIRequest)
-			source, sourceOK := worldbookScanRequest.(*kitdto.GeneralOpenAIRequest)
-			if baseOK && sourceOK {
-				trace, _ := worldbookBaseTrace.(service.PresetCompileTrace)
-				// Every attempt starts from the preset-only base. Scripts run
-				// once, while lore follows the channel selected for this attempt.
-				relayInfo.Request, trace = applySelectedWorldbook(c, source, base, trace)
-				relayInfo.PresetAudit = trace
-			}
 		}
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
@@ -370,6 +365,14 @@ func presetRequestRetrySettings(config *kitdto.SillyTavernPresetConfig, model st
 	return &copy
 }
 
+func worldbookRequestRetrySettings(config *kitdto.WorldbookConfig) *kitdto.WorldbookConfig {
+	if config == nil || !config.Enabled {
+		return nil
+	}
+	copy := *config
+	return &copy
+}
+
 func applySelectedRequestTextRegex(c *gin.Context, request kitdto.Request, modelName string) (kitdto.Request, error) {
 	settings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	compiled, err := service.ApplyRequestTextRegex(settings.ResponseTextFilter, settings.SillyTavernPreset, request, modelName)
@@ -403,29 +406,22 @@ func validatePresetScriptEndpoint(preset *kitdto.SillyTavernPresetConfig, model 
 	return nil
 }
 
-func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request) (kitdto.Request, any, error) {
-	if chat, ok := request.(*kitdto.GeneralOpenAIRequest); ok {
-		base, err := common.DeepCopy(chat)
-		if err == nil {
-			c.Set("worldbook_base_request", base)
-		}
-		c.Set("worldbook_base_trace", service.PresetCompileTrace{})
-		c.Set("worldbook_scan_request", chat)
-	}
+func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request, worldbookScanRequest *kitdto.GeneralOpenAIRequest) (kitdto.Request, service.PresetCompileTrace, error) {
+	var zero service.PresetCompileTrace
 	settings, ok := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	if !ok || settings.SillyTavernPreset == nil && settings.Worldbook == nil {
-		return request, nil, nil
+		return request, zero, nil
 	}
 	chatRequest, ok := request.(*kitdto.GeneralOpenAIRequest)
 	if !ok {
-		return request, nil, nil
+		return request, zero, nil
 	}
 	preset := settings.SillyTavernPreset
 	if preset != nil && len(preset.Models) > 0 && !slices.Contains(preset.Models, chatRequest.Model) {
 		preset = nil
 	}
 	if preset == nil && settings.Worldbook == nil {
-		return request, nil, nil
+		return request, zero, nil
 	}
 	channelSetting, _ := common.GetContextKeyType[kitdto.ChannelSettings](c, constant.ContextKeyChannelSetting)
 	if common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeAdvancedCustom && c.Request != nil && c.Request.URL != nil {
@@ -438,54 +434,42 @@ func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request) (k
 		if preset == nil {
 			return request, service.PresetCompileTrace{Worldbook: &service.WorldbookPreview{Entries: []service.WorldbookDecision{}, Warnings: []string{"Worldbook was skipped because body passthrough is enabled"}}}, nil
 		}
-		return nil, nil, fmt.Errorf("SillyTavern preset requires request conversion; disable body passthrough")
+		return nil, zero, fmt.Errorf("SillyTavern preset requires request conversion; disable body passthrough")
 	}
-	if preset == nil {
-		compiled, trace, err := service.ApplyWorldbook(settings.Worldbook, chatRequest, chatRequest, service.PresetCompileTrace{})
-		return compiled, trace, err
-	}
-	storage, err := common.GetBodyStorage(c)
-	if err != nil {
-		return nil, nil, err
-	}
-	if _, err := storage.Seek(0, io.SeekStart); err != nil {
-		return nil, nil, err
-	}
-	context, err := service.DecodeSillyTavernContext(storage)
-	if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
-		return nil, nil, seekErr
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid _sillytavern_context: %w", err)
-	}
-	// Explicit history replaces request.messages in exact/compatibility context.
-	// Process that source independently so it cannot bypass enabled send rules.
-	if context.ChatHistory != nil {
-		historyRequest := &kitdto.GeneralOpenAIRequest{Model: chatRequest.Model, Messages: context.ChatHistory}
-		filtered, filterErr := applySelectedRequestTextRegex(c, historyRequest, chatRequest.Model)
-		if filterErr != nil {
-			return nil, nil, filterErr
+	var context service.SillyTavernContext
+	if preset != nil {
+		storage, err := common.GetBodyStorage(c)
+		if err != nil {
+			return nil, zero, err
 		}
-		context.ChatHistory = filtered.(*kitdto.GeneralOpenAIRequest).Messages
-	}
-	context.RetainWorldbookMarkers = settings.Worldbook != nil && settings.Worldbook.Enabled
-	compiled, trace, err := service.CompileSillyTavernPreset(preset, chatRequest, context)
-	if err == nil {
-		if base, copyErr := common.DeepCopy(compiled); copyErr == nil {
-			c.Set("worldbook_base_request", base)
+		if _, err := storage.Seek(0, io.SeekStart); err != nil {
+			return nil, zero, err
 		}
-		c.Set("worldbook_base_trace", trace)
-		scanRequest := chatRequest
+		context, err = service.DecodeSillyTavernContext(storage)
+		if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+			return nil, zero, seekErr
+		}
+		if err != nil {
+			return nil, zero, fmt.Errorf("invalid _sillytavern_context: %w", err)
+		}
+		// Explicit history replaces request.messages in exact/compatibility context.
+		// Process that source independently so it cannot bypass enabled send rules.
 		if context.ChatHistory != nil {
-			copy := *chatRequest
-			copy.Messages = context.ChatHistory
-			scanRequest = &copy
+			historyRequest := &kitdto.GeneralOpenAIRequest{Model: chatRequest.Model, Messages: context.ChatHistory}
+			filtered, filterErr := applySelectedRequestTextRegex(c, historyRequest, chatRequest.Model)
+			if filterErr != nil {
+				return nil, zero, filterErr
+			}
+			context.ChatHistory = filtered.(*kitdto.GeneralOpenAIRequest).Messages
 		}
-		c.Set("worldbook_scan_request", scanRequest)
-		compiled, trace, err = service.ApplyWorldbook(settings.Worldbook, scanRequest, compiled, trace)
 	}
+	scanRequest := chatRequest
+	if worldbookScanRequest != nil {
+		scanRequest = worldbookScanRequest
+	}
+	compiled, trace, err := service.CompileWorldbookFrom(settings.Worldbook, preset, scanRequest, chatRequest, context)
 	if err != nil {
-		return compiled, nil, err
+		return compiled, trace, err
 	}
 	service.AttachPresetScriptResponse(c, trace)
 	return compiled, trace, nil

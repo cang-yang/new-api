@@ -7993,6 +7993,12 @@
     "Search sections...": "搜索内容分区...",
     "System prelude": "系统前置区",
     "This entry cannot trigger additional entries.": "该条目不会触发其他条目。",
+    "Before the preset": "Перед пресетом",
+    "Client message index": "Индекс клиентского сообщения",
+    "Insertion before the preset": "Вставка перед пресетом",
+    "Checks recent user, assistant and tool-call text. System prompts and media metadata are not scanned.": "Проверяется недавний текст пользователя, ассистента и вызовов инструментов. Системные инструкции и метаданные медиа не сканируются.",
+    "The channel preset is not valid JSON.": "Пресет канала не является допустимым JSON.",
+    "Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.": "Книга мира вставляется в клиентские сообщения до выполнения макросов и скриптов пресета. Индивидуальные позиции записей нормализуются к этой глобальной позиции.",
     "Use preset marker when available": "有预设标记时优先使用",
     "Zero targets the latest user or assistant message. Values are clamped to 0-20.": "0 表示最后一条用户或助手消息，数值会限制在 0-20。"
   }

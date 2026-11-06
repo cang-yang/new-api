@@ -32,7 +32,53 @@ import { usePortalContainer } from '@/components/ui/portal-container'
 import { useMediaQuery } from '@/hooks'
 import { cn } from '@/lib/utils'
 
-const Select = SelectPrimitive.Root
+type SelectItemDefinition = {
+  label: React.ReactNode
+  value: unknown
+}
+
+function collectSelectItems(
+  children: React.ReactNode,
+  items: SelectItemDefinition[]
+) {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return
+    if (child.type === SelectItem) {
+      const props = child.props as SelectPrimitive.Item.Props
+      items.push({ label: props.children, value: props.value })
+      return
+    }
+    const props = child.props as { children?: React.ReactNode }
+    collectSelectItems(props.children, items)
+  })
+}
+
+function Select<
+  Value = unknown,
+  Multiple extends boolean | undefined = false,
+>({
+  children,
+  items,
+  ...props
+}: SelectPrimitive.Root.Props<Value, Multiple>) {
+  const resolvedItems = React.useMemo<
+    SelectPrimitive.Root.Props<Value, Multiple>['items']
+  >(() => {
+    if (items) return items
+    const collected: SelectItemDefinition[] = []
+    collectSelectItems(children, collected)
+    return collected as SelectPrimitive.Root.Props<Value, Multiple>['items']
+  }, [children, items])
+  const Root = SelectPrimitive.Root as React.ComponentType<
+    SelectPrimitive.Root.Props<Value, Multiple>
+  >
+
+  return (
+    <Root items={resolvedItems} {...props}>
+      {children}
+    </Root>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

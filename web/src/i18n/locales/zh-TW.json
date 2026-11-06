@@ -7993,7 +7993,13 @@
     "Search sections...": "搜索内容分区...",
     "System prelude": "系统前置区",
     "This entry cannot trigger additional entries.": "该条目不会触发其他条目。",
-    "Use preset marker when available": "有预设标记时优先使用",
+    "Before the preset": "預設前",
+    "Client message index": "客戶端訊息索引",
+    "Insertion before the preset": "預設前插入位置",
+    "Checks recent user, assistant and tool-call text. System prompts and media metadata are not scanned.": "掃描最近使用者、助手和工具呼叫文字，不掃描系統提示和媒體中繼資料。",
+    "The channel preset is not valid JSON.": "渠道預設不是有效的 JSON。",
+    "Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.": "世界書會在預設巨集和指令碼執行前插入客戶端訊息；條目自身的位置欄位會統一正規化到這個全域位置。",
+    "Use preset marker when available": "有預設標記時優先使用",
     "Zero targets the latest user or assistant message. Values are clamped to 0-20.": "0 表示最后一条用户或助手消息，数值会限制在 0-20。"
   }
 }

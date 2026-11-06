@@ -7993,6 +7993,12 @@
     "Search sections...": "搜索内容分区...",
     "System prelude": "系统前置区",
     "This entry cannot trigger additional entries.": "该条目不会触发其他条目。",
+    "Before the preset": "プリセットの前",
+    "Client message index": "クライアントメッセージの位置",
+    "Insertion before the preset": "プリセット前の挿入位置",
+    "Checks recent user, assistant and tool-call text. System prompts and media metadata are not scanned.": "直近のユーザー、アシスタント、ツール呼び出しのテキストを確認します。システムプロンプトとメディアのメタデータは確認しません。",
+    "The channel preset is not valid JSON.": "チャンネルのプリセットが有効な JSON ではありません。",
+    "Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.": "ワールドブックはプリセットのマクロとスクリプトが実行される前にクライアントメッセージへ挿入されます。項目ごとの配置はこのグローバル位置に正規化されます。",
     "Use preset marker when available": "有预设标记时优先使用",
     "Zero targets the latest user or assistant message. Values are clamped to 0-20.": "0 表示最后一条用户或助手消息，数值会限制在 0-20。"
   }

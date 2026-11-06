@@ -19,6 +19,7 @@ type WorldbookDecision struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Reason string `json:"reason"`
+	Order  int    `json:"order,omitempty"`
 }
 
 type WorldbookPreview struct {
@@ -41,6 +42,10 @@ type worldbookMatchBudget struct {
 // MatchWorldbook is shared by preview and the relay. All state belongs to this
 // invocation, including recursive matches, deduplication and the character budget.
 func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIRequest) (WorldbookPreview, error) {
+	return matchWorldbook(config, request)
+}
+
+func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIRequest) (WorldbookPreview, error) {
 	result := WorldbookPreview{Entries: []WorldbookDecision{}, Warnings: []string{}}
 	if err := config.Validate(); err != nil {
 		return result, err
@@ -54,12 +59,12 @@ func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 	selected := 0
 	for i := len(request.Messages) - 1; i >= 0 && selected < depth; i-- {
 		message := request.Messages[i]
-		if message.Role != "user" && message.Role != "assistant" {
+		if !worldbookScanMessageRole(message.Role) {
 			continue
 		}
 		selected++
 		remaining := (256 << 10) - size
-		text, truncated := worldbookMessageText(message.Content, remaining)
+		text, truncated := worldbookMessageScanText(message, remaining)
 		if truncated {
 			result.Warnings = append(result.Warnings, "Worldbook scan text was limited to 256 KiB")
 		}
@@ -156,16 +161,26 @@ func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 		return cmp.Compare(a.entry.Priority, b.entry.Priority)
 	})
 	included = included[:0]
-	for _, candidate := range orderedIncluded {
+	for index, candidate := range orderedIncluded {
+		result.Entries[candidate.index].Order = index + 1
 		included = append(included, candidate.entry.Content)
 	}
 	result.Text = strings.Join(included, "\n\n")
-	placement := resolveWorldbookPlacement(config, request.Messages, PresetCompileTrace{})
+	placement := resolveWorldbookPlacement(config, request.Messages)
 	result.Placement = &placement
 	if work.exhausted {
 		result.Warnings = append(result.Warnings, "Worldbook matching stopped after its work limit")
 	}
 	return result, nil
+}
+
+func worldbookScanMessageRole(role string) bool {
+	switch strings.ToLower(role) {
+	case "user", "assistant", "tool", "function":
+		return true
+	default:
+		return false
+	}
 }
 
 type worldbookTextTail struct {
@@ -222,6 +237,35 @@ func worldbookMessageText(content any, limit int) (string, bool) {
 		tail.bytes = tail.bytes[1:]
 	}
 	return string(tail.bytes), tail.truncated
+}
+
+func worldbookMessageScanText(message dto.Message, limit int) (string, bool) {
+	text, truncated := worldbookMessageText(message.Content, limit)
+	calls := message.ParseToolCalls()
+	parts := make([]string, 0, 1+len(calls)*2)
+	if text != "" {
+		parts = append(parts, text)
+	}
+	for _, call := range calls {
+		if call.Function.Name != "" {
+			parts = append(parts, call.Function.Name)
+		}
+		if call.Function.Arguments != "" {
+			parts = append(parts, call.Function.Arguments)
+		}
+	}
+	if len(parts) == 0 {
+		return "", truncated
+	}
+	combined := strings.Join(parts, "\n")
+	if len(combined) > limit {
+		combined = combined[len(combined)-limit:]
+		truncated = true
+		for len(combined) > 0 && !utf8.ValidString(combined) {
+			combined = combined[1:]
+		}
+	}
+	return combined, truncated
 }
 
 func worldbookEntryMatches(entry dto.WorldbookEntry, text string, work *worldbookMatchBudget) bool {
@@ -320,101 +364,80 @@ func worldbookKeyMatches(key, text string, entry dto.WorldbookEntry, work *world
 	return false
 }
 
-// CompileWorldbook compiles the preset before applying lore, so scripts and
-// macros cannot execute imported worldbook content.
+// CompileWorldbook adds matched lore to the client message history before
+// preset compilation. The preset, including its scripts, therefore sees the
+// same final client input that will be sent upstream.
 func CompileWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
-	context.RetainWorldbookMarkers = config != nil && config.Enabled
-	compiled, trace, err := CompileSillyTavernPreset(preset, request, context)
-	if err != nil {
-		return compiled, trace, err
-	}
-	source := request
-	if context.ChatHistory != nil {
-		copy := *request
-		copy.Messages = context.ChatHistory
-		source = &copy
-	}
-	return ApplyWorldbook(config, source, compiled, trace)
+	return CompileWorldbookFrom(config, preset, request, request, context)
 }
 
-// ApplyWorldbook builds from a worldbook-free preset result. Retries can reuse
-// that base without rerunning stateful preset scripts or accumulating lore.
+// CompileWorldbookFrom separates the raw client scan source from the request
+// that is later compiled by the preset. This keeps keyword matching on the
+// client's original input while still inserting lore before preset scripts run.
+func CompileWorldbookFrom(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, source, base *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
+	if context.ChatHistory != nil {
+		historySource := *source
+		historySource.Messages = context.ChatHistory
+		historyBase := *base
+		historyBase.Messages = context.ChatHistory
+		prepared, worldbookTrace, err := ApplyWorldbook(config, &historySource, &historyBase, PresetCompileTrace{})
+		if err != nil {
+			return prepared, worldbookTrace, err
+		}
+		context.ChatHistory = prepared.Messages
+		compiled, trace, err := CompileSillyTavernPreset(preset, base, context)
+		trace.Worldbook = worldbookTrace.Worldbook
+		return compiled, trace, err
+	}
+	prepared, worldbookTrace, err := ApplyWorldbook(config, source, base, PresetCompileTrace{})
+	if err != nil {
+		return prepared, worldbookTrace, err
+	}
+	compiled, trace, err := CompileSillyTavernPreset(preset, prepared, context)
+	trace.Worldbook = worldbookTrace.Worldbook
+	return compiled, trace, err
+}
+
+// PreviewWorldbook executes the same worldbook-before-preset pipeline used by
+// live requests while returning only the matching/audit data for the channel UI.
+func PreviewWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest) (WorldbookPreview, error) {
+	if config == nil {
+		return WorldbookPreview{Entries: []WorldbookDecision{}, Warnings: []string{}}, nil
+	}
+	_, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
+	if err != nil {
+		return WorldbookPreview{}, err
+	}
+	if trace.Worldbook != nil {
+		return *trace.Worldbook, nil
+	}
+	return MatchWorldbook(config, request)
+}
+
+// ApplyWorldbook inserts matched lore into a message base. Callers that need
+// preset processing should use CompileWorldbook so insertion happens first.
 func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAIRequest, trace PresetCompileTrace) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
 	preview, err := MatchWorldbook(config, source)
 	if err != nil {
 		preview.Warnings = append(preview.Warnings, fmt.Sprintf("Worldbook was skipped: %v", err))
 		preview.Text = ""
 	}
-	compiled := base
-	clone := preview.Text != ""
-	for _, message := range trace.Messages {
-		if (message.Identifier == "worldInfoBefore" || message.Identifier == "worldInfoAfter") && message.Index >= 0 && message.Index < len(base.Messages) && base.Messages[message.Index].Content == "" {
-			clone = true
-		}
-	}
-	if clone {
-		compiled, err = common.DeepCopy(base)
+	if preview.Text != "" {
+		compiled, err := common.DeepCopy(base)
 		if err != nil {
 			return base, trace, nil
 		}
-	}
-	trace.Messages = slices.Clone(trace.Messages)
-	if preview.Text != "" {
-		placement := resolveWorldbookPlacement(config, compiled.Messages, trace)
-		if placement.Mode == dto.WorldbookInjectionInherit && placement.Index >= 0 && placement.Index < len(compiled.Messages) {
-			if content, ok := compiled.Messages[placement.Index].Content.(string); ok {
-				if content != "" {
-					content += "\n\n"
-				}
-				compiled.Messages[placement.Index].Content = content + preview.Text
-				preview.Placement = &placement
-			}
-		} else {
-			index := max(0, min(placement.Index, len(compiled.Messages)))
-			compiled.Messages = insertWorldbookMessageAt(compiled.Messages, index, preview.Text)
-			for i := range trace.Messages {
-				if trace.Messages[i].Index >= index {
-					trace.Messages[i].Index++
-				}
-			}
-			trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: "system", Source: "worldbook"})
-			placement.Index = index
-			preview.Placement = &placement
-		}
-	}
-	// Empty markers were retained only to locate a possible insertion point.
-	// Remove unused ones from the outgoing request without altering the retry base.
-	if clone {
-		empty := map[int]bool{}
-		for _, message := range trace.Messages {
-			if (message.Identifier == "worldInfoBefore" || message.Identifier == "worldInfoAfter") && message.Index >= 0 && message.Index < len(compiled.Messages) && compiled.Messages[message.Index].Content == "" {
-				empty[message.Index] = true
-			}
-		}
-		if len(empty) > 0 {
-			remap := map[int]int{}
-			messages := make([]dto.Message, 0, len(compiled.Messages)-len(empty))
-			for index, message := range compiled.Messages {
-				if !empty[index] {
-					remap[index] = len(messages)
-					messages = append(messages, message)
-				}
-			}
-			compiled.Messages = messages
-			provenance := make([]PresetMessageSource, 0, len(trace.Messages))
-			for _, message := range trace.Messages {
-				if index, ok := remap[message.Index]; ok {
-					message.Index = index
-					provenance = append(provenance, message)
-				}
-			}
-			trace.Messages = provenance
-		}
+		placement := resolveWorldbookPlacement(config, compiled.Messages)
+		index := max(0, min(placement.Index, len(compiled.Messages)))
+		compiled.Messages = insertWorldbookMessageAt(compiled.Messages, index, preview.Text)
+		placement.Index = index
+		preview.Placement = &placement
+		base = compiled
 	}
 	if config != nil {
-		trace.Worldbook = &WorldbookPreview{Entries: preview.Entries, Warnings: preview.Warnings, Placement: preview.Placement}
+		trace.Worldbook = &WorldbookPreview{Text: preview.Text, Entries: preview.Entries, Warnings: preview.Warnings, Placement: preview.Placement}
 	}
-	return compiled, trace, nil
+	return base, trace, nil
 }
 
 func insertWorldbookMessageAt(messages []dto.Message, index int, text string) []dto.Message {
@@ -425,56 +448,36 @@ func insertWorldbookMessageAt(messages []dto.Message, index int, text string) []
 	return append(result, messages[index:]...)
 }
 
-func resolveWorldbookPlacement(config *dto.WorldbookConfig, messages []dto.Message, trace PresetCompileTrace) dto.WorldbookPlacement {
-	mode := dto.WorldbookInjectionInherit
+func resolveWorldbookPlacement(config *dto.WorldbookConfig, messages []dto.Message) dto.WorldbookPlacement {
+	mode := dto.WorldbookInjectionSystemPrelude
 	depth := 0
 	if config != nil {
-		if config.InjectionMode != "" {
-			mode = config.InjectionMode
+		mode = config.InjectionMode
+		if mode == "" || mode == dto.WorldbookInjectionInherit {
+			mode = dto.WorldbookInjectionSystemPrelude
 		}
 		depth = config.InjectionDepth
 	}
 	placement := dto.WorldbookPlacement{Mode: mode, Role: "system", Index: worldbookSystemPreludeIndex(messages)}
 	switch mode {
-	case dto.WorldbookInjectionInherit:
-		if index, ok := worldbookMarkerIndex(trace, messages); ok {
-			placement.Index = index
-			placement.Role = messages[index].Role
-			return placement
-		}
-		placement.Mode = dto.WorldbookInjectionSystemPrelude
-		placement.Fallback = true
 	case dto.WorldbookInjectionBeforeLastUser:
 		if index := worldbookLastRoleIndex(messages, "user"); index >= 0 {
 			placement.Index = index
-			return placement
+		} else {
+			placement.Mode = dto.WorldbookInjectionSystemPrelude
+			placement.Index = worldbookSystemPreludeIndex(messages)
+			placement.Fallback = true
 		}
-		placement.Mode = dto.WorldbookInjectionSystemPrelude
-		placement.Index = worldbookSystemPreludeIndex(messages)
-		placement.Fallback = true
 	case dto.WorldbookInjectionAtDepth:
 		if index := worldbookDepthIndex(messages, depth); index >= 0 {
 			placement.Index = index
-			return placement
+		} else {
+			placement.Mode = dto.WorldbookInjectionSystemPrelude
+			placement.Index = worldbookSystemPreludeIndex(messages)
+			placement.Fallback = true
 		}
-		placement.Mode = dto.WorldbookInjectionSystemPrelude
-		placement.Index = worldbookSystemPreludeIndex(messages)
-		placement.Fallback = true
-	case dto.WorldbookInjectionSystemPrelude:
 	}
 	return placement
-}
-
-func worldbookMarkerIndex(trace PresetCompileTrace, messages []dto.Message) (int, bool) {
-	for _, message := range trace.Messages {
-		if message.Identifier != "worldInfoBefore" && message.Identifier != "worldInfoAfter" {
-			continue
-		}
-		if message.Index >= 0 && message.Index < len(messages) {
-			return message.Index, true
-		}
-	}
-	return 0, false
 }
 
 func worldbookSystemPreludeIndex(messages []dto.Message) int {

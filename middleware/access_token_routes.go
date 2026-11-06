@@ -44,6 +44,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	// router/api-router.go: top level
 	"GET /api/models":                     accessTokenScopeRule("profile:read"),
 	"GET /api/status/test":                accessTokenScopeRule("log:read"),
+	"POST /api/param-override/simulate":   accessTokenScopeRule(service.AccessTokenScopeOf(authz.ChannelWrite)),
 	"GET /api/pricing":                    accessTokenAnyRule,
 	"GET /api/perf-metrics/summary":       accessTokenAnyRule,
 	"GET /api/perf-metrics":               accessTokenAnyRule,
@@ -206,7 +207,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/plugin/task/:key/versions/:version": accessTokenScopeRule("plugin:write"),
 
 	// router/channel-router.go: the key route is RootAuth, not Casbin-guarded.
-	"POST /api/channel/:id/key": accessTokenScopeRule(service.AccessTokenScopeOf(authz.ChannelSecretView)),
+	"POST /api/channel/:id/key":       accessTokenScopeRule(service.AccessTokenScopeOf(authz.ChannelSecretView)),
+	"POST /api/channel/regex/preview": accessTokenScopeRule(service.AccessTokenScopeOf(authz.ChannelWrite)),
 
 	// router/authz-router.go
 	"GET /api/authz/catalog": accessTokenScopeRule("user:read"),
@@ -234,21 +236,27 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/redemption/:id":     accessTokenScopeRule("redemption:write"),
 
 	// router/api-router.go: /api/audit, /api/log, /api/data
-	"GET /api/audit/self":                       accessTokenScopeRule("usage:read"),
-	"GET /api/log/":                             accessTokenScopeRule("log:read"),
-	"GET /api/log/stat":                         accessTokenScopeRule("log:read"),
-	"GET /api/log/self/stat":                    accessTokenScopeRule("usage:read"),
-	"GET /api/log/channel_affinity_usage_cache": accessTokenScopeRule("log:read"),
-	"GET /api/log/search":                       accessTokenScopeRule("log:read"),
-	"GET /api/log/self":                         accessTokenScopeRule("usage:read"),
-	"GET /api/log/self/search":                  accessTokenScopeRule("usage:read"),
-	"GET /api/log/export":                       accessTokenScopeRule("log:read"),
-	"GET /api/log/self/export":                  accessTokenScopeRule("usage:read"),
-	"GET /api/data/":                            accessTokenScopeRule("log:read"),
-	"GET /api/data/users":                       accessTokenScopeRule("log:read"),
-	"GET /api/data/self":                        accessTokenScopeRule("usage:read"),
-	"GET /api/data/flow":                        accessTokenScopeRule("log:read"),
-	"GET /api/data/flow/self":                   accessTokenScopeRule("usage:read"),
+	"GET /api/audit/self":                                  accessTokenScopeRule("usage:read"),
+	"GET /api/log/":                                        accessTokenScopeRule("log:read"),
+	"GET /api/log/stat":                                    accessTokenScopeRule("log:read"),
+	"GET /api/log/self/stat":                               accessTokenScopeRule("usage:read"),
+	"GET /api/log/channel_affinity_usage_cache":            accessTokenScopeRule("log:read"),
+	"GET /api/log/search":                                  accessTokenScopeRule("log:read"),
+	"GET /api/log/self":                                    accessTokenScopeRule("usage:read"),
+	"GET /api/log/self/search":                             accessTokenScopeRule("usage:read"),
+	"GET /api/log/export":                                  accessTokenScopeRule("log:read"),
+	"GET /api/log/error-incidents":                         accessTokenScopeRule("log:read"),
+	"GET /api/log/error-incidents/:fingerprint":            accessTokenScopeRule("log:read"),
+	"PATCH /api/log/error-incidents/:fingerprint/resolved": accessTokenSessionRule,
+	"GET /api/log/body-audit/:request_id":                  accessTokenScopeRule("log:read"),
+	"POST /api/log/body-audit/:request_id/replay/preview":  accessTokenScopeRule("log:read"),
+	"POST /api/log/body-audit/:request_id/replay/execute":  accessTokenSessionRule,
+	"GET /api/log/self/export":                             accessTokenScopeRule("usage:read"),
+	"GET /api/data/":                                       accessTokenScopeRule("log:read"),
+	"GET /api/data/users":                                  accessTokenScopeRule("log:read"),
+	"GET /api/data/self":                                   accessTokenScopeRule("usage:read"),
+	"GET /api/data/flow":                                   accessTokenScopeRule("log:read"),
+	"GET /api/data/flow/self":                              accessTokenScopeRule("usage:read"),
 
 	// router/api-router.go: /api/group, /api/prefill_group
 	"GET /api/group/":               accessTokenScopeRule("group:read"),

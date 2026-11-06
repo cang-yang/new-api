@@ -52,6 +52,7 @@ import { WorldbookPreview } from './worldbook-preview'
 type Props = {
   scopeKey: string | number
   value: string
+  presetValue?: string
   onChange: (value: string) => void
   disabled?: boolean
 }
@@ -421,7 +422,7 @@ function ScopedWorldbookSettings(props: Props) {
                     />
                     <p className='text-muted-foreground text-xs'>
                       {t(
-                        'Checks only user and assistant text, not system prompts or tool results.'
+                        'Checks recent user, assistant and tool-call text. System prompts and media metadata are not scanned.'
                       )}
                     </p>
                   </div>
@@ -492,7 +493,7 @@ function ScopedWorldbookSettings(props: Props) {
                       </SelectTrigger>
                       <SelectContent alignItemWithTrigger={false}>
                         <SelectItem value='inherit'>
-                          {t('Use preset marker when available')}
+                          {t('Before the preset')}
                         </SelectItem>
                         <SelectItem value='system_prelude'>
                           {t('System prelude')}
@@ -507,7 +508,7 @@ function ScopedWorldbookSettings(props: Props) {
                     </Select>
                     <p className='text-muted-foreground text-xs'>
                       {t(
-                        'Per-entry placement fields are normalized to this global position.'
+                        'Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.'
                       )}
                     </p>
                   </div>
@@ -539,7 +540,11 @@ function ScopedWorldbookSettings(props: Props) {
                 </fieldset>
               )}
               {tab === 'preview' && (
-                <WorldbookPreview config={draft} disabled={locked || !valid} />
+                <WorldbookPreview
+                  config={draft}
+                  presetValue={props.presetValue}
+                  disabled={locked || !valid}
+                />
               )}
             </TabsContent>
           </Tabs>

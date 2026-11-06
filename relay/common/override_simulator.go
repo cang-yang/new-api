@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/tidwall/gjson"
 )
@@ -241,7 +242,8 @@ func SimulateParamOverride(jsonData []byte, paramOverride map[string]interface{}
 			if marshalErr != nil {
 				return nil, marshalErr
 			}
-			matches, conditionErr := checkConditions(working, contextJSON, operation.Conditions, operation.Logic)
+			doc := ojson.NewDoc(working)
+			matches, conditionErr := checkConditions(doc, contextJSON, operation.Conditions, operation.Logic)
 			if conditionErr != nil {
 				return nil, conditionErr
 			}
@@ -252,7 +254,7 @@ func SimulateParamOverride(jsonData []byte, paramOverride map[string]interface{}
 				continue
 			}
 			if isPathBasedOperation(operation.Mode) && strings.Contains(operation.Path, "*") {
-				paths, resolveErr := resolveOperationPaths(working, processNegativeIndex(working, operation.Path))
+				paths, resolveErr := resolveOperationPaths(doc, processNegativeIndex(doc, operation.Path))
 				if resolveErr != nil {
 					return nil, resolveErr
 				}

@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -290,7 +291,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
-	if len(simpleResponse.Choices) == 0 {
+	if info.RelayMode != relayconstant.RelayModeEmbeddings && len(simpleResponse.Choices) == 0 {
 		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned an empty chat completion"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 

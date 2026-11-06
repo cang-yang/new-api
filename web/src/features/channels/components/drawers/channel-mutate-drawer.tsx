@@ -2963,6 +2963,7 @@ export function ChannelMutateDrawer({
               <WorldbookSettings
                 scopeKey={channelId ?? 'new'}
                 value={field.value || ''}
+                presetValue={formValues.sillytavern_preset}
                 onChange={field.onChange}
                 disabled={sensitiveLocked || isSubmitting}
               />

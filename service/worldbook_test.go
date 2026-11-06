@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,12 +94,42 @@ func TestWorldbookSecondaryConditionsAndTextScope(t *testing.T) {
 	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "moon"}, {Role: "assistant", Content: []any{map[string]any{"type": "image_url", "image_url": "moon"}, map[string]any{"type": "text", "text": "night"}}}, {Role: "tool", Content: "moon"}}}
 	result, err := MatchWorldbook(config, request)
 	require.NoError(t, err)
-	assert.Empty(t, result.Text, "old turns/tool/media triggered")
+	assert.Equal(t, "lore", result.Text, "the latest tool result must be scanned")
+	request.Messages = []dto.Message{{Role: "tool", Content: "nothing"}, {Role: "assistant", Content: []any{map[string]any{"type": "image_url", "image_url": "moon"}, map[string]any{"type": "text", "text": "night"}}}}
+	result, err = MatchWorldbook(config, request)
+	require.NoError(t, err)
+	assert.Empty(t, result.Text, "media metadata and older turns must not match")
 	request.Messages = []dto.Message{{Role: "user", Content: "moon" + strings.Repeat("x", 256<<10)}}
 	result, err = MatchWorldbook(config, request)
 	require.NoError(t, err)
 	assert.Empty(t, result.Text, "scan uses bounded recent text")
 	assert.NotEmpty(t, result.Warnings)
+}
+
+func TestWorldbookScansToolCallAndToolResultText(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, ScanDepth: 3, Books: []dto.Worldbook{{
+		ID:      "b",
+		Enabled: true,
+		Entries: []dto.WorldbookEntry{
+			{ID: "call", Enabled: true, Keys: []string{"moon"}, Content: "call lore"},
+			{ID: "result", Enabled: true, Keys: []string{"night"}, Content: "result lore"},
+		},
+	}}}
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
+		{
+			Role:      "assistant",
+			Content:   nil,
+			ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"context","arguments":"{\"query\":\"moon\"}"}}]`),
+		},
+		{Role: "tool", Content: "night result"},
+		{Role: "user", Content: "continue"},
+	}}
+
+	result, err := MatchWorldbook(config, request)
+	require.NoError(t, err)
+	assert.Equal(t, "call lore\n\nresult lore", result.Text)
+	assert.Equal(t, "included", result.Entries[0].Reason)
+	assert.Equal(t, "included", result.Entries[1].Reason)
 }
 
 func TestWorldbookFinalPriorityAndImportedRestrictions(t *testing.T) {
@@ -109,6 +140,8 @@ func TestWorldbookFinalPriorityAndImportedRestrictions(t *testing.T) {
 	result, err := MatchWorldbook(config, &dto.GeneralOpenAIRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, "silver\n\npriority", result.Text)
+	assert.Equal(t, 1, result.Entries[0].Order)
+	assert.Equal(t, 2, result.Entries[1].Order)
 	book, err := ImportWorldbook("malformed", []byte(`{"entries":[{"key":["moon"],"content":"lore","selective":"true"}]}`))
 	require.NoError(t, err)
 	assert.NotEmpty(t, book.Entries[0].Issues, "malformed restriction must block")
@@ -122,11 +155,38 @@ func TestWorldbookFinalPriorityAndImportedRestrictions(t *testing.T) {
 	assert.NotNil(t, book.Entries)
 }
 
-func TestWorldbookPresetMarkerAndLiteralContent(t *testing.T) {
+func TestWorldbookPreviewRunsBeforePresetCompilation(t *testing.T) {
+	config := &dto.WorldbookConfig{
+		Enabled:       true,
+		InjectionMode: dto.WorldbookInjectionInherit,
+		Books: []dto.Worldbook{{
+			ID:      "b",
+			Enabled: true,
+			Entries: []dto.WorldbookEntry{{
+				ID:       "e",
+				Enabled:  true,
+				Constant: true,
+				Content:  "lore",
+			}},
+		}},
+	}
+	preset := &dto.SillyTavernPresetConfig{Preset: json.RawMessage(`{"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+
+	preview, err := PreviewWorldbook(config, preset, request)
+	require.NoError(t, err)
+	require.NotNil(t, preview.Placement)
+	assert.Equal(t, dto.WorldbookInjectionSystemPrelude, preview.Placement.Mode)
+	assert.Equal(t, 0, preview.Placement.Index)
+	assert.Equal(t, "system", preview.Placement.Role)
+	assert.False(t, preview.Placement.Fallback)
+}
+
+func TestWorldbookPresetProcessesInsertedLore(t *testing.T) {
 	lore := "lore {{user}}"
 	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: lore}}}}}
 	for _, enabled := range []bool{true, false} {
-		preset := &dto.SillyTavernPresetConfig{User: "Alice", Preset: json.RawMessage(fmt.Sprintf(`{"prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"worldInfoAfter","marker":true},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":%v},{"identifier":"worldInfoAfter","enabled":%v},{"identifier":"chatHistory","enabled":true}]}]}`, enabled, enabled))}
+		preset := &dto.SillyTavernPresetConfig{User: "Alice", Preset: json.RawMessage(fmt.Sprintf(`{"prompts":[{"identifier":"optional","content":"optional"},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"optional","enabled":%v},{"identifier":"chatHistory","enabled":true}]}]}`, enabled))}
 		context := SillyTavernContext{Markers: map[string]string{"worldInfoBefore": "explicit lore"}}
 		request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}
 		compiled, _, err := CompileWorldbook(config, preset, request, context)
@@ -137,36 +197,43 @@ func TestWorldbookPresetMarkerAndLiteralContent(t *testing.T) {
 				joined += text
 			}
 		}
-		assert.Equal(t, 1, strings.Count(joined, lore))
-		assert.NotContains(t, joined, "lore Alice")
-		if enabled {
-			assert.Contains(t, joined, "explicit lore\n\n"+lore)
-		}
+		assert.Equal(t, 1, strings.Count(joined, "lore Alice"))
+		assert.NotContains(t, joined, lore)
 		assert.Equal(t, "explicit lore", context.Markers["worldInfoBefore"])
 		assert.Len(t, request.Messages, 1)
-		for _, message := range compiled.Messages {
-			assert.NotEqual(t, "", message.Content, "empty marker leaked upstream")
-		}
 	}
 }
 
-func TestWorldbookPresetHistoryAndRetryBase(t *testing.T) {
+func TestWorldbookPresetHistoryProcessesInsertedLore(t *testing.T) {
 	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "lore"}}}}}
-	preset := &dto.SillyTavernPresetConfig{Preset: json.RawMessage(`{"prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
-	source := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "moon"}}}
-	compiled, _, err := CompileWorldbook(config, preset, source, SillyTavernContext{ChatHistory: []dto.Message{{Role: "user", Content: "night"}}})
+	preset := &dto.SillyTavernPresetConfig{User: "Alice", Preset: json.RawMessage(`{"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true}]}]}`)}
+	source := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "ignored"}}}
+	compiled, _, err := CompileWorldbook(config, preset, source, SillyTavernContext{ChatHistory: []dto.Message{{Role: "user", Content: "moon"}}})
 	require.NoError(t, err)
-	require.Len(t, compiled.Messages, 1)
-	assert.Equal(t, "night", compiled.Messages[0].Content)
-	base, trace, err := CompileSillyTavernPreset(preset, source, SillyTavernContext{RetainWorldbookMarkers: true})
+	require.Len(t, compiled.Messages, 2)
+	assert.Equal(t, "lore", compiled.Messages[0].Content)
+	assert.Equal(t, "moon", compiled.Messages[1].Content)
+	assert.Len(t, source.Messages, 1)
+	assert.Equal(t, "ignored", source.Messages[0].Content)
+}
+
+func TestWorldbookRunsBeforePresetScripts(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "lore"}}}}}
+	preset := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{
+		"enabled": true,
+		"script":  `({request}) => { for (const message of request.messages) { if (typeof message.content === "string") message.content = message.content.toUpperCase(); } return request; }`,
+	}})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "moon"}}}
+
+	compiled, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
 	require.NoError(t, err)
-	first, _, _ := ApplyWorldbook(config, source, base, trace)
-	secondConfig := *config
-	secondConfig.Enabled = false
-	second, _, _ := ApplyWorldbook(&secondConfig, source, base, trace)
-	assert.Len(t, first.Messages, 2)
-	assert.Len(t, second.Messages, 1)
-	assert.Len(t, base.Messages, 2)
+	require.Len(t, compiled.Messages, 3)
+	assert.True(t, slices.ContainsFunc(compiled.Messages, func(message dto.Message) bool {
+		return message.Content == "LORE"
+	}), "the preset script must see worldbook content before it runs")
+	require.NotNil(t, trace.Worldbook)
+	assert.Equal(t, "included", trace.Worldbook.Entries[0].Reason)
+	assert.Equal(t, "moon", request.Messages[0].Content)
 }
 
 func TestWorldbookPlacementModes(t *testing.T) {

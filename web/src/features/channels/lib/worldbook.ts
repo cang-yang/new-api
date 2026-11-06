@@ -89,6 +89,7 @@ export type WorldbookPreviewResult = {
     name: string
     status: 'included' | 'skipped'
     reason: string
+    order?: number
   }[]
   warnings: string[]
   placement?: WorldbookPlacement

@@ -7993,6 +7993,12 @@
     "Search sections...": "搜索内容分区...",
     "System prelude": "系统前置区",
     "This entry cannot trigger additional entries.": "该条目不会触发其他条目。",
+    "Before the preset": "Avant le préréglage",
+    "Client message index": "Index du message client",
+    "Insertion before the preset": "Insertion avant le préréglage",
+    "Checks recent user, assistant and tool-call text. System prompts and media metadata are not scanned.": "Analyse le texte récent de l’utilisateur, de l’assistant et des appels d’outils. Les instructions système et les métadonnées des médias ne sont pas analysées.",
+    "The channel preset is not valid JSON.": "Le préréglage du canal n’est pas un JSON valide.",
+    "Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.": "Le livre de contexte est inséré dans les messages client avant l’exécution des macros et scripts du préréglage. Les positions propres aux entrées sont normalisées vers cette position globale.",
     "Use preset marker when available": "有预设标记时优先使用",
     "Zero targets the latest user or assistant message. Values are clamped to 0-20.": "0 表示最后一条用户或助手消息，数值会限制在 0-20。"
   }

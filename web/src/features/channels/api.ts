@@ -67,11 +67,13 @@ export async function importWorldbook(name: string, book: unknown) {
 
 export async function previewWorldbook(
   config: WorldbookConfig,
-  request: unknown
+  request: unknown,
+  sillyTavernPreset?: unknown
 ): Promise<WorldbookPreviewResult> {
   const response = await api.post('/api/channel/worldbook/preview', {
     config,
     request,
+    sillytavern_preset: sillyTavernPreset,
   })
   return requireServerSuccess(response.data).data
 }

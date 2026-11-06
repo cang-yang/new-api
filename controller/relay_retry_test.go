@@ -123,38 +123,40 @@ func TestSillyTavernRejectsRoutePassthrough(t *testing.T) {
 		SillyTavernPreset: &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"main","content":"Hi"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`)},
 		AdvancedCustom:    &dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{{IncomingPath: "/v1/chat/completions", PassThroughBodyEnabled: true}}},
 	})
-	_, _, err := compileSelectedSillyTavernPreset(c, &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hi"}}})
+	_, _, err := compileSelectedSillyTavernPreset(c, &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{{Role: "user", Content: "hi"}}}, nil)
 	require.ErrorContains(t, err, "disable body passthrough")
 }
 
-func TestWorldbookSelectedChannelRequestIsolation(t *testing.T) {
+func TestWorldbookCompilationDoesNotMutateClientRequest(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("opaque body"))
 	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "first lore"}}}}}
 	settings := dto.ChannelOtherSettings{Worldbook: config, SillyTavernPreset: &dto.SillyTavernPresetConfig{Models: []string{"other"}, Preset: []byte("inactive")}}
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, settings)
 	source := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "moon"}}}
-	compiled, _, err := compileSelectedSillyTavernPreset(c, source)
+	compiled, _, err := compileSelectedSillyTavernPreset(c, source, source)
 	require.NoError(t, err)
 	assert.Equal(t, "first lore", compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content)
-	baseValue, ok := c.Get("worldbook_base_request")
-	require.True(t, ok)
-	base := baseValue.(*dto.GeneralOpenAIRequest)
-	second := *config
-	second.Books = []dto.Worldbook{{ID: "b2", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e2", Enabled: true, Constant: true, Content: "second lore"}}}}
-	settings.Worldbook = &second
-	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, settings)
-	retry, _ := applySelectedWorldbook(c, source, base, service.PresetCompileTrace{})
-	require.Len(t, retry.Messages, 2)
-	assert.Equal(t, "second lore", retry.Messages[0].Content)
-	retry.Messages[1].Content = "mutated upstream"
+	compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content = "mutated upstream"
 	assert.Equal(t, "moon", source.Messages[0].Content)
-	assert.Equal(t, "moon", base.Messages[0].Content)
-	common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: true})
-	passthrough, trace := applySelectedWorldbook(c, source, base, service.PresetCompileTrace{})
-	assert.Len(t, passthrough.Messages, 1)
+	assert.Len(t, source.Messages, 1)
+}
+
+func TestWorldbookKeywordsUsePrePresetScanRequest(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("opaque body"))
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{
+		ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "lore",
+	}}}}}
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{Worldbook: config})
+	compiledRequest := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "transformed text"}}}
+	clientScanRequest := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "moon"}}}
+
+	compiled, trace, err := compileSelectedSillyTavernPreset(c, compiledRequest, clientScanRequest)
+	require.NoError(t, err)
 	require.NotNil(t, trace.Worldbook)
-	assert.NotEmpty(t, trace.Worldbook.Warnings)
+	assert.Equal(t, "included", trace.Worldbook.Entries[0].Reason)
+	assert.Equal(t, "lore", compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content)
 }
 
 func TestWorldbookAPIContract(t *testing.T) {
@@ -200,10 +202,10 @@ func TestSillyTavernInactivePresetPreservesGatewayRequest(t *testing.T) {
 			}}
 			before, err := common.Marshal(request)
 			require.NoError(t, err)
-			got, trace, err := compileSelectedSillyTavernPreset(c, request)
+			got, trace, err := compileSelectedSillyTavernPreset(c, request, request)
 			require.NoError(t, err)
 			assert.Same(t, request, got)
-			assert.Nil(t, trace)
+			assert.Empty(t, trace)
 			after, err := common.Marshal(request)
 			require.NoError(t, err)
 			assert.Equal(t, before, after)

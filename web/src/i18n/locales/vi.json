@@ -7993,6 +7993,12 @@
     "Search sections...": "搜索内容分区...",
     "System prelude": "系统前置区",
     "This entry cannot trigger additional entries.": "该条目不会触发其他条目。",
+    "Before the preset": "Trước preset",
+    "Client message index": "Chỉ mục tin nhắn máy khách",
+    "Insertion before the preset": "Vị trí chèn trước preset",
+    "Checks recent user, assistant and tool-call text. System prompts and media metadata are not scanned.": "Kiểm tra văn bản gần đây của người dùng, trợ lý và lệnh gọi công cụ. Không quét lời nhắc hệ thống và siêu dữ liệu phương tiện.",
+    "The channel preset is not valid JSON.": "Preset của kênh không phải JSON hợp lệ.",
+    "Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.": "Sách thế giới được chèn vào tin nhắn máy khách trước khi macro và tập lệnh của preset chạy. Vị trí riêng của từng mục được chuẩn hóa về vị trí chung này.",
     "Use preset marker when available": "有预设标记时优先使用",
     "Zero targets the latest user or assistant message. Values are clamped to 0-20.": "0 表示最后一条用户或助手消息，数值会限制在 0-20。"
   }

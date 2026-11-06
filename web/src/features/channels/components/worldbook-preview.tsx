@@ -31,15 +31,17 @@ import type { WorldbookConfig } from '../lib/worldbook'
 
 export function WorldbookPreview(props: {
   config: WorldbookConfig
+  presetValue?: string
   disabled?: boolean
 }) {
   const { t } = useTranslation()
   const [input, setInput] = useState('')
-  const key = `${JSON.stringify(props.config)}\0${input}`
+  const key = `${JSON.stringify(props.config)}\0${props.presetValue ?? ''}\0${input}`
   const preview = useMutation({
     mutationFn: async (snapshot: {
       key: string
       config: WorldbookConfig
+      presetValue?: string
       input: string
     }) => {
       let request: unknown = {
@@ -58,9 +60,21 @@ export function WorldbookPreview(props: {
           )
         }
       }
+      let sillyTavernPreset: unknown
+      if (snapshot.presetValue?.trim()) {
+        try {
+          sillyTavernPreset = JSON.parse(snapshot.presetValue)
+        } catch {
+          throw new Error(t('The channel preset is not valid JSON.'))
+        }
+      }
       return {
         key: snapshot.key,
-        result: await previewWorldbook(snapshot.config, request),
+        result: await previewWorldbook(
+          snapshot.config,
+          request,
+          sillyTavernPreset
+        ),
       }
     },
     onError: (error) => handleServerError(error),
@@ -96,7 +110,14 @@ export function WorldbookPreview(props: {
       <Button
         type='button'
         disabled={props.disabled || preview.isPending || !input.trim()}
-        onClick={() => preview.mutate({ key, config: props.config, input })}
+        onClick={() =>
+          preview.mutate({
+            key,
+            config: props.config,
+            presetValue: props.presetValue,
+            input,
+          })
+        }
       >
         {preview.isPending ? t('Testing...') : t('Run matching test')}
       </Button>
@@ -109,10 +130,13 @@ export function WorldbookPreview(props: {
           ))}
           {result.placement && (
             <div className='bg-muted/30 rounded-lg border p-3 text-sm'>
-              <p className='font-medium'>{t('Resolved insertion position')}</p>
+              <p className='font-medium'>
+                {t('Insertion before the preset')}
+              </p>
               <p className='text-muted-foreground mt-1 text-xs'>
-                {t('Mode')}: {result.placement.mode} · {t('Message index')}:{' '}
-                {result.placement.index} · {t('Role')}:
+                {t('Mode')}: {result.placement.mode} ·{' '}
+                {t('Client message index')}: {result.placement.index} ·{' '}
+                {t('Role')}:
                 {' '}
                 {result.placement.role}
                 {result.placement.fallback
@@ -127,7 +151,10 @@ export function WorldbookPreview(props: {
                 key={`${entry.book_id}:${entry.id}`}
                 className='flex flex-wrap items-center justify-between gap-2 py-2 text-sm'
               >
-                <span className='min-w-0 break-words'>{entry.name}</span>
+                <span className='min-w-0 break-words'>
+                  {entry.order ? `#${entry.order} ` : ''}
+                  {entry.name}
+                </span>
                 <span className='text-muted-foreground text-xs'>
                   {reasons[entry.reason] || entry.reason}
                 </span>
