@@ -240,6 +240,11 @@ export function PresetScriptSettings(props: Props) {
               'Off by default. Turn this on only when this preset script asks the model to call tools.'
             )}
           </FieldDescription>
+          <FieldDescription>
+            {t(
+              'Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.'
+            )}
+          </FieldDescription>
           {!enabled && !tavernEnabled && (
             <FieldDescription>
               {t('Enable a server-side preset script first.')}

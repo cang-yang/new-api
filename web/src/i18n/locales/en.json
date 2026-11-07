@@ -30,6 +30,7 @@
     "Current draft: preset extras off": "Current draft: preset extras off",
     "Coordinate client and preset tool calls": "Coordinate client and preset tool calls",
     "Off by default. Turn this on only when this preset script asks the model to call tools.": "Off by default. Turn this on only when this preset script asks the model to call tools.",
+    "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.": "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.",
     "Current draft: tool coordination on": "Current draft: tool coordination on",
     "Current draft: tool coordination off": "Current draft: tool coordination off",
     "Enable a server-side preset script first.": "Enable a server-side preset script first.",

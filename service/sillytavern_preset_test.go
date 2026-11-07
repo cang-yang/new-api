@@ -573,22 +573,60 @@ func TestPresetProtocolPlanRejectsPresetOwnedClientFinal(t *testing.T) {
 }
 
 func TestPresetProtocolPlanLeavesAmbiguousOwnedToolsUntouched(t *testing.T) {
-	original := &dto.GeneralOpenAIRequest{}
+	// The client declares its own tools, so a failure to separate the preset's
+	// terminal tool from its auxiliary tools is a real ambiguity.
+	original := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "alpha", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "beta", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+		ToolChoice: "required",
+		Messages:   []dto.Message{{Role: "user", Content: "go"}},
+	}
 	compiled := &dto.GeneralOpenAIRequest{
 		Tools: []dto.ToolCallRequest{
-			{Type: "function", Function: dto.FunctionRequest{Name: "one", Parameters: json.RawMessage(`{"type":"object"}`)}},
-			{Type: "function", Function: dto.FunctionRequest{Name: "two", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "alpha", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "beta", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "gamma", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		},
 		ToolChoice: "required",
 	}
 	plan, mode, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{
 		ToolProtocol: &dto.SillyTavernToolProtocol{Enabled: true},
-	}, &PresetScriptResponse{ownedTools: map[string]bool{"one": true, "two": true}})
+	}, &PresetScriptResponse{ownedTools: map[string]bool{"gamma": true}})
 	require.NoError(t, err)
 	require.NotNil(t, plan)
 	assert.False(t, plan.audit.Activated)
 	assert.Equal(t, 0, mode)
 	assert.Contains(t, plan.audit.Diagnostics, "ambiguous_preset_final_tool")
+}
+
+func TestPresetProtocolPlanReportsNoClientToolContract(t *testing.T) {
+	// A client that only asks for a reply format in prompt text declares no
+	// tools at all. Both tools then belong to the preset, so there is nothing
+	// to coordinate: the request must stay untouched and the audit must say
+	// the coordination is inapplicable instead of ambiguous.
+	original := &dto.GeneralOpenAIRequest{
+		Messages: []dto.Message{{Role: "user", Content: "call the reply tool"}},
+	}
+	compiled := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "game_reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "context", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+		ToolChoice: "required",
+	}
+	plan, mode, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{
+		ToolProtocol: &dto.SillyTavernToolProtocol{Enabled: true},
+	}, &PresetScriptResponse{ownedTools: map[string]bool{"game_reply": true, "context": true}})
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	assert.True(t, plan.audit.Enabled)
+	assert.False(t, plan.audit.Eligible)
+	assert.False(t, plan.audit.Activated)
+	assert.Equal(t, 0, mode)
+	assert.Contains(t, plan.audit.Diagnostics, "no_client_tool_contract")
+	assert.NotContains(t, plan.audit.Diagnostics, "ambiguous_preset_final_tool")
 }
 
 func TestPresetProtocolRequestProjectionFinalPhase(t *testing.T) {

@@ -30,6 +30,7 @@
     "Current draft: preset extras off": "Brouillon : fonctions supplémentaires désactivées",
     "Coordinate client and preset tool calls": "Coordonner les appels d’outils du client et du préréglage",
     "Off by default. Turn this on only when this preset script asks the model to call tools.": "Désactivé par défaut. Activez cette option uniquement lorsque ce script de préréglage demande au modèle d’appeler des outils.",
+    "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.": "S’applique uniquement lorsque la requête du client déclare ses propres outils. Les requêtes sans contrat d’outil côté client restent inchangées.",
     "Current draft: tool coordination on": "Brouillon : coordination des outils activée",
     "Current draft: tool coordination off": "Brouillon : coordination des outils désactivée",
     "Enable a server-side preset script first.": "Activez d’abord un script de préréglage côté serveur.",

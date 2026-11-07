@@ -30,6 +30,7 @@
     "Current draft: preset extras off": "Текущий черновик: дополнения отключены",
     "Coordinate client and preset tool calls": "Согласовывать вызовы инструментов клиента и пресета",
     "Off by default. Turn this on only when this preset script asks the model to call tools.": "Отключено по умолчанию. Включайте, только если этот скрипт пресета требует от модели вызывать инструменты.",
+    "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.": "Применяется, только если запрос клиента объявляет собственные инструменты. Запросы без клиентского контракта инструментов остаются без изменений.",
     "Current draft: tool coordination on": "Текущий черновик: согласование инструментов включено",
     "Current draft: tool coordination off": "Текущий черновик: согласование инструментов отключено",
     "Enable a server-side preset script first.": "Сначала включите серверный скрипт пресета.",

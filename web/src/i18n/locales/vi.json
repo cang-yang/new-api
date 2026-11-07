@@ -30,6 +30,7 @@
     "Current draft: preset extras off": "Bản nháp hiện tại: tắt tính năng bổ sung",
     "Coordinate client and preset tool calls": "Điều phối lệnh gọi công cụ giữa máy khách và mẫu",
     "Off by default. Turn this on only when this preset script asks the model to call tools.": "Mặc định tắt. Chỉ bật khi tập lệnh mẫu yêu cầu mô hình gọi công cụ.",
+    "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.": "Chỉ áp dụng khi yêu cầu của máy khách tự khai báo công cụ. Các yêu cầu không có hợp đồng công cụ phía máy khách sẽ được giữ nguyên.",
     "Current draft: tool coordination on": "Bản nháp hiện tại: điều phối công cụ đã bật",
     "Current draft: tool coordination off": "Bản nháp hiện tại: điều phối công cụ đã tắt",
     "Enable a server-side preset script first.": "Hãy bật tập lệnh mẫu phía máy chủ trước.",

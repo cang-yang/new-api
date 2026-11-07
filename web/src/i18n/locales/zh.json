@@ -30,6 +30,7 @@
     "Current draft: preset extras off": "当前草稿：关闭附加功能",
     "Coordinate client and preset tool calls": "协调客户端与预设工具调用",
     "Off by default. Turn this on only when this preset script asks the model to call tools.": "默认关闭。仅当此预设脚本要求模型调用工具时开启。",
+    "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.": "仅在客户端请求自己声明了工具时生效；没有客户端工具契约的请求会保持原样，不做任何改动。",
     "Current draft: tool coordination on": "当前草稿：工具协调已开启",
     "Current draft: tool coordination off": "当前草稿：工具协调已关闭",
     "Enable a server-side preset script first.": "请先启用服务器端预设脚本。",

@@ -30,6 +30,7 @@
     "Current draft: preset extras off": "現在の下書き：追加機能なし",
     "Coordinate client and preset tool calls": "クライアントとプリセットのツール呼び出しを調整",
     "Off by default. Turn this on only when this preset script asks the model to call tools.": "既定では無効です。このプリセットスクリプトがモデルにツール呼び出しを求める場合のみ有効にしてください。",
+    "Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.": "クライアントのリクエストが独自のツールを宣言している場合にのみ適用されます。クライアント側のツール契約がないリクエストは変更されません。",
     "Current draft: tool coordination on": "現在の下書き：ツール調整は有効",
     "Current draft: tool coordination off": "現在の下書き：ツール調整は無効",
     "Enable a server-side preset script first.": "先にサーバー側のプリセットスクリプトを有効にしてください。",

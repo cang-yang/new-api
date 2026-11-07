@@ -279,7 +279,7 @@ type SillyTavernToolProtocol struct {
 2. 没有客户端最终工具时，编译请求函数级 `tool_choice` 指向的预设自有工具。
 3. 没有客户端最终工具、原始请求没有工具，且编译请求只有一个预设自有工具。
 4. 显式辅助列表之外只剩一个预设自有工具。
-5. 否则不激活并记录 `ambiguous_preset_final_tool`。
+5. 否则不激活：客户端请求没有任何工具契约时记录 `no_client_tool_contract`，其余情况记录 `ambiguous_preset_final_tool`。
 
 ### 7.4 不允许的推断
 
@@ -287,6 +287,7 @@ type SillyTavernToolProtocol struct {
 - 不把原始客户端所有非最终工具自动当作辅助工具，除非其角色已经由函数级选择或历史结果证明。
 - 不把预设新增的多个工具全部视为同一阶段可安全调用，除非显式配置或唯一推断成立。
 - 不在存在两个不同最终工具时任意选择其中一个。
+- 不从提示词正文推断客户端回包格式。客户端没有通过 `tools`、`tool_choice` 或旧式函数控件声明任何工具时，视为不存在可协调的客户端契约，预设工具保持原样。
 
 ## 8. 当前阶段判定
 
@@ -535,6 +536,7 @@ type SillyTavernToolProtocol struct {
 - `preset_not_active`
 - `script_runtime_inactive`
 - `no_client_or_preset_contract`
+- `no_client_tool_contract`
 - `legacy_tool_contract_unsupported`
 - `client_final_ambiguous`
 - `preset_final_ambiguous`
@@ -566,6 +568,7 @@ type SillyTavernToolProtocol struct {
 - 显示“协调客户端与预设工具调用”开关。
 - 默认关闭。
 - 说明只应在预设脚本会要求模型调用工具时开启。
+- 说明只有客户端请求自己声明工具时才生效，没有客户端工具契约的请求保持原样。
 - 展示检测到的预设工具名称。
 - 展示当前推断状态：客户端最终工具、预设辅助工具或“暂无法安全判断”。
 

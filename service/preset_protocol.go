@@ -113,6 +113,13 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		return inactivePresetProtocolPlan(true, true, "no_client_or_preset_contract"), 0, nil
 	}
 	if clientFinal == "" && presetFinal == "" {
+		// A request that carries no client tool contract has nothing to
+		// coordinate: the preset's tools are the only tools in play, and a
+		// reply format expressed in prompt text is not machine readable. That
+		// is a boundary, not an ambiguity the operator could resolve here.
+		if !clientDeclaresToolContract(original) {
+			return inactivePresetProtocolPlan(true, false, "no_client_tool_contract"), 0, nil
+		}
 		return inactivePresetProtocolPlan(true, true, "ambiguous_preset_final_tool"), 0, nil
 	}
 
@@ -263,6 +270,18 @@ func orderedToolNames(tools []dto.ToolCallRequest, names []string) []string {
 		}
 	}
 	return ordered
+}
+
+// clientDeclaresToolContract reports whether the incoming request carries any
+// client-owned tool contract. A client that only asks for a reply format in
+// prompt text declares nothing here, so the gateway must not invent a role
+// from prose it cannot validate.
+func clientDeclaresToolContract(request *dto.GeneralOpenAIRequest) bool {
+	if request == nil {
+		return false
+	}
+	return len(request.Tools) > 0 || len(request.Functions) > 0 ||
+		request.ToolChoice != nil || len(request.FunctionCall) > 0
 }
 
 func inferClientFinalTool(original, compiled *dto.GeneralOpenAIRequest, owned map[string]bool) string {
