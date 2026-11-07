@@ -63,6 +63,53 @@ test('opening preserves the selected draft and exposes exactly one choice group'
   expect(onChange).not.toHaveBeenCalled()
 })
 
+test('tool coordination follows the preset and stays off by default', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const view = render(
+    <PresetScriptSettings config={config} onChange={onChange} />
+  )
+  const toggle = screen.getByRole('switch', {
+    name: 'Coordinate client and preset tool calls',
+  })
+  expect(toggle).toHaveAttribute('aria-checked', 'false')
+  expect(screen.getByText('Current draft: tool coordination off')).toBeVisible()
+  await user.click(toggle)
+  expect(onChange).toHaveBeenLastCalledWith({
+    ...config,
+    tool_protocol: { enabled: true },
+  })
+  view.rerender(
+    <PresetScriptSettings
+      config={{ ...config, tool_protocol: { enabled: true } }}
+      onChange={onChange}
+    />
+  )
+  expect(
+    screen.getByRole('switch', {
+      name: 'Coordinate client and preset tool calls',
+    })
+  ).toHaveAttribute('aria-checked', 'true')
+  expect(screen.getByText('Current draft: tool coordination on')).toBeVisible()
+})
+
+test('tool coordination is unavailable until a preset script runtime is selected', () => {
+  render(
+    <PresetScriptSettings
+      config={{ ...config, script_runtime: '' }}
+      onChange={vi.fn()}
+    />
+  )
+  expect(
+    screen.getByRole('switch', {
+      name: 'Coordinate client and preset tool calls',
+    })
+  ).toHaveAttribute('aria-disabled', 'true')
+  expect(
+    screen.getByText('Enable a server-side preset script first.')
+  ).toBeVisible()
+})
+
 test('switching choices and turning off preserves the preset and downloaded files', async () => {
   const user = userEvent.setup()
   const onChange = vi.fn()

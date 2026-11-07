@@ -30,11 +30,13 @@ import {
 import {
   Field,
   FieldDescription,
+  FieldGroup,
   FieldLegend,
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Switch } from '@/components/ui/switch'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -58,6 +60,8 @@ export function PresetScriptSettings(props: Props) {
   const supported = hasSPreset(props.config)
   const enabled = props.config.script_runtime === 'spreset-v1'
   const tavernEnabled = props.config.script_runtime === 'tavern-v1'
+  const toolProtocol = record(props.config.tool_protocol)
+  const toolProtocolEnabled = toolProtocol.enabled === true
   const scripts = discoverPresetScripts(props.config)
   const hasScripts = scripts.some((script) => script.enabled)
   const [preparing, setPreparing] = useState(false)
@@ -207,6 +211,48 @@ export function PresetScriptSettings(props: Props) {
             </FieldLabel>
           )}
         </RadioGroup>
+        <FieldGroup className='rounded-lg border p-4'>
+          <Field
+            orientation='horizontal'
+            data-disabled={props.disabled || (!enabled && !tavernEnabled)}
+          >
+            <Switch
+              id={`${id}-tool-protocol`}
+              checked={toolProtocolEnabled}
+              disabled={props.disabled || (!enabled && !tavernEnabled)}
+              onCheckedChange={(checked) => {
+                if (props.disabled || (!enabled && !tavernEnabled)) return
+                props.onChange({
+                  ...props.config,
+                  tool_protocol: {
+                    ...toolProtocol,
+                    enabled: checked,
+                  },
+                })
+              }}
+            />
+            <FieldLabel htmlFor={`${id}-tool-protocol`}>
+              {t('Coordinate client and preset tool calls')}
+            </FieldLabel>
+          </Field>
+          <FieldDescription>
+            {t(
+              'Off by default. Turn this on only when this preset script asks the model to call tools.'
+            )}
+          </FieldDescription>
+          {!enabled && !tavernEnabled && (
+            <FieldDescription>
+              {t('Enable a server-side preset script first.')}
+            </FieldDescription>
+          )}
+          {enabled || tavernEnabled ? (
+            <p className='text-muted-foreground text-sm'>
+              {toolProtocolEnabled
+                ? t('Current draft: tool coordination on')
+                : t('Current draft: tool coordination off')}
+            </p>
+          ) : null}
+        </FieldGroup>
         {supported && scripts.length > 0 && (
           <p className='text-muted-foreground text-sm'>
             {t(

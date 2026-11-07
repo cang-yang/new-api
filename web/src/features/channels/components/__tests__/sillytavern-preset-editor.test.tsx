@@ -130,12 +130,18 @@ test('script compatibility is explicit, preserves the preset and disables the co
   expect(
     screen.getByRole('radio', { name: 'Do not use preset extras' })
   ).toHaveAttribute('aria-checked', 'false')
+  await user.click(
+    screen.getByRole('switch', {
+      name: 'Coordinate client and preset tool calls',
+    })
+  )
   expect(screen.queryByText('Compatibility boundaries')).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   const saved = JSON.parse(
     screen.getByLabelText('Saved config').textContent || '{}'
   )
   expect(saved.script_runtime).toBe('spreset-v1')
+  expect(saved.tool_protocol).toEqual({ enabled: true })
   expect(saved.tool_text.enabled).toBe(false)
   expect(saved.preset).toEqual(withHooks)
 })
@@ -463,9 +469,7 @@ test('preset failure policy remains inherited on unrelated changes and explicit 
   await user.click(screen.getByRole('tab', { name: 'Embedded regex scripts' }))
   expect(
     screen.getByLabelText('Embedded regex failure policy')
-  ).toHaveTextContent(
-    'Inherited / legacy behavior (strict)'
-  )
+  ).toHaveTextContent('Inherited / legacy behavior (strict)')
   await user.click(
     screen.getByRole('switch', { name: 'Enable embedded send-side regex' })
   )

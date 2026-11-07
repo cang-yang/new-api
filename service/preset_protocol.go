@@ -24,7 +24,10 @@ const (
 // PresetProtocolAudit is safe to expose in request traces. It deliberately
 // contains only role names and diagnostics, never message or schema bodies.
 type PresetProtocolAudit struct {
+	Enabled     bool     `json:"enabled"`
+	Eligible    bool     `json:"eligible"`
 	Activated   bool     `json:"activated"`
+	Reason      string   `json:"reason,omitempty"`
 	Phase       string   `json:"phase,omitempty"`
 	Contract    string   `json:"contract,omitempty"`
 	ClientFinal string   `json:"client_final,omitempty"`
@@ -42,6 +45,7 @@ type presetProtocolPlan struct {
 	finalTool      string
 	auxiliary      []string
 	contract       string
+	responseTarget string
 	validationMode int
 	phase          string
 	terminal       dto.ToolCallRequest
@@ -52,11 +56,14 @@ type presetProtocolPlan struct {
 // returned for ambiguous configurations so callers can still expose the
 // diagnostic without changing the request.
 func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, config *dto.SillyTavernPresetConfig, response *PresetScriptResponse) (*presetProtocolPlan, int, error) {
-	if original == nil || compiled == nil || config == nil || response == nil || response.tavern != nil {
+	if original == nil || compiled == nil || config == nil || response == nil {
 		return nil, 0, nil
 	}
-	ownedOrder := orderedOwnedToolNames(compiled, response.ownedTools)
 	protocol := config.ToolProtocol
+	if protocol == nil || !protocol.Enabled {
+		return inactivePresetProtocolPlan(false, false, "tool_protocol_disabled"), 0, nil
+	}
+	ownedOrder := orderedOwnedToolNames(compiled, response.ownedTools)
 	if protocol != nil {
 		if protocol.ClientFinal != "" {
 			if _, ok := findToolByName(original.Tools, protocol.ClientFinal); !ok {
@@ -80,7 +87,7 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		presetFinal = protocol.PresetFinal
 	}
 	if clientFinal == "" {
-		clientFinal = inferClientFinalTool(original)
+		clientFinal = inferClientFinalTool(original, compiled, response.ownedTools)
 	}
 	if presetFinal == "" {
 		if name := presetToolChoiceName(compiled.ToolChoice); name != "" && response.ownedTools[name] {
@@ -103,14 +110,10 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		return nil, 0, fmt.Errorf("sillytavern_preset tool_protocol preset_final cannot replace a client response tool")
 	}
 	if clientFinal == "" && len(ownedOrder) == 0 {
-		return nil, 0, nil
+		return inactivePresetProtocolPlan(true, true, "no_client_or_preset_contract"), 0, nil
 	}
 	if clientFinal == "" && presetFinal == "" {
-		plan := &presetProtocolPlan{audit: PresetProtocolAudit{
-			Diagnostics: []string{"ambiguous_preset_final_tool"},
-		}}
-		plan.audit.Fingerprint = plan.fingerprint()
-		return plan, 0, nil
+		return inactivePresetProtocolPlan(true, true, "ambiguous_preset_final_tool"), 0, nil
 	}
 
 	finalTool := clientFinal
@@ -156,19 +159,25 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		return nil, 0, nil
 	}
 
-	contract, err := resolvePresetProtocolContract(original, clientFinal, protocol)
+	contract, safe, err := resolvePresetProtocolContract(original, clientFinal, protocol)
 	if err != nil {
 		return nil, 0, err
+	}
+	if !safe {
+		return inactivePresetProtocolPlan(true, true, "response_projection_unsafe"), 0, nil
 	}
 	// A preset terminal tool cannot be silently projected into a client tool
 	// whose schema was never exposed to the model.
 	if contract == presetProtocolContractTool && presetOwnedFinal {
-		return nil, 0, fmt.Errorf("sillytavern_preset cannot project a preset terminal tool into a client tool contract")
+		return inactivePresetProtocolPlan(true, true, "client_and_preset_final_conflict"), 0, nil
+	}
+	if response.tavern != nil && presetOwnedFinal {
+		return inactivePresetProtocolPlan(true, true, "response_projection_unsafe"), 0, nil
 	}
 
-	active := len(auxiliary) > 0 || contract == presetProtocolContractJSON || presetOwnedFinal && protocol != nil
+	active := len(auxiliary) > 0 || contract == presetProtocolContractJSON || presetOwnedFinal
 	if !active {
-		return nil, 0, nil
+		return inactivePresetProtocolPlan(true, true, "no_projection_needed"), 0, nil
 	}
 	plan := &presetProtocolPlan{
 		clientFinal:    clientFinal,
@@ -176,11 +185,15 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		finalTool:      finalTool,
 		auxiliary:      auxiliary,
 		contract:       contract,
+		responseTarget: protocolResponseTarget(protocol),
 		validationMode: 1,
 		terminal:       terminal,
 	}
 	plan.audit = PresetProtocolAudit{
+		Enabled:     true,
+		Eligible:    true,
 		Activated:   true,
+		Reason:      "projection_planned",
 		Contract:    contract,
 		ClientFinal: clientFinal,
 		PresetFinal: presetFinal,
@@ -189,6 +202,24 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	}
 	plan.audit.Fingerprint = plan.fingerprint()
 	return plan, plan.validationMode, nil
+}
+
+func inactivePresetProtocolPlan(enabled, eligible bool, reason string) *presetProtocolPlan {
+	plan := &presetProtocolPlan{audit: PresetProtocolAudit{
+		Enabled:     enabled,
+		Eligible:    eligible,
+		Reason:      reason,
+		Diagnostics: []string{reason},
+	}}
+	plan.audit.Fingerprint = plan.fingerprint()
+	return plan
+}
+
+func protocolResponseTarget(protocol *dto.SillyTavernToolProtocol) string {
+	if protocol == nil || protocol.ResponseTarget == "" {
+		return "auto"
+	}
+	return protocol.ResponseTarget
 }
 
 func orderedOwnedToolNames(request *dto.GeneralOpenAIRequest, owned map[string]bool) []string {
@@ -234,23 +265,23 @@ func orderedToolNames(tools []dto.ToolCallRequest, names []string) []string {
 	return ordered
 }
 
-func inferClientFinalTool(request *dto.GeneralOpenAIRequest) string {
-	if request == nil {
+func inferClientFinalTool(original, compiled *dto.GeneralOpenAIRequest, owned map[string]bool) string {
+	if original == nil {
 		return ""
 	}
-	if name := presetToolChoiceName(request.ToolChoice); name != "" {
-		if _, ok := findToolByName(request.Tools, name); ok {
+	if name := presetToolChoiceName(original.ToolChoice); name != "" {
+		if _, ok := findToolByName(original.Tools, name); ok {
 			return name
 		}
 	}
-	choice, _ := request.ToolChoice.(string)
-	if choice == "required" && len(request.Tools) == 1 {
-		return request.Tools[0].Function.Name
+	choice, _ := original.ToolChoice.(string)
+	if choice == "required" && len(original.Tools) == 1 {
+		return original.Tools[0].Function.Name
 	}
-	if choice == "required" && len(request.Tools) > 1 {
-		if auxiliary := lastPresetProtocolToolResult(request.Messages); auxiliary != "" {
+	if choice == "required" && len(original.Tools) > 1 {
+		if auxiliary := lastPresetProtocolToolResult(original.Messages); auxiliary != "" {
 			candidate := ""
-			for _, tool := range request.Tools {
+			for _, tool := range original.Tools {
 				name := tool.Function.Name
 				if name == auxiliary {
 					continue
@@ -263,7 +294,28 @@ func inferClientFinalTool(request *dto.GeneralOpenAIRequest) string {
 			return candidate
 		}
 	}
+	if len(original.Tools) == 1 && compiledHasOwnedToolAddition(original, compiled, owned) {
+		compiledChoice, _ := compiled.ToolChoice.(string)
+		if compiledChoice == "required" {
+			return original.Tools[0].Function.Name
+		}
+	}
 	return ""
+}
+
+func compiledHasOwnedToolAddition(original, compiled *dto.GeneralOpenAIRequest, owned map[string]bool) bool {
+	if original == nil || compiled == nil || len(owned) == 0 {
+		return false
+	}
+	for _, tool := range compiled.Tools {
+		name := tool.Function.Name
+		if owned[name] {
+			if _, exists := findToolByName(original.Tools, name); !exists {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func lastPresetProtocolToolResult(messages []dto.Message) string {
@@ -318,30 +370,36 @@ func findToolByName(tools []dto.ToolCallRequest, name string) (dto.ToolCallReque
 	return dto.ToolCallRequest{}, false
 }
 
-func resolvePresetProtocolContract(original *dto.GeneralOpenAIRequest, clientFinal string, protocol *dto.SillyTavernToolProtocol) (string, error) {
+func resolvePresetProtocolContract(original *dto.GeneralOpenAIRequest, clientFinal string, protocol *dto.SillyTavernToolProtocol) (string, bool, error) {
 	explicit := ""
 	if protocol != nil {
 		explicit = protocol.ResponseTarget
 	}
 	if clientFinal != "" {
 		if explicit != "" && explicit != "auto" && explicit != presetProtocolContractTool {
-			return "", fmt.Errorf("sillytavern_preset tool_protocol.response_target cannot replace a client_final tool contract")
+			return "", false, fmt.Errorf("sillytavern_preset tool_protocol.response_target cannot replace a client_final tool contract")
 		}
-		return presetProtocolContractTool, nil
-	}
-	if explicit != "" && explicit != "auto" {
-		if explicit == presetProtocolContractTool {
-			return "", fmt.Errorf("sillytavern_preset tool_protocol.response_target tool requires a client_final tool")
-		}
-		return explicit, nil
+		return presetProtocolContractTool, true, nil
 	}
 	if original != nil && original.ResponseFormat != nil {
 		switch strings.ToLower(strings.TrimSpace(original.ResponseFormat.Type)) {
-		case "json", "json_object", "json_schema":
-			return presetProtocolContractJSON, nil
+		case "json_schema":
+			return "", false, nil
 		}
 	}
-	return presetProtocolContractText, nil
+	if explicit != "" && explicit != "auto" {
+		if explicit == presetProtocolContractTool {
+			return "", false, nil
+		}
+		return explicit, true, nil
+	}
+	if original != nil && original.ResponseFormat != nil {
+		switch strings.ToLower(strings.TrimSpace(original.ResponseFormat.Type)) {
+		case "json", "json_object":
+			return presetProtocolContractJSON, true, nil
+		}
+	}
+	return presetProtocolContractText, true, nil
 }
 
 func (p *presetProtocolPlan) fingerprint() string {
@@ -349,19 +407,23 @@ func (p *presetProtocolPlan) fingerprint() string {
 		return ""
 	}
 	data, err := common.Marshal(struct {
-		Version     string
-		Contract    string
-		ClientFinal string
-		PresetFinal string
-		FinalTool   string
-		Auxiliary   []string
+		Version        string
+		Enabled        bool
+		ResponseTarget string
+		Contract       string
+		ClientFinal    string
+		PresetFinal    string
+		FinalTool      string
+		Auxiliary      []string
 	}{
-		Version:     "preset-protocol-v1",
-		Contract:    p.contract,
-		ClientFinal: p.clientFinal,
-		PresetFinal: p.presetFinal,
-		FinalTool:   p.finalTool,
-		Auxiliary:   p.auxiliary,
+		Version:        "preset-protocol-v3",
+		Enabled:        p.audit.Enabled,
+		ResponseTarget: p.responseTarget,
+		Contract:       p.contract,
+		ClientFinal:    p.clientFinal,
+		PresetFinal:    p.presetFinal,
+		FinalTool:      p.finalTool,
+		Auxiliary:      p.auxiliary,
 	})
 	if err != nil {
 		return ""

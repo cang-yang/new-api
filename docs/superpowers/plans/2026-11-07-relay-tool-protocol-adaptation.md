@@ -8,6 +8,19 @@
 
 **Tech Stack:** Go 1.26 root module, `relaykit` DTO module, Gin, existing `spreset-v1`/`tavern-v1` script runtime, existing response text filter and SSE pipeline.
 
+## Revision 2 (authoritative corrections)
+
+The formal spec `docs/superpowers/specs/2026-11-07-relay-tool-protocol-adaptation-design.md` is authoritative. The original task text below remains as historical scaffolding, but implementation must apply these corrections:
+
+- Add `Enabled bool` to `SillyTavernToolProtocol`; a missing protocol object or `enabled=false` is a complete no-op.
+- Infer the client final tool from the original client contract and the compiled request together. One original client tool plus preset-added tools and compiled `tool_choice=required` must still treat the original client tool as final, even when the original choice was not function-level.
+- Treat script ownership (`ownedTools`) as the source of preset tool identity. Do not exclude a runtime solely because it is `tavern-v1`; if ownership is unavailable, remain inactive.
+- Determine the phase from compiled messages and the latest user boundary. A completed auxiliary tool result after that boundary selects the final phase.
+- Add audit fields for `enabled`, `eligible`, `reason`, and the existing safe identity fields.
+- `response_target=tool` requires a client final tool. The first version supports `json_object`; `json_schema` does not activate automatic projection.
+- Add the preset editor switch, persistence behavior, and retry fingerprint coverage described by the spec.
+- Any unsafe or ambiguous case must leave request and response unchanged and record a diagnostic.
+
 ## Global Constraints
 
 - Use `common.Marshal` / `common.Unmarshal` / `common.UnmarshalPreservingNumbers` in the root module; never call `encoding/json.Marshal` or `Unmarshal` from business code.

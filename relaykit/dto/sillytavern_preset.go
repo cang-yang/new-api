@@ -40,6 +40,7 @@ type SillyTavernPresetConfig struct {
 // SillyTavernToolProtocol optionally resolves ambiguous tool roles without
 // tying the gateway to a specific preset, script, or tool name.
 type SillyTavernToolProtocol struct {
+	Enabled        bool     `json:"enabled"`
 	ClientFinal    string   `json:"client_final,omitempty"`
 	PresetFinal    string   `json:"preset_final,omitempty"`
 	Auxiliary      []string `json:"auxiliary,omitempty"`
