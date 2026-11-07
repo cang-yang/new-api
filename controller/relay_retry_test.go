@@ -24,6 +24,8 @@ func TestPresetScriptEndpointScope(t *testing.T) {
 	require.ErrorContains(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeResponses), "chat completions")
 	require.NoError(t, validatePresetScriptEndpoint(preset, "other", relayconstant.RelayModeResponses))
 	require.NoError(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeChatCompletions))
+	preset.ToolProtocol = &dto.SillyTavernToolProtocol{ClientFinal: "reply"}
+	require.ErrorContains(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeResponses), "chat completions")
 	preset.ScriptRuntime = ""
 	require.NoError(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeResponses))
 }
@@ -50,6 +52,11 @@ func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
 	assert.NotEqual(t, presetRequestRetrySettings(preset, "m"), presetRequestRetrySettings(&other, "m"))
 	other.Models = []string{"another-model"}
 	assert.Equal(t, presetRequestRetrySettings(nil, "m"), presetRequestRetrySettings(&other, "m"), "inactive presets must not interfere with ordinary failover")
+	firstProtocol := *preset
+	firstProtocol.ToolProtocol = &dto.SillyTavernToolProtocol{ClientFinal: "reply"}
+	secondProtocol := firstProtocol
+	secondProtocol.ToolProtocol = &dto.SillyTavernToolProtocol{ClientFinal: "other_reply"}
+	assert.NotEqual(t, presetRequestRetrySettings(&firstProtocol, "m"), presetRequestRetrySettings(&secondProtocol, "m"))
 }
 
 func TestSelectedChannelResponseRegexUsesContextSettings(t *testing.T) {

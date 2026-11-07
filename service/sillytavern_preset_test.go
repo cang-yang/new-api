@@ -386,6 +386,333 @@ func scriptPresetConfig(t *testing.T, settings map[string]any) *dto.SillyTavernP
 	return &dto.SillyTavernPresetConfig{Preset: preset, ScriptRuntime: "spreset-v1"}
 }
 
+func protocolScriptPresetConfig(t *testing.T, settings map[string]any) *dto.SillyTavernPresetConfig {
+	t.Helper()
+	preset, err := common.Marshal(map[string]any{
+		"prompts": []any{
+			map[string]any{"identifier": "chatHistory", "marker": true},
+			map[string]any{"identifier": "context", "content": "Use the context tool when synchronization is required."},
+		},
+		"prompt_order": []any{map[string]any{"order": []any{
+			map[string]any{"identifier": "context", "enabled": true},
+			map[string]any{"identifier": "chatHistory", "enabled": true},
+		}}},
+		"extensions": map[string]any{"SPreset": settings},
+	})
+	require.NoError(t, err)
+	return &dto.SillyTavernPresetConfig{Preset: preset, ScriptRuntime: "spreset-v1"}
+}
+
+func TestPresetProtocolPlanUsesClientFinalAndOwnedAuxiliary(t *testing.T) {
+	original := &dto.GeneralOpenAIRequest{
+		Tools:      []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)}}},
+		ToolChoice: "required",
+	}
+	compiled := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "context", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+	}
+	response := &PresetScriptResponse{ownedTools: map[string]bool{"context": true}}
+	plan, mode, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{}, response)
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	assert.True(t, plan.audit.Activated)
+	assert.Equal(t, 1, mode)
+	assert.Equal(t, "reply", plan.finalTool)
+	assert.Equal(t, []string{"context"}, plan.auxiliary)
+	assert.Equal(t, presetProtocolContractTool, plan.contract)
+}
+
+func TestPresetProtocolPlanUsesExplicitConfiguration(t *testing.T) {
+	original := &dto.GeneralOpenAIRequest{Tools: []dto.ToolCallRequest{
+		{Type: "function", Function: dto.FunctionRequest{Name: "client_reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}}
+	compiled := &dto.GeneralOpenAIRequest{Tools: []dto.ToolCallRequest{
+		{Type: "function", Function: dto.FunctionRequest{Name: "client_reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		{Type: "function", Function: dto.FunctionRequest{Name: "context", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}}
+	config := &dto.SillyTavernPresetConfig{ToolProtocol: &dto.SillyTavernToolProtocol{
+		ClientFinal: "client_reply",
+		Auxiliary:   []string{"context"},
+	}}
+	plan, mode, err := buildPresetProtocolPlan(original, compiled, config, &PresetScriptResponse{ownedTools: map[string]bool{"context": true}})
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	assert.True(t, plan.audit.Activated)
+	assert.Equal(t, 1, mode)
+	assert.Equal(t, "client_reply", plan.clientFinal)
+	assert.Equal(t, []string{"context"}, plan.auxiliary)
+}
+
+func TestPresetProtocolPlanRejectsPresetOwnedClientFinal(t *testing.T) {
+	original := &dto.GeneralOpenAIRequest{}
+	compiled := &dto.GeneralOpenAIRequest{Tools: []dto.ToolCallRequest{{
+		Type: "function", Function: dto.FunctionRequest{Name: "preset_reply", Parameters: json.RawMessage(`{"type":"object"}`)},
+	}}}
+	config := &dto.SillyTavernPresetConfig{ToolProtocol: &dto.SillyTavernToolProtocol{ClientFinal: "preset_reply"}}
+	_, _, err := buildPresetProtocolPlan(original, compiled, config, &PresetScriptResponse{ownedTools: map[string]bool{"preset_reply": true}})
+	require.ErrorContains(t, err, "client_final")
+}
+
+func TestPresetProtocolPlanLeavesAmbiguousOwnedToolsUntouched(t *testing.T) {
+	original := &dto.GeneralOpenAIRequest{}
+	compiled := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "one", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "two", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+		ToolChoice: "required",
+	}
+	plan, mode, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{}, &PresetScriptResponse{ownedTools: map[string]bool{"one": true, "two": true}})
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	assert.False(t, plan.audit.Activated)
+	assert.Equal(t, 0, mode)
+	assert.Contains(t, plan.audit.Diagnostics, "ambiguous_preset_final_tool")
+}
+
+func TestPresetProtocolRequestProjectionFinalPhase(t *testing.T) {
+	config := protocolScriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"context": map[string]any{"enabled": true, "code": `return {name:"context", parameters:{type:"object",properties:{query:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	request := &dto.GeneralOpenAIRequest{
+		Model:      "m",
+		ToolChoice: "required",
+		Tools: []dto.ToolCallRequest{{
+			Type:     "function",
+			Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		Messages: []dto.Message{
+			{Role: "user", Content: "go"},
+			{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ctx-1","type":"function","function":{"name":"context","arguments":"{}"}}]`)},
+			{Role: "tool", ToolCallId: "ctx-1", Content: "synced"},
+		},
+	}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, presetProtocolPhaseFinal, trace.Protocol.Phase)
+	assert.Equal(t, "reply", trace.Protocol.FinalTool)
+	require.Len(t, compiled.Tools, 1)
+	assert.Equal(t, "reply", compiled.Tools[0].Function.Name)
+	assert.Equal(t, "reply", presetToolChoiceName(compiled.ToolChoice))
+	require.GreaterOrEqual(t, len(compiled.Messages), len(request.Messages))
+	assert.Equal(t, request.Messages, compiled.Messages[len(compiled.Messages)-len(request.Messages):])
+	audit, err := common.Marshal(trace.Protocol)
+	require.NoError(t, err)
+	assert.NotContains(t, string(audit), "synced")
+	assert.Less(t, len(audit), 1024)
+}
+
+func TestPresetProtocolRequestProjectionInfersFinalFromClientHistory(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{})
+	request := &dto.GeneralOpenAIRequest{
+		Model:      "m",
+		ToolChoice: "required",
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "context", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+		Messages: []dto.Message{
+			{Role: "user", Content: "go"},
+			{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ctx-1","type":"function","function":{"name":"context","arguments":"{}"}}]`)},
+			{Role: "tool", ToolCallId: "ctx-1", Content: "synced"},
+		},
+	}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, "reply", trace.Protocol.ClientFinal)
+	assert.Equal(t, []string{"context"}, trace.Protocol.Auxiliary)
+	require.Len(t, compiled.Tools, 1)
+	assert.Equal(t, "reply", compiled.Tools[0].Function.Name)
+	assert.Equal(t, "reply", presetToolChoiceName(compiled.ToolChoice))
+}
+
+func TestPresetProtocolRequestProjectionInfersFinalFromContextHistory(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{})
+	request := &dto.GeneralOpenAIRequest{
+		Model:      "m",
+		ToolChoice: "required",
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "context", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+		Messages: []dto.Message{{Role: "user", Content: "base"}},
+	}
+	context := SillyTavernContext{ChatHistory: []dto.Message{
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"ctx-1","type":"function","function":{"name":"context","arguments":"{}"}}]`)},
+		{Role: "tool", ToolCallId: "ctx-1", Content: "synced"},
+	}}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, context)
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, "reply", trace.Protocol.ClientFinal)
+	require.Len(t, compiled.Tools, 1)
+	assert.Equal(t, "reply", compiled.Tools[0].Function.Name)
+}
+
+func TestPresetProtocolRequestProjectionAuxiliaryPhase(t *testing.T) {
+	config := protocolScriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"context": map[string]any{"enabled": true, "code": `return {name:"context", parameters:{type:"object",properties:{query:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	request := &dto.GeneralOpenAIRequest{
+		Model:      "m",
+		ToolChoice: "required",
+		Tools: []dto.ToolCallRequest{{
+			Type:     "function",
+			Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, presetProtocolPhaseAuxiliary, trace.Protocol.Phase)
+	require.Len(t, compiled.Tools, 1)
+	assert.Equal(t, "context", compiled.Tools[0].Function.Name)
+	assert.Equal(t, "context", presetToolChoiceName(compiled.ToolChoice))
+}
+
+func TestPresetProtocolRequestProjectionJSONContract(t *testing.T) {
+	config := &dto.SillyTavernPresetConfig{
+		ScriptRuntime: "spreset-v1",
+		Preset:        scriptPresetConfig(t, map[string]any{}).Preset,
+		ToolProtocol:  &dto.SillyTavernToolProtocol{PresetFinal: "answer", ResponseTarget: "json"},
+	}
+	config.Preset, _ = common.Marshal(map[string]any{
+		"prompts": []any{map[string]any{"identifier": "reply", "content": "Use the declared format."}, map[string]any{"identifier": "chatHistory", "marker": true}},
+		"prompt_order": []any{map[string]any{"order": []any{
+			map[string]any{"identifier": "reply", "enabled": true}, map[string]any{"identifier": "chatHistory", "enabled": true},
+		}}},
+		"extensions": map[string]any{"SPreset": map[string]any{"ToolBindings": map[string]any{
+			"reply": map[string]any{"enabled": true, "code": `return {name:"answer", parameters:{type:"object",properties:{answer:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+		}}},
+	})
+	request := &dto.GeneralOpenAIRequest{
+		Model:          "m",
+		ResponseFormat: &dto.ResponseFormat{Type: "json_object"},
+		Messages:       []dto.Message{{Role: "user", Content: "go"}},
+	}
+	compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, presetProtocolContractJSON, trace.Protocol.Contract)
+	require.Len(t, compiled.Tools, 1)
+	assert.Equal(t, "answer", compiled.Tools[0].Function.Name)
+	assert.Equal(t, "answer", presetToolChoiceName(compiled.ToolChoice))
+}
+
+func TestPresetProtocolTextResponseProjection(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{think_nya:{type:"string"},game_content:{type:"string"}},required:["think_nya","game_content"]}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{PresetFinal: "game_reply", ResponseTarget: "text"}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}, SillyTavernContext{})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"game_reply","arguments":"{\"think_nya\":\"hidden\",\"game_content\":\"visible reply\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"visible reply"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
+	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+}
+
+func TestPresetProtocolStreamResponseProjection(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{think_nya:{type:"string"},game_content:{type:"string"}},required:["think_nya","game_content"]}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{PresetFinal: "game_reply", ResponseTarget: "text"}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}, SillyTavernContext{})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	context.Writer.Header().Set("Content-Type", "text/event-stream")
+	body := "data: " + `{"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"reply-1","function":{"name":"game_","arguments":"{\"think_nya\":\"hidden\","}}]},"finish_reason":null}]}` + "\n\n" +
+		"data: " + `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"reply","arguments":"\"game_content\":\"visible reply\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	_, err = filter.WriteString(body)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"visible reply"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	assert.NotContains(t, recorder.Body.String(), `"name":"game_reply"`)
+	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+	assert.Contains(t, recorder.Body.String(), "data: [DONE]")
+}
+
+func TestPresetProtocolJSONResponseProjection(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"reply": map[string]any{"enabled": true, "code": `return {name:"answer", parameters:{type:"object",properties:{answer:{type:"string"},score:{type:"number"}}}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{PresetFinal: "answer", ResponseTarget: "json"}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model:          "m",
+		ResponseFormat: &dto.ResponseFormat{Type: "json_object"},
+		Messages:       []dto.Message{{Role: "user", Content: "go"}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"answer","arguments":"{\"answer\":\"ok\",\"score\":7}"}}]},"finish_reason":"tool_calls"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"{\"answer\":\"ok\",\"score\":7}"`)
+	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
+}
+
+func TestPresetProtocolAuxiliaryResponsePassthrough(t *testing.T) {
+	config := protocolScriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"context": map[string]any{"enabled": true, "code": `return {name:"context", parameters:{type:"object",properties:{query:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	request := &dto.GeneralOpenAIRequest{
+		Model:      "m",
+		ToolChoice: "required",
+		Tools: []dto.ToolCallRequest{{
+			Type:     "function",
+			Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"ctx-2","type":"function","function":{"name":"context","arguments":"{\"query\":\"sync\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"name":"context"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"tool_calls"`)
+	assert.NotContains(t, recorder.Body.String(), `"content":`)
+}
+
 func TestSillyTavernPresetProtectsClientToolContract(t *testing.T) {
 	for _, script := range []string{
 		`({request}) => { request.tool_choice = "required"; return request; }`,

@@ -50,6 +50,7 @@ type PresetMessageSource struct {
 
 type PresetCompileTrace struct {
 	Worldbook      *WorldbookPreview     `json:"worldbook,omitempty"`
+	Protocol       *PresetProtocolAudit  `json:"protocol,omitempty"`
 	Name           string                `json:"name"`
 	Mode           string                `json:"mode"`
 	Messages       []PresetMessageSource `json:"messages"`
@@ -575,15 +576,41 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 			},
 		})
 	}
-	if err := validatePresetClientToolContract(request, compiled); err != nil {
+	validationMode := 0
+	var protocolPlan *presetProtocolPlan
+	if config.ScriptRuntime != "" && trace.ScriptResponse != nil {
+		protocolRequest := request
+		if context.ChatHistory != nil {
+			explicit := *request
+			explicit.Messages = context.ChatHistory
+			protocolRequest = &explicit
+		}
+		plan, mode, err := buildPresetProtocolPlan(protocolRequest, compiled, config, trace.ScriptResponse)
+		if err != nil {
+			return nil, trace, err
+		}
+		if plan != nil {
+			protocolPlan = plan
+			trace.Protocol = &plan.audit
+			trace.ScriptResponse.protocol = plan
+			validationMode = mode
+		}
+	}
+	if err := validatePresetClientToolContractWithMode(request, compiled, validationMode); err != nil {
 		return nil, trace, err
 	}
 	if context.ChatHistory != nil {
 		explicit := *request
 		explicit.Messages = context.ChatHistory
-		if err := validatePresetClientToolContract(&explicit, compiled); err != nil {
+		if err := validatePresetClientToolContractWithMode(&explicit, compiled, validationMode); err != nil {
 			return nil, trace, err
 		}
+	}
+	if protocolPlan != nil {
+		if err := protocolPlan.applyRequest(compiled); err != nil {
+			return nil, trace, err
+		}
+		trace.Protocol = &protocolPlan.audit
 	}
 	for warning := range macro.warnings {
 		trace.Warnings = append(trace.Warnings, warning)

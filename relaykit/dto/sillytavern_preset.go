@@ -34,6 +34,16 @@ type SillyTavernPresetConfig struct {
 	ToolText            *SillyTavernToolText     `json:"tool_text,omitempty"`
 	ScriptRuntime       string                   `json:"script_runtime,omitempty"` // empty (off), spreset-v1, tavern-v1
 	ScriptModules       map[string]string        `json:"script_modules,omitempty"` // administrator-pinned JS modules; never fetched
+	ToolProtocol        *SillyTavernToolProtocol `json:"tool_protocol,omitempty"`
+}
+
+// SillyTavernToolProtocol optionally resolves ambiguous tool roles without
+// tying the gateway to a specific preset, script, or tool name.
+type SillyTavernToolProtocol struct {
+	ClientFinal    string   `json:"client_final,omitempty"`
+	PresetFinal    string   `json:"preset_final,omitempty"`
+	Auxiliary      []string `json:"auxiliary,omitempty"`
+	ResponseTarget string   `json:"response_target,omitempty"` // auto, text, json, tool
 }
 
 // SillyTavernToolText is a declarative transport, not an executable preset
@@ -137,6 +147,9 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 	}
 	if c.ScriptRuntime != "" && c.ToolText != nil && c.ToolText.Enabled {
 		return nil, fmt.Errorf("preset script runtime and native tool_text transport cannot both be enabled")
+	}
+	if err := validateSillyTavernToolProtocol(c.ToolProtocol); err != nil {
+		return nil, err
 	}
 	if c.ToolText != nil && c.ToolText.Enabled {
 		for _, value := range []string{c.ToolText.Name, c.ToolText.Argument} {
@@ -255,4 +268,47 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 		return nil, fmt.Errorf("sillytavern_preset n must be between 1 and 16")
 	}
 	return &preset, nil
+}
+
+func validateSillyTavernToolProtocol(protocol *SillyTavernToolProtocol) error {
+	if protocol == nil {
+		return nil
+	}
+	if protocol.ClientFinal != "" && protocol.PresetFinal != "" {
+		return fmt.Errorf("sillytavern_preset tool_protocol cannot declare both client_final and preset_final")
+	}
+	for _, name := range []string{protocol.ClientFinal, protocol.PresetFinal} {
+		if name != "" && !validSillyTavernToolName(name) {
+			return fmt.Errorf("sillytavern_preset tool_protocol names require 1 to 64 ASCII letters, digits, underscores, or hyphens")
+		}
+	}
+	if len(protocol.Auxiliary) > 64 {
+		return fmt.Errorf("sillytavern_preset tool_protocol allows at most 64 auxiliary tools")
+	}
+	seen := make(map[string]bool, len(protocol.Auxiliary))
+	for _, name := range protocol.Auxiliary {
+		if !validSillyTavernToolName(name) || seen[name] {
+			return fmt.Errorf("sillytavern_preset tool_protocol auxiliary names must be unique and use 1 to 64 ASCII letters, digits, underscores, or hyphens")
+		}
+		seen[name] = true
+	}
+	switch protocol.ResponseTarget {
+	case "", "auto", "text", "json", "tool":
+		return nil
+	default:
+		return fmt.Errorf("sillytavern_preset tool_protocol response_target must be auto, text, json, or tool")
+	}
+}
+
+func validSillyTavernToolName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for _, ch := range name {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }

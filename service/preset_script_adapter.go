@@ -43,6 +43,7 @@ type PresetScriptResponse struct {
 	ownedTools  map[string]bool
 	fingerprint [32]byte
 	tavern      *presetTavernSession
+	protocol    *presetProtocolPlan
 }
 
 func AttachPresetScriptResponse(c *gin.Context, trace PresetCompileTrace) {
@@ -54,11 +55,12 @@ func presetScriptFingerprint(config *dto.SillyTavernPresetConfig) [32]byte {
 	// The controller independently checks whether outbound settings are reusable.
 	// Ownership here belongs to the exact script definition and active entries.
 	data, _ := common.Marshal(struct {
-		Preset  json.RawMessage
-		Runtime string
-		Entries map[string]bool
-		Modules map[string]string
-	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules})
+		Preset       json.RawMessage
+		Runtime      string
+		Entries      map[string]bool
+		Modules      map[string]string
+		ToolProtocol *dto.SillyTavernToolProtocol
+	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules, config.ToolProtocol})
 	return sha256.Sum256(data)
 }
 
@@ -221,6 +223,14 @@ var presetScriptToolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // validatePresetClientToolContract checks only the current request. It never
 // reconstructs a conversation or executes tools on behalf of the client.
 func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIRequest) error {
+	return validatePresetClientToolContractWithMode(original, compiled, 0)
+}
+
+// validatePresetClientToolContractWithMode validates the client-visible
+// contract before an active gateway protocol plan is allowed to project the
+// provider-visible tools and tool_choice. Mode 1 still protects history,
+// functions, legacy function_call and every original tool definition.
+func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpenAIRequest, mode int) error {
 	protected := len(original.Tools) > 0 || len(original.Functions) > 0 || original.ToolChoice != nil || len(original.FunctionCall) > 0
 	var history []dto.Message
 	for _, message := range original.Messages {
@@ -238,10 +248,12 @@ func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIReque
 	if afterChoice == nil {
 		afterChoice = "auto"
 	}
-	before, _ := common.Marshal(beforeChoice)
-	after, _ := common.Marshal(afterChoice)
-	if !samePresetJSON(before, after) {
-		return fmt.Errorf("preset conflicts with client tools: tool_choice was changed")
+	if mode == 0 {
+		before, _ := common.Marshal(beforeChoice)
+		after, _ := common.Marshal(afterChoice)
+		if !samePresetJSON(before, after) {
+			return fmt.Errorf("preset conflicts with client tools: tool_choice was changed")
+		}
 	}
 	for _, pair := range [][2]any{{original.Functions, compiled.Functions}, {original.FunctionCall, compiled.FunctionCall}} {
 		before, _ := common.Marshal(pair[0])
@@ -267,9 +279,11 @@ func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIReque
 			owned[tool.Function.Name] = true
 		}
 	}
-	choice, _ := beforeChoice.(string)
-	if choice == "required" && len(owned) > 0 {
-		return fmt.Errorf("preset conflicts with client tools: required tool selection was expanded")
+	if mode == 0 {
+		choice, _ := beforeChoice.(string)
+		if choice == "required" && len(owned) > 0 {
+			return fmt.Errorf("preset conflicts with client tools: required tool selection was expanded")
+		}
 	}
 	// Preserve complete tool messages and their order, including opaque result
 	// strings and provider metadata. Extra preset demonstrations may not reuse IDs.
@@ -317,7 +331,10 @@ func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIReque
 		}
 		for _, call := range calls {
 			if owned[call.Function.Name] {
-				return fmt.Errorf("preset conflicts with client tools: tool history name was claimed by the preset")
+				if mode == 0 {
+					return fmt.Errorf("preset conflicts with client tools: tool history name was claimed by the preset")
+				}
+				continue
 			}
 			if callCounts[call.ID] != 1 {
 				return fmt.Errorf("preset conflicts with client tools: tool call ID was reused")
