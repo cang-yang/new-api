@@ -106,6 +106,33 @@ func TestWorldbookSecondaryConditionsAndTextScope(t *testing.T) {
 	assert.NotEmpty(t, result.Warnings)
 }
 
+func TestWorldbookEmptySecondaryKeysDoNotBlockPrimaryMatch(t *testing.T) {
+	for logic, name := range []string{"any", "not_all", "not_any", "all"} {
+		t.Run(name, func(t *testing.T) {
+			book, err := ImportWorldbook("background", []byte(fmt.Sprintf(`{"entries":{"0":{"key":["moon"],"keysecondary":[],"selective":true,"selectiveLogic":%d,"content":"Moon background"}}}`, logic)))
+			require.NoError(t, err)
+			require.Len(t, book.Entries, 1)
+			assert.Equal(t, name, book.Entries[0].SecondaryLogic)
+			config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{book}}
+			request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "moon"}}}
+
+			compiled, trace, err := CompileWorldbook(config, nil, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.NotNil(t, trace.Worldbook)
+			assert.Equal(t, "included", trace.Worldbook.Entries[0].Reason)
+			require.Len(t, compiled.Messages, 2)
+			assert.Equal(t, "Moon background", compiled.Messages[0].Content)
+			assert.Len(t, request.Messages, 1, "the client request must not be mutated")
+
+			request.Messages[0].Content = "unrelated"
+			preview, err := MatchWorldbook(config, request)
+			require.NoError(t, err)
+			assert.Empty(t, preview.Text, "an empty secondary list must not bypass the primary trigger")
+			assert.Equal(t, "no_match", preview.Entries[0].Reason)
+		})
+	}
+}
+
 func TestWorldbookScansToolCallAndToolResultText(t *testing.T) {
 	config := &dto.WorldbookConfig{Enabled: true, ScanDepth: 3, Books: []dto.Worldbook{{
 		ID:      "b",
@@ -218,7 +245,7 @@ func TestWorldbookPresetHistoryProcessesInsertedLore(t *testing.T) {
 }
 
 func TestWorldbookRunsBeforePresetScripts(t *testing.T) {
-	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "lore"}}}}}
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, SecondaryLogic: "any", Content: "lore"}}}}}
 	preset := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{
 		"enabled": true,
 		"script":  `({request}) => { for (const message of request.messages) { if (typeof message.content === "string") message.content = message.content.toUpperCase(); } return request; }`,

@@ -284,7 +284,9 @@ func worldbookEntryMatches(entry dto.WorldbookEntry, text string, work *worldboo
 	if !primary {
 		return false
 	}
-	if entry.SecondaryLogic == "" || entry.SecondaryLogic == "none" {
+	// SillyTavern applies secondary logic only when secondary keys exist.
+	// Imported entries commonly retain a selective operator with an empty list.
+	if len(entry.SecondaryKeys) == 0 || entry.SecondaryLogic == "" || entry.SecondaryLogic == "none" {
 		return true
 	}
 	matches := 0
