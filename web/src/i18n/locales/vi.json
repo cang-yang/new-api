@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid or incomplete JSON request. The original body is preserved for inspection and copying.": "JSON yêu cầu không hợp lệ hoặc chưa đầy đủ. Nội dung gốc được giữ để xem và sao chép.",
+    "Follow preset worldbook markers": "Theo vị trí sách thế giới của preset",
+    "Matched entries are placed before preset scripts run. Follow preset markers uses the worldbook section when enabled; otherwise it inserts background before the conversation.": "Các mục khớp được chèn trước khi chạy script, tại mục sách thế giới đã bật hoặc trước hội thoại nếu không có mục phù hợp.",
+    "Depth 0 adds background after the latest message; depth 1 places it before that message. Tool calls and results stay together.": "Độ sâu 0: sau tin nhắn cuối; 1: trước tin nhắn đó. Lệnh gọi công cụ và kết quả luôn liền nhau.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

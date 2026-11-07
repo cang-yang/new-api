@@ -218,6 +218,115 @@ func validatePresetScriptTools(tools, clientTools []dto.ToolCallRequest, owned m
 
 var presetScriptToolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// validatePresetClientToolContract checks only the current request. It never
+// reconstructs a conversation or executes tools on behalf of the client.
+func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIRequest) error {
+	protected := len(original.Tools) > 0 || len(original.Functions) > 0 || original.ToolChoice != nil || len(original.FunctionCall) > 0
+	var history []dto.Message
+	for _, message := range original.Messages {
+		if len(message.ToolCalls) > 0 || message.ToolCallId != "" || message.Role == "tool" || message.Role == "function" || len(message.Tools) > 0 {
+			history = append(history, message)
+		}
+	}
+	if !protected && len(history) == 0 {
+		return nil
+	}
+	beforeChoice, afterChoice := original.ToolChoice, compiled.ToolChoice
+	if beforeChoice == nil {
+		beforeChoice = "auto"
+	}
+	if afterChoice == nil {
+		afterChoice = "auto"
+	}
+	before, _ := common.Marshal(beforeChoice)
+	after, _ := common.Marshal(afterChoice)
+	if !samePresetJSON(before, after) {
+		return fmt.Errorf("preset conflicts with client tools: tool_choice was changed")
+	}
+	for _, pair := range [][2]any{{original.Functions, compiled.Functions}, {original.FunctionCall, compiled.FunctionCall}} {
+		before, _ := common.Marshal(pair[0])
+		after, _ := common.Marshal(pair[1])
+		if !samePresetJSON(before, after) {
+			return fmt.Errorf("preset conflicts with client tools: legacy function controls were changed")
+		}
+	}
+	owned := map[string]bool{}
+	for _, tool := range original.Tools {
+		before, _ := common.Marshal(tool)
+		if !slices.ContainsFunc(compiled.Tools, func(candidate dto.ToolCallRequest) bool {
+			after, _ := common.Marshal(candidate)
+			return samePresetJSON(before, after)
+		}) {
+			return fmt.Errorf("preset conflicts with client tools: tool definition was removed or modified")
+		}
+	}
+	for _, tool := range compiled.Tools {
+		if !slices.ContainsFunc(original.Tools, func(candidate dto.ToolCallRequest) bool {
+			return candidate.Type == tool.Type && candidate.Function.Name == tool.Function.Name
+		}) {
+			owned[tool.Function.Name] = true
+		}
+	}
+	choice, _ := beforeChoice.(string)
+	if choice == "required" && len(owned) > 0 {
+		return fmt.Errorf("preset conflicts with client tools: required tool selection was expanded")
+	}
+	// Preserve complete tool messages and their order, including opaque result
+	// strings and provider metadata. Extra preset demonstrations may not reuse IDs.
+	callCounts, resultCounts := map[string]int{}, map[string]int{}
+	for _, message := range compiled.Messages {
+		if message.ToolCallId != "" {
+			resultCounts[message.ToolCallId]++
+		}
+		var calls []struct {
+			ID string `json:"id"`
+		}
+		if len(message.ToolCalls) > 0 {
+			if err := common.Unmarshal(message.ToolCalls, &calls); err != nil {
+				return fmt.Errorf("preset returned invalid tool history")
+			}
+		}
+		for _, call := range calls {
+			callCounts[call.ID]++
+		}
+	}
+	remaining := compiled.Messages
+	for _, message := range history {
+		encoded, _ := common.Marshal(message)
+		index := slices.IndexFunc(remaining, func(candidate dto.Message) bool {
+			value, _ := common.Marshal(candidate)
+			return samePresetJSON(encoded, value)
+		})
+		if index < 0 {
+			return fmt.Errorf("preset conflicts with client tools: tool history was removed, reordered or modified")
+		}
+		remaining = remaining[index+1:]
+		if message.ToolCallId != "" && resultCounts[message.ToolCallId] != 1 {
+			return fmt.Errorf("preset conflicts with client tools: tool result ID was reused")
+		}
+		var calls []struct {
+			ID       string `json:"id"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if len(message.ToolCalls) > 0 {
+			if err := common.Unmarshal(message.ToolCalls, &calls); err != nil {
+				return fmt.Errorf("client tool history is invalid")
+			}
+		}
+		for _, call := range calls {
+			if owned[call.Function.Name] {
+				return fmt.Errorf("preset conflicts with client tools: tool history name was claimed by the preset")
+			}
+			if callCounts[call.ID] != 1 {
+				return fmt.Errorf("preset conflicts with client tools: tool call ID was reused")
+			}
+		}
+	}
+	return nil
+}
+
 func applyPresetRequestScript(script string, request *dto.GeneralOpenAIRequest, deadline time.Time) error {
 	encoded, err := common.Marshal(request)
 	if err != nil {

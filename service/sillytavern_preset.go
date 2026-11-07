@@ -25,6 +25,8 @@ import (
 // A plain OpenAI client can omit it: incoming system messages remain generic
 // chat history and are never guessed to be a particular SillyTavern marker.
 type SillyTavernContext struct {
+	worldbookConfig  *dto.WorldbookConfig
+	worldbookPreview *WorldbookPreview
 	User             string            `json:"user,omitempty"`
 	Char             string            `json:"char,omitempty"`
 	LastUserMessage  string            `json:"last_user_message,omitempty"`
@@ -296,6 +298,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	var inChat []dto.SillyTavernPrompt
 	const maxCompiledPresetTextBytes = 16 << 20
 	compiledPresetTextBytes := 0
+	worldbookMarker := ""
 	for _, entry := range order {
 		prompt, exists := prompts[entry.Identifier]
 		enabled := entry.Enabled
@@ -320,6 +323,10 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		content := prompt.Content
 		if prompt.Marker {
 			content = context.Markers[prompt.Identifier]
+			if worldbookMarker == "" && (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil && (context.worldbookConfig.InjectionMode == "" || context.worldbookConfig.InjectionMode == "inherit") && context.worldbookPreview.Text != "" {
+				content = strings.TrimSpace(content + "\n\n" + context.worldbookPreview.Text)
+				worldbookMarker = prompt.Identifier
+			}
 			switch prompt.Identifier {
 			case "scenario":
 				if content != "" && preset.ScenarioFormat != "" {
@@ -369,7 +376,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	processedChat := make([]dto.Message, len(chat))
 	copy(processedChat, chat)
 	for index := len(processedChat) - 1; index >= 0; index-- {
-		if content, ok := processedChat[index].Content.(string); ok {
+		if content, ok := processedChat[index].Content.(string); ok && processedChat[index].Role != "tool" && processedChat[index].ToolCallId == "" && len(processedChat[index].ToolCalls) == 0 {
 			content = macro.expand(content, 0)
 			processedChat[index].Content = content
 			if macro.warnings["macro expansion limit reached"] || len(processedChat[index].Content.(string)) > maxCompiledPresetTextBytes {
@@ -454,6 +461,30 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	if !chatMarkerEnabled && !chatMarkerPresent {
 		final = append(final, history...)
 		trace.Warnings = append(trace.Warnings, "chatHistory marker absent; client history appended for compatibility")
+	}
+	if context.worldbookPreview != nil && context.worldbookPreview.Text != "" {
+		preview := context.worldbookPreview
+		markerIndex := slices.IndexFunc(final, func(item presetMessage) bool {
+			return worldbookMarker != "" && slices.Contains(strings.Split(item.id, ","), worldbookMarker)
+		})
+		inherit := context.worldbookConfig.InjectionMode == "" || context.worldbookConfig.InjectionMode == "inherit"
+		if inherit && markerIndex >= 0 {
+			preview.Placement = &dto.WorldbookPlacement{Mode: "inherit", Index: markerIndex, Role: final[markerIndex].message.Role}
+		} else {
+			messages := make([]dto.Message, len(final))
+			for i := range final {
+				messages[i] = final[i].message
+			}
+			placement := resolveWorldbookPlacement(context.worldbookConfig, messages)
+			placement.Fallback = placement.Fallback || inherit
+			text := macro.expand(preview.Text, 0)
+			if macro.warnings["macro expansion limit reached"] || len(text) > maxCompiledPresetTextBytes {
+				return nil, trace, fmt.Errorf("worldbook macro expansion exceeded its limit")
+			}
+			final = slices.Insert(final, placement.Index, presetMessage{message: dto.Message{Role: "system", Content: text}, source: "worldbook"})
+			preview.Placement = &placement
+		}
+		trace.Worldbook = preview
 	}
 	if preset.SquashSystemMessages {
 		var squashed []presetMessage
@@ -552,6 +583,16 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 				Parameters:  parameters,
 			},
 		})
+	}
+	if err := validatePresetClientToolContract(request, compiled); err != nil {
+		return nil, trace, err
+	}
+	if context.ChatHistory != nil {
+		explicit := *request
+		explicit.Messages = context.ChatHistory
+		if err := validatePresetClientToolContract(&explicit, compiled); err != nil {
+			return nil, trace, err
+		}
 	}
 	for warning := range macro.warnings {
 		trace.Warnings = append(trace.Warnings, warning)

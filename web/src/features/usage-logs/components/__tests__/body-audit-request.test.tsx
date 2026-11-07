@@ -94,6 +94,18 @@ test('capture warnings survive the single request view', () => {
   expect(screen.getByText('AA==')).toBeVisible()
 })
 
+test('invalid JSON requests explain the parse failure while preserving the original body', () => {
+  const body = '{"messages":[{"content":"unfinished}'
+  mount({ body, contentType: 'application/json' })
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'Invalid or incomplete JSON request'
+  )
+  expect(
+    screen.getByRole('region', { name: 'Reading content' }).querySelector('pre')
+      ?.textContent
+  ).toBe(body)
+})
+
 test('long request content remains loadable without introducing a second view', async () => {
   const user = userEvent.setup()
   mount({

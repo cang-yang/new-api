@@ -127,6 +127,9 @@ test('preview uses backend results and disappears when input changes', async () 
   await user.type(screen.getByLabelText('Conversation or request JSON'), 'city')
   await user.click(screen.getByRole('button', { name: 'Run matching test' }))
   expect(await screen.findByText('Selected background')).toBeVisible()
+  expect(screen.getByText('Insertion position')).toBeVisible()
+  expect(screen.getByText('System prelude')).toBeVisible()
+  expect(screen.queryByText(/system_prelude/)).not.toBeInTheDocument()
   expect(post).toHaveBeenCalledWith('/api/channel/worldbook/preview', {
     config,
     request: { messages: [{ role: 'user', content: 'city' }] },
@@ -185,9 +188,7 @@ test('searches worldbook entries and selects one with the keyboard', async () =>
   const entry = screen.getByRole('combobox', { name: 'Entry' })
   await user.click(entry)
   await user.type(entry, 'tower')
-  expect(
-    screen.getByRole('option', { name: 'Tower district' })
-  ).toBeVisible()
+  expect(screen.getByRole('option', { name: 'Tower district' })).toBeVisible()
   await user.keyboard('{ArrowDown}{Enter}')
 
   await waitFor(() =>

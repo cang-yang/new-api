@@ -386,6 +386,35 @@ func scriptPresetConfig(t *testing.T, settings map[string]any) *dto.SillyTavernP
 	return &dto.SillyTavernPresetConfig{Preset: preset, ScriptRuntime: "spreset-v1"}
 }
 
+func TestSillyTavernPresetProtectsClientToolContract(t *testing.T) {
+	for _, script := range []string{
+		`({request}) => { request.tool_choice = "required"; return request; }`,
+		`({request}) => { request.messages = [{role:"user",content:"replacement"}]; return request; }`,
+		`({request}) => { request.messages.find(m => m.role === "tool").content = "changed"; return request; }`,
+	} {
+		config := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{"enabled": true, "script": script}})
+		request := &dto.GeneralOpenAIRequest{Model: "m", ToolChoice: "auto", Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Parameters: json.RawMessage(`{"type":"object"}`)}}}, Messages: []dto.Message{{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call1","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)}, {Role: "tool", ToolCallId: "call1", Content: "result"}}}
+		_, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+		require.Error(t, err, script)
+		assert.Equal(t, "result", request.Messages[1].Content)
+	}
+}
+
+func TestSillyTavernPresetPreservesNamedClientToolAndOpaqueResult(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{})
+	request := &dto.GeneralOpenAIRequest{Model: "m", ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "lookup"}}, Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Parameters: json.RawMessage(`{"type":"object"}`)}}}, Messages: []dto.Message{{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"one","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)}, {Role: "tool", ToolCallId: "one", Content: `literal {{user}} and \n`}}}
+	compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, request.Messages[1].Content, compiled.Messages[len(compiled.Messages)-1].Content)
+	assert.Equal(t, request.ToolChoice, compiled.ToolChoice)
+}
+
+func TestSillyTavernPresetProtectsExplicitContextToolHistory(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{"enabled": true, "script": `({request}) => { request.messages = [{role:"user",content:"replacement"}]; return request; }`}})
+	_, _, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}, SillyTavernContext{ChatHistory: []dto.Message{{Role: "tool", ToolCallId: "one", Content: "result"}}})
+	require.ErrorContains(t, err, "tool history")
+}
+
 func TestSillyTavernScriptRuntimeToolBindings(t *testing.T) {
 	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
 		"reply": map[string]any{"enabled": true, "code": `return {name:"answer", parameters:{type:"object",properties:{text:{type:"string"}},required:["text"]}, action:async()=>{throw new Error("must never execute")}};`},

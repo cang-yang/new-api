@@ -111,6 +111,34 @@ export function AuditPayload(props: {
     ),
   }
   const warnings: (string | undefined)[] = [props.notice]
+  const invalidRequest = useMemo(() => {
+    if (
+      !props.capture.request ||
+      props.capture.encoding !== 'utf-8' ||
+      !props.capture.body.trim()
+    ) {
+      return false
+    }
+    if (
+      !props.capture.contentType?.includes('json') &&
+      !/^\s*[[{]/.test(props.capture.body)
+    ) {
+      return false
+    }
+    try {
+      JSON.parse(props.capture.body)
+      return false
+    } catch {
+      return true
+    }
+  }, [props.capture])
+  if (invalidRequest) {
+    warnings.push(
+      t(
+        'Invalid or incomplete JSON request. The original body is preserved for inspection and copying.'
+      )
+    )
+  }
   if (props.capture.truncated) {
     warnings.push(t('Partial capture: this result may be incomplete'))
   }

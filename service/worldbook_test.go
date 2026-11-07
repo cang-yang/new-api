@@ -179,7 +179,7 @@ func TestWorldbookPreviewRunsBeforePresetCompilation(t *testing.T) {
 	assert.Equal(t, dto.WorldbookInjectionSystemPrelude, preview.Placement.Mode)
 	assert.Equal(t, 0, preview.Placement.Index)
 	assert.Equal(t, "system", preview.Placement.Role)
-	assert.False(t, preview.Placement.Fallback)
+	assert.True(t, preview.Placement.Fallback, "a preset without worldbook markers uses the background fallback")
 }
 
 func TestWorldbookPresetProcessesInsertedLore(t *testing.T) {
@@ -236,6 +236,32 @@ func TestWorldbookRunsBeforePresetScripts(t *testing.T) {
 	assert.Equal(t, "moon", request.Messages[0].Content)
 }
 
+func TestWorldbookSurvivesDisabledChatMarker(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: "lore"}}}}}
+	preset := &dto.SillyTavernPresetConfig{Preset: json.RawMessage(`{"prompts":[{"identifier":"main","content":"instructions"},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"main","enabled":true},{"identifier":"chatHistory","enabled":false}]}]}`)}
+	compiled, trace, err := CompileWorldbook(config, preset, &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.True(t, slices.ContainsFunc(compiled.Messages, func(m dto.Message) bool { return m.Content == "lore" }))
+	require.NotNil(t, trace.Worldbook.Placement)
+}
+
+func TestWorldbookInheritsPresetMarkerBeforeScripts(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, InjectionMode: "inherit", Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: "lore"}}}}}
+	preset := &dto.SillyTavernPresetConfig{Preset: json.RawMessage(`{"prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"main","content":"instructions"},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"main","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+	compiled, _, err := CompileWorldbook(config, preset, &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, "lore", compiled.Messages[0].Content)
+	assert.Equal(t, "instructions", compiled.Messages[1].Content)
+}
+
+func TestWorldbookDepthZeroAndToolExchangePlacement(t *testing.T) {
+	messages := []dto.Message{{Role: "user", Content: "hello"}, {Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call1","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)}, {Role: "tool", ToolCallId: "call1", Content: "result"}}
+	assert.Equal(t, len(messages), worldbookDepthIndex(messages, 0), "depth zero follows the latest message")
+	config := &dto.WorldbookConfig{InjectionMode: "at_depth", InjectionDepth: 1}
+	placement := resolveWorldbookPlacement(config, messages)
+	assert.Equal(t, 1, placement.Index, "insertion must precede the complete tool exchange")
+}
+
 func TestWorldbookPlacementModes(t *testing.T) {
 	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: "lore"}}}}}
 	base := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
@@ -252,7 +278,7 @@ func TestWorldbookPlacementModes(t *testing.T) {
 	}{
 		{name: "system prelude", mode: dto.WorldbookInjectionSystemPrelude, index: 1},
 		{name: "before last user", mode: dto.WorldbookInjectionBeforeLastUser, index: 3},
-		{name: "at depth", mode: dto.WorldbookInjectionAtDepth, depth: 1, index: 2},
+		{name: "at depth", mode: dto.WorldbookInjectionAtDepth, depth: 1, index: 3},
 		{name: "depth clamps", mode: dto.WorldbookInjectionAtDepth, depth: 99, index: 1},
 	}
 	for _, test := range tests {

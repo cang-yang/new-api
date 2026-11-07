@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid or incomplete JSON request. The original body is preserved for inspection and copying.": "リクエストの JSON が無効または不完全です。原文は確認・コピー用に保持されています。",
+    "Follow preset worldbook markers": "プリセットの世界設定位置に従う",
+    "Matched entries are placed before preset scripts run. Follow preset markers uses the worldbook section when enabled; otherwise it inserts background before the conversation.": "一致した項目はスクリプト実行前に挿入されます。有効な世界設定欄を使用し、ない場合は会話の前に挿入します。",
+    "Depth 0 adds background after the latest message; depth 1 places it before that message. Tool calls and results stay together.": "深さ0は最後のメッセージの後、1はその前です。ツール呼び出しと結果は分離しません。",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

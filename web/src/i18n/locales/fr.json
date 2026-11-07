@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid or incomplete JSON request. The original body is preserved for inspection and copying.": "Requête JSON invalide ou incomplète. Le texte original reste disponible pour consultation et copie.",
+    "Follow preset worldbook markers": "Suivre les marqueurs du préréglage",
+    "Matched entries are placed before preset scripts run. Follow preset markers uses the worldbook section when enabled; otherwise it inserts background before the conversation.": "Les entrées sont insérées avant les scripts, dans la section du livre activée ou, à défaut, avant la conversation.",
+    "Depth 0 adds background after the latest message; depth 1 places it before that message. Tool calls and results stay together.": "Profondeur 0 : après le dernier message ; 1 : avant celui-ci. Les appels d’outils et leurs résultats restent ensemble.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Invalid or incomplete JSON request. The original body is preserved for inspection and copying.": "请求 JSON 无效或不完整。已保留原文，可直接检查和复制。",
+    "Follow preset worldbook markers": "跟随预设的世界书位置",
+    "Matched entries are placed before preset scripts run. Follow preset markers uses the worldbook section when enabled; otherwise it inserts background before the conversation.": "命中的条目会在预设脚本运行前放入消息。跟随预设时优先使用已启用的世界书条目；没有可用条目时，放在对话前作为背景。",
+    "Depth 0 adds background after the latest message; depth 1 places it before that message. Tool calls and results stay together.": "深度 0：放在最后一条消息后；深度 1：放在最后一条消息前。工具调用与结果会保持相邻。",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -89,6 +89,12 @@ export function WorldbookPreview(props: {
     budget: t('Content limit reached'),
     duplicate: t('Duplicate content'),
   }
+  const placementNames: Record<string, string> = {
+    inherit: t('Follow preset worldbook markers'),
+    system_prelude: t('System prelude'),
+    before_last_user: t('Before the latest user message'),
+    at_depth: t('At a fixed conversation depth'),
+  }
   return (
     <div className='space-y-4'>
       <p className='text-muted-foreground text-sm'>
@@ -130,18 +136,10 @@ export function WorldbookPreview(props: {
           ))}
           {result.placement && (
             <div className='bg-muted/30 rounded-lg border p-3 text-sm'>
-              <p className='font-medium'>
-                {t('Insertion before the preset')}
-              </p>
+              <p className='font-medium'>{t('Insertion position')}</p>
               <p className='text-muted-foreground mt-1 text-xs'>
-                {t('Mode')}: {result.placement.mode} ·{' '}
-                {t('Client message index')}: {result.placement.index} ·{' '}
-                {t('Role')}:
-                {' '}
-                {result.placement.role}
-                {result.placement.fallback
-                  ? ` · ${t('Fallback applied')}`
-                  : ''}
+                {placementNames[result.placement.mode] ?? result.placement.mode}
+                {result.placement.fallback ? ` · ${t('Fallback applied')}` : ''}
               </p>
             </div>
           )}

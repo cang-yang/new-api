@@ -2,7 +2,6 @@ package service
 
 import (
 	"cmp"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -364,9 +363,8 @@ func worldbookKeyMatches(key, text string, entry dto.WorldbookEntry, work *world
 	return false
 }
 
-// CompileWorldbook adds matched lore to the client message history before
-// preset compilation. The preset, including its scripts, therefore sees the
-// same final client input that will be sent upstream.
+// CompileWorldbook matches the incoming history, then places lore during
+// preset assembly, before post-processing and request scripts.
 func CompileWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
 	return CompileWorldbookFrom(config, preset, request, request, context)
 }
@@ -378,23 +376,20 @@ func CompileWorldbookFrom(config *dto.WorldbookConfig, preset *dto.SillyTavernPr
 	if context.ChatHistory != nil {
 		historySource := *source
 		historySource.Messages = context.ChatHistory
-		historyBase := *base
-		historyBase.Messages = context.ChatHistory
-		prepared, worldbookTrace, err := ApplyWorldbook(config, &historySource, &historyBase, PresetCompileTrace{})
-		if err != nil {
-			return prepared, worldbookTrace, err
-		}
-		context.ChatHistory = prepared.Messages
-		compiled, trace, err := CompileSillyTavernPreset(preset, base, context)
-		trace.Worldbook = worldbookTrace.Worldbook
-		return compiled, trace, err
+		source = &historySource
 	}
-	prepared, worldbookTrace, err := ApplyWorldbook(config, source, base, PresetCompileTrace{})
+	if preset == nil || len(preset.Models) > 0 && !slices.Contains(preset.Models, base.Model) {
+		return ApplyWorldbook(config, source, base, PresetCompileTrace{})
+	}
+	preview, err := MatchWorldbook(config, source)
 	if err != nil {
-		return prepared, worldbookTrace, err
+		return nil, PresetCompileTrace{}, err
 	}
-	compiled, trace, err := CompileSillyTavernPreset(preset, prepared, context)
-	trace.Worldbook = worldbookTrace.Worldbook
+	context.worldbookConfig, context.worldbookPreview = config, &preview
+	compiled, trace, err := CompileSillyTavernPreset(preset, base, context)
+	if config != nil {
+		trace.Worldbook = &preview
+	}
 	return compiled, trace, err
 }
 
@@ -405,6 +400,9 @@ func PreviewWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPreset
 		return WorldbookPreview{Entries: []WorldbookDecision{}, Warnings: []string{}}, nil
 	}
 	_, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
+	if trace.ScriptResponse != nil && trace.ScriptResponse.tavern != nil {
+		defer trace.ScriptResponse.tavern.Close()
+	}
 	if err != nil {
 		return WorldbookPreview{}, err
 	}
@@ -419,15 +417,17 @@ func PreviewWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPreset
 func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAIRequest, trace PresetCompileTrace) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
 	preview, err := MatchWorldbook(config, source)
 	if err != nil {
-		preview.Warnings = append(preview.Warnings, fmt.Sprintf("Worldbook was skipped: %v", err))
-		preview.Text = ""
+		return nil, trace, err
 	}
 	if preview.Text != "" {
 		compiled, err := common.DeepCopy(base)
 		if err != nil {
-			return base, trace, nil
+			return nil, trace, err
 		}
 		placement := resolveWorldbookPlacement(config, compiled.Messages)
+		if config.InjectionMode == "" || config.InjectionMode == dto.WorldbookInjectionInherit {
+			placement.Fallback = true
+		}
 		index := max(0, min(placement.Index, len(compiled.Messages)))
 		compiled.Messages = insertWorldbookMessageAt(compiled.Messages, index, preview.Text)
 		placement.Index = index
@@ -477,6 +477,10 @@ func resolveWorldbookPlacement(config *dto.WorldbookConfig, messages []dto.Messa
 			placement.Fallback = true
 		}
 	}
+	// Keep tool call/results contiguous when a requested boundary falls inside one exchange.
+	for placement.Index > 0 && placement.Index < len(messages) && messages[placement.Index].Role == "tool" {
+		placement.Index--
+	}
 	return placement
 }
 
@@ -499,15 +503,8 @@ func worldbookLastRoleIndex(messages []dto.Message, role string) int {
 
 func worldbookDepthIndex(messages []dto.Message, depth int) int {
 	depth = max(0, min(depth, 20))
-	seen := 0
-	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].Role != "user" && messages[index].Role != "assistant" {
-			continue
-		}
-		if seen == depth {
-			return index
-		}
-		seen++
+	if depth > len(messages) {
+		return -1
 	}
-	return -1
+	return len(messages) - depth
 }

@@ -300,7 +300,10 @@ function ScopedWorldbookSettings(props: Props) {
                             }}
                             disabled={locked}
                           >
-                            <SelectTrigger id='worldbook-book' className='w-full'>
+                            <SelectTrigger
+                              id='worldbook-book'
+                              className='w-full'
+                            >
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent alignItemWithTrigger={false}>
@@ -493,7 +496,7 @@ function ScopedWorldbookSettings(props: Props) {
                       </SelectTrigger>
                       <SelectContent alignItemWithTrigger={false}>
                         <SelectItem value='inherit'>
-                          {t('Before the preset')}
+                          {t('Follow preset worldbook markers')}
                         </SelectItem>
                         <SelectItem value='system_prelude'>
                           {t('System prelude')}
@@ -508,7 +511,7 @@ function ScopedWorldbookSettings(props: Props) {
                     </Select>
                     <p className='text-muted-foreground text-xs'>
                       {t(
-                        'Worldbook is inserted into the client messages before preset macros and scripts run. Per-entry placement fields are normalized to this global position.'
+                        'Matched entries are placed before preset scripts run. Follow preset markers uses the worldbook section when enabled; otherwise it inserts background before the conversation.'
                       )}
                     </p>
                   </div>
@@ -532,7 +535,7 @@ function ScopedWorldbookSettings(props: Props) {
                       />
                       <p className='text-muted-foreground text-xs'>
                         {t(
-                          'Zero targets the latest user or assistant message. Values are clamped to 0-20.'
+                          'Depth 0 adds background after the latest message; depth 1 places it before that message. Tool calls and results stay together.'
                         )}
                       </p>
                     </div>
