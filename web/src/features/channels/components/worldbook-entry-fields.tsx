@@ -32,6 +32,8 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import type { WorldbookEntry } from '../lib/worldbook'
+import { WorldbookEntryNotes } from './worldbook-import-summary'
+import { WorldbookPlacementFields } from './worldbook-placement-fields'
 
 export function WorldbookEntryFields(props: {
   entry: WorldbookEntry
@@ -45,7 +47,6 @@ export function WorldbookEntryFields(props: {
     props.entry.secondary_keys.join('\n')
   )
   const invalid = !!props.entry.issues?.length
-  const normalized = props.entry.normalized_rules ?? []
   const update = (patch: Partial<WorldbookEntry>) =>
     props.onChange({ ...props.entry, ...patch })
   return (
@@ -61,21 +62,7 @@ export function WorldbookEntryFields(props: {
           </p>
         </div>
       )}
-      {!!normalized.length && (
-        <details className='bg-muted/40 rounded-lg border p-3 text-sm'>
-          <summary className='cursor-pointer font-medium'>
-            {t('Normalized for the gateway')}
-          </summary>
-          <ul className='text-muted-foreground mt-2 space-y-1 text-xs'>
-            {normalized.map((rule) => (
-              <li key={`${rule.field}:${rule.action}:${rule.detail}`}>
-                <span className='font-medium'>{rule.field}</span>
-                {rule.detail ? ` · ${rule.detail}` : ''}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+      <WorldbookEntryNotes entry={props.entry} />
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <Label htmlFor={`${id}-enabled`}>{t('Enable entry')}</Label>
         <Switch
@@ -98,9 +85,7 @@ export function WorldbookEntryFields(props: {
           <Label htmlFor={`${id}-trigger`}>{t('When to include')}</Label>
           <Select
             value={props.entry.constant ? 'always' : 'keywords'}
-            onValueChange={(value) =>
-              update({ constant: value === 'always' })
-            }
+            onValueChange={(value) => update({ constant: value === 'always' })}
             disabled={props.disabled}
           >
             <SelectTrigger id={`${id}-trigger`} className='w-full'>
@@ -128,6 +113,11 @@ export function WorldbookEntryFields(props: {
           />
         </div>
       </div>
+      <WorldbookPlacementFields
+        entry={props.entry}
+        onChange={props.onChange}
+        disabled={props.disabled}
+      />
       {!props.entry.constant && (
         <>
           <div className='space-y-2'>
@@ -179,8 +169,7 @@ export function WorldbookEntryFields(props: {
                 value={props.entry.secondary_logic}
                 onValueChange={(value) =>
                   update({
-                    secondary_logic:
-                      value as WorldbookEntry['secondary_logic'],
+                    secondary_logic: value as WorldbookEntry['secondary_logic'],
                   })
                 }
                 disabled={props.disabled}
@@ -240,9 +229,7 @@ export function WorldbookEntryFields(props: {
           id={`${id}-prevent-recursion`}
           checked={!!props.entry.prevent_recursion}
           disabled={props.disabled}
-          onCheckedChange={(prevent_recursion) =>
-            update({ prevent_recursion })
-          }
+          onCheckedChange={(prevent_recursion) => update({ prevent_recursion })}
         />
       </div>
       <div className='space-y-2'>

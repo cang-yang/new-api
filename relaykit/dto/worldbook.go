@@ -13,6 +13,7 @@ import (
 const MaxWorldbookBytes = 6 << 20
 
 const (
+	WorldbookInjectionFollowGlobal   = "follow_global"
 	WorldbookInjectionInherit        = "inherit"
 	WorldbookInjectionSystemPrelude  = "system_prelude"
 	WorldbookInjectionBeforeLastUser = "before_last_user"
@@ -49,6 +50,8 @@ type WorldbookEntry struct {
 	CaseSensitive    bool                      `json:"case_sensitive"`
 	WholeWords       bool                      `json:"whole_words"`
 	Priority         int                       `json:"priority"`
+	InjectionMode    string                    `json:"injection_mode,omitempty"`
+	InjectionDepth   int                       `json:"injection_depth,omitempty"`
 	PreventRecursion bool                      `json:"prevent_recursion,omitempty"`
 	NormalizedRules  []WorldbookNormalizedRule `json:"normalized_rules,omitempty"`
 	Issues           []string                  `json:"issues,omitempty"`
@@ -93,6 +96,9 @@ func (c *WorldbookConfig) Validate() error {
 	default:
 		return fmt.Errorf("invalid worldbook injection mode")
 	}
+	if c.InjectionDepth < 0 || c.InjectionDepth > 20 {
+		return fmt.Errorf("worldbook injection depth must be between 0 and 20")
+	}
 	count := 0
 	for _, book := range c.Books {
 		if book.ID == "" || utf8.RuneCountInString(book.ID) > 256 || utf8.RuneCountInString(book.Name) > 256 {
@@ -103,6 +109,14 @@ func (c *WorldbookConfig) Validate() error {
 			return fmt.Errorf("worldbook supports at most 1000 entries")
 		}
 		for _, entry := range book.Entries {
+			switch entry.InjectionMode {
+			case "", WorldbookInjectionFollowGlobal, WorldbookInjectionInherit, WorldbookInjectionSystemPrelude, WorldbookInjectionBeforeLastUser, WorldbookInjectionAtDepth:
+			default:
+				return fmt.Errorf("invalid worldbook entry injection mode")
+			}
+			if entry.InjectionDepth < 0 || entry.InjectionDepth > 20 {
+				return fmt.Errorf("worldbook entry injection depth must be between 0 and 20")
+			}
 			if entry.ID == "" || utf8.RuneCountInString(entry.ID) > 256 || utf8.RuneCountInString(entry.Name) > 256 || utf8.RuneCountInString(entry.Content) > 64000 {
 				return fmt.Errorf("worldbook entry exceeds supported limits")
 			}

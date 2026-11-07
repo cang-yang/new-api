@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -306,7 +307,7 @@ func TestWorldbookPlacementModes(t *testing.T) {
 		{name: "system prelude", mode: dto.WorldbookInjectionSystemPrelude, index: 1},
 		{name: "before last user", mode: dto.WorldbookInjectionBeforeLastUser, index: 3},
 		{name: "at depth", mode: dto.WorldbookInjectionAtDepth, depth: 1, index: 3},
-		{name: "depth clamps", mode: dto.WorldbookInjectionAtDepth, depth: 99, index: 1},
+		{name: "unavailable depth", mode: dto.WorldbookInjectionAtDepth, depth: 20, index: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -319,6 +320,109 @@ func TestWorldbookPlacementModes(t *testing.T) {
 			assert.Equal(t, "lore", compiled.Messages[test.index].Content)
 		})
 	}
+}
+
+func TestWorldbookPerEntryPlacement(t *testing.T) {
+	var config dto.WorldbookConfig
+	require.NoError(t, common.Unmarshal([]byte(`{"enabled":true,"injection_mode":"before_last_user","books":[{"id":"b","enabled":true,"entries":[{"id":"old","enabled":true,"constant":true,"content":"old"},{"id":"follow","enabled":true,"constant":true,"content":"follow","injection_mode":"follow_global"},{"id":"prelude","enabled":true,"constant":true,"content":"prelude","injection_mode":"system_prelude"},{"id":"marker","enabled":true,"constant":true,"content":"marker","injection_mode":"inherit"},{"id":"depth","enabled":true,"constant":true,"content":"depth","injection_mode":"at_depth","injection_depth":1}]}]}`), &config))
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "first"}, {Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)}, {Role: "tool", ToolCallId: "call", Content: "result"}}}
+	for _, withMarker := range []bool{false, true} {
+		t.Run(fmt.Sprint(withMarker), func(t *testing.T) {
+			var preset *dto.SillyTavernPresetConfig
+			if withMarker {
+				preset = &dto.SillyTavernPresetConfig{Preset: json.RawMessage(`{"prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"main","content":"instructions"},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"main","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+			}
+			compiled, trace, err := CompileWorldbook(&config, preset, request, SillyTavernContext{})
+			require.NoError(t, err)
+			joined := ""
+			for _, message := range compiled.Messages {
+				joined += fmt.Sprint(message.Content) + "|"
+			}
+			assert.Contains(t, joined, "depth|<nil>|result|", "depth must precede the intact tool exchange")
+			for _, lore := range []string{"old", "follow", "prelude", "marker", "depth"} {
+				assert.Equal(t, 1, strings.Count(joined, lore))
+			}
+			assert.NotContains(t, joined, "prelude\n\nmarker\n\ndepth", "different placements must not collapse into one global block")
+			data, err := common.Marshal(trace.Worldbook)
+			require.NoError(t, err)
+			var preview struct {
+				Entries []struct {
+					Placement *dto.WorldbookPlacement `json:"placement"`
+				} `json:"entries"`
+			}
+			require.NoError(t, common.Unmarshal(data, &preview))
+			for _, decision := range preview.Entries {
+				require.NotNil(t, decision.Placement)
+			}
+			assert.Equal(t, withMarker, preview.Entries[3].Placement.Mode == "inherit")
+			assert.Equal(t, !withMarker, preview.Entries[3].Placement.Fallback)
+			assert.Equal(t, "before_last_user", preview.Entries[0].Placement.Mode)
+			assert.Equal(t, preview.Entries[0].Placement, preview.Entries[1].Placement)
+			assert.Len(t, request.Messages, 3)
+		})
+	}
+}
+
+func TestWorldbookPerEntryPlacementRunsBeforePresetScripts(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+		{ID: "prelude", Enabled: true, Constant: true, Content: "prelude", InjectionMode: dto.WorldbookInjectionSystemPrelude},
+		{ID: "latest", Enabled: true, Constant: true, Content: "latest", InjectionMode: dto.WorldbookInjectionBeforeLastUser},
+	}}}}
+	preset := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{
+		"enabled": true,
+		"script":  `({request}) => { for (const message of request.messages) { if (typeof message.content === "string") message.content = message.content.toUpperCase(); } return request; }`,
+	}})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "system", Content: "system"}, {Role: "assistant", Content: "previous"}, {Role: "user", Content: "hello"}}}
+
+	compiled, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.True(t, slices.ContainsFunc(compiled.Messages, func(message dto.Message) bool {
+		return message.Role == "system" && message.Content == "PRELUDE"
+	}), "the preset script must process a per-entry system-prelude block")
+	assert.True(t, slices.ContainsFunc(compiled.Messages, func(message dto.Message) bool {
+		return message.Role == "system" && message.Content == "LATEST"
+	}), "the preset script must process a per-entry before-last-user block")
+	require.NotNil(t, trace.Worldbook)
+	for _, decision := range trace.Worldbook.Entries {
+		require.NotNil(t, decision.Placement)
+		assert.Contains(t, fmt.Sprint(compiled.Messages[decision.Placement.Index].Content), strings.ToUpper(decision.ID))
+	}
+	assert.Equal(t, "system", request.Messages[0].Content)
+	assert.Equal(t, "previous", request.Messages[1].Content)
+	assert.Equal(t, "hello", request.Messages[2].Content)
+}
+
+func TestWorldbookPlacementValidationAndCanonicalImport(t *testing.T) {
+	for _, raw := range []string{`{"injection_depth":-1}`, `{"injection_depth":21}`, `{"books":[{"id":"b","entries":[{"id":"e","injection_mode":"unsupported"}]}]}`, `{"books":[{"id":"b","entries":[{"id":"e","injection_depth":21}]}]}`} {
+		var config dto.WorldbookConfig
+		require.NoError(t, common.Unmarshal([]byte(raw), &config))
+		assert.Error(t, config.Validate(), raw)
+	}
+	for _, prefix := range []string{"", `"id":"b","enabled":true,`} {
+		book, err := ImportWorldbook("canonical", []byte(`{`+prefix+`"entries":[{"id":"e","enabled":true,"constant":true,"content":"lore","injection_mode":"at_depth","injection_depth":2}]}`))
+		require.NoError(t, err)
+		assert.Empty(t, book.Entries[0].NormalizedRules)
+		assert.Equal(t, "at_depth", book.Entries[0].InjectionMode)
+		assert.Equal(t, 2, book.Entries[0].InjectionDepth)
+	}
+}
+
+func TestWorldbookSharedBoundaryPriorityAndMarkerIndex(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{Preset: json.RawMessage(`{"prompts":[{"identifier":"worldInfoBefore","marker":true,"role":"user"},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+		{ID: "marker", Constant: true, Enabled: true, Content: "marker", Priority: -1},
+		{ID: "low", Constant: true, Enabled: true, Content: "low", InjectionMode: "system_prelude"},
+		{ID: "middle", Constant: true, Enabled: true, Content: "middle", Priority: 1, InjectionMode: "at_depth", InjectionDepth: 2},
+		{ID: "high", Constant: true, Enabled: true, Content: "high", Priority: 2, InjectionMode: "system_prelude"},
+	}}}}
+	compiled, trace, err := CompileWorldbook(config, preset, &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, "low\n\nmiddle\n\nhigh", compiled.Messages[0].Content, "entries sharing a boundary must preserve the final priority order")
+	for _, decision := range trace.Worldbook.Entries {
+		require.NotNil(t, decision.Placement)
+		assert.Contains(t, fmt.Sprint(compiled.Messages[decision.Placement.Index].Content), decision.ID)
+	}
+	assert.Equal(t, trace.Worldbook.Entries[0].Placement, trace.Worldbook.Placement)
 }
 
 func TestWorldbookPlacementFallsBackWithoutUserMessage(t *testing.T) {

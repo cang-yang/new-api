@@ -119,6 +119,16 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 				_ = common.Unmarshal(fields["name"], &entry.Name)
 			}
 			_ = common.Unmarshal(fields["content"], &entry.Content)
+			if value := fields["injection_mode"]; value != nil {
+				if err := common.Unmarshal(value, &entry.InjectionMode); err != nil {
+					return book, fmt.Errorf("invalid worldbook entry injection mode")
+				}
+			}
+			if value := fields["injection_depth"]; value != nil {
+				if err := common.Unmarshal(value, &entry.InjectionDepth); err != nil {
+					return book, fmt.Errorf("invalid worldbook entry injection depth")
+				}
+			}
 			_ = common.Unmarshal(fields["key"], &entry.Keys)
 			if fields["keys"] != nil {
 				_ = common.Unmarshal(fields["keys"], &entry.Keys)
@@ -284,7 +294,7 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 	var rules []dto.WorldbookNormalizedRule
 	for key, value := range fields {
 		switch key {
-		case "uid", "id", "name", "comment", "content", "key", "keys", "keysecondary", "secondary_keys", "constant", "enabled", "disable", "caseSensitive", "case_sensitive", "matchWholeWords", "whole_words", "order", "insertion_order", "selective", "selectiveLogic", "priority", "secondary_logic", "normalized_rules", "issues", "prevent_recursion", "source":
+		case "uid", "id", "name", "comment", "content", "key", "keys", "keysecondary", "secondary_keys", "constant", "enabled", "disable", "caseSensitive", "case_sensitive", "matchWholeWords", "whole_words", "order", "insertion_order", "selective", "selectiveLogic", "priority", "secondary_logic", "normalized_rules", "issues", "prevent_recursion", "source", "injection_mode", "injection_depth":
 		case "extensions":
 			var extensions map[string]json.RawMessage
 			if err := common.Unmarshal(value, &extensions); err != nil {

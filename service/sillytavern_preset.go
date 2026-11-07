@@ -323,9 +323,13 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		content := prompt.Content
 		if prompt.Marker {
 			content = context.Markers[prompt.Identifier]
-			if worldbookMarker == "" && (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil && (context.worldbookConfig.InjectionMode == "" || context.worldbookConfig.InjectionMode == "inherit") && context.worldbookPreview.Text != "" {
-				content = strings.TrimSpace(content + "\n\n" + context.worldbookPreview.Text)
-				worldbookMarker = prompt.Identifier
+			if worldbookMarker == "" && (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil {
+				for _, group := range context.worldbookPreview.groups {
+					if group.mode == dto.WorldbookInjectionInherit {
+						content = strings.TrimSpace(content + "\n\n" + group.text)
+						worldbookMarker = prompt.Identifier
+					}
+				}
 			}
 			switch prompt.Identifier {
 			case "scenario":
@@ -467,22 +471,9 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		markerIndex := slices.IndexFunc(final, func(item presetMessage) bool {
 			return worldbookMarker != "" && slices.Contains(strings.Split(item.id, ","), worldbookMarker)
 		})
-		inherit := context.worldbookConfig.InjectionMode == "" || context.worldbookConfig.InjectionMode == "inherit"
-		if inherit && markerIndex >= 0 {
-			preview.Placement = &dto.WorldbookPlacement{Mode: "inherit", Index: markerIndex, Role: final[markerIndex].message.Role}
-		} else {
-			messages := make([]dto.Message, len(final))
-			for i := range final {
-				messages[i] = final[i].message
-			}
-			placement := resolveWorldbookPlacement(context.worldbookConfig, messages)
-			placement.Fallback = placement.Fallback || inherit
-			text := macro.expand(preview.Text, 0)
-			if macro.warnings["macro expansion limit reached"] || len(text) > maxCompiledPresetTextBytes {
-				return nil, trace, fmt.Errorf("worldbook macro expansion exceeded its limit")
-			}
-			final = slices.Insert(final, placement.Index, presetMessage{message: dto.Message{Role: "system", Content: text}, source: "worldbook"})
-			preview.Placement = &placement
+		final, err = injectWorldbookGroups(context.worldbookConfig, preview, final, markerIndex, &macro)
+		if err != nil {
+			return nil, trace, err
 		}
 		trace.Worldbook = preview
 	}

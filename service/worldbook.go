@@ -2,6 +2,7 @@ package service
 
 import (
 	"cmp"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -19,6 +20,9 @@ type WorldbookDecision struct {
 	Status string `json:"status"`
 	Reason string `json:"reason"`
 	Order  int    `json:"order,omitempty"`
+	// Placement describes the assembled insertion, before preset postprocessing
+	// and scripts may merge, move, or replace messages.
+	Placement *dto.WorldbookPlacement `json:"placement,omitempty"`
 }
 
 type WorldbookPreview struct {
@@ -26,6 +30,15 @@ type WorldbookPreview struct {
 	Entries   []WorldbookDecision     `json:"entries"`
 	Warnings  []string                `json:"warnings"`
 	Placement *dto.WorldbookPlacement `json:"placement,omitempty"`
+	groups    []worldbookInjectionGroup
+}
+
+type worldbookInjectionGroup struct {
+	mode      string
+	depth     int
+	text      string
+	decisions []int
+	contents  []string
 }
 
 type worldbookCandidate struct {
@@ -163,6 +176,30 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 	for index, candidate := range orderedIncluded {
 		result.Entries[candidate.index].Order = index + 1
 		included = append(included, candidate.entry.Content)
+		mode, depth := candidate.entry.InjectionMode, candidate.entry.InjectionDepth
+		if mode == "" || mode == dto.WorldbookInjectionFollowGlobal {
+			mode, depth = config.InjectionMode, config.InjectionDepth
+		}
+		if mode == "" {
+			mode = dto.WorldbookInjectionInherit
+		}
+		groupIndex := slices.IndexFunc(result.groups, func(group worldbookInjectionGroup) bool {
+			return group.mode == mode && (mode != dto.WorldbookInjectionAtDepth || group.depth == depth)
+		})
+		if groupIndex < 0 {
+			result.groups = append(result.groups, worldbookInjectionGroup{mode: mode, depth: depth})
+			groupIndex = len(result.groups) - 1
+		}
+		group := &result.groups[groupIndex]
+		if len(group.decisions) > 0 {
+			group.text += "\n\n"
+		}
+		group.text += candidate.entry.Content
+		group.decisions = append(group.decisions, candidate.index)
+		group.contents = append(group.contents, candidate.entry.Content)
+		placement := resolveWorldbookPlacement(&dto.WorldbookConfig{InjectionMode: mode, InjectionDepth: depth}, request.Messages)
+		placement.Fallback = placement.Fallback || mode == dto.WorldbookInjectionInherit
+		result.Entries[candidate.index].Placement = &placement
 	}
 	result.Text = strings.Join(included, "\n\n")
 	placement := resolveWorldbookPlacement(config, request.Messages)
@@ -426,14 +463,18 @@ func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAI
 		if err != nil {
 			return nil, trace, err
 		}
-		placement := resolveWorldbookPlacement(config, compiled.Messages)
-		if config.InjectionMode == "" || config.InjectionMode == dto.WorldbookInjectionInherit {
-			placement.Fallback = true
+		messages := make([]presetMessage, len(compiled.Messages))
+		for index, message := range compiled.Messages {
+			messages[index] = presetMessage{message: message}
 		}
-		index := max(0, min(placement.Index, len(compiled.Messages)))
-		compiled.Messages = insertWorldbookMessageAt(compiled.Messages, index, preview.Text)
-		placement.Index = index
-		preview.Placement = &placement
+		messages, err = injectWorldbookGroups(config, &preview, messages, -1, nil)
+		if err != nil {
+			return nil, trace, err
+		}
+		compiled.Messages = make([]dto.Message, len(messages))
+		for index, message := range messages {
+			compiled.Messages[index] = message.message
+		}
 		base = compiled
 	}
 	if config != nil {
@@ -442,12 +483,93 @@ func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAI
 	return base, trace, nil
 }
 
-func insertWorldbookMessageAt(messages []dto.Message, index int, text string) []dto.Message {
-	index = max(0, min(index, len(messages)))
-	result := make([]dto.Message, 0, len(messages)+1)
-	result = append(result, messages[:index]...)
-	result = append(result, dto.Message{Role: "system", Content: text})
-	return append(result, messages[index:]...)
+// Resolve every group against the same assembled history, then account for
+// inserted blocks when reporting actual message indices. Matching and budgets
+// have already run once; placement never scans or selects entries again.
+func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPreview, final []presetMessage, markerIndex int, macro *presetMacroContext) ([]presetMessage, error) {
+	messages := make([]dto.Message, len(final))
+	for index, item := range final {
+		messages[index] = item.message
+	}
+	global := resolveWorldbookPlacement(config, messages)
+	globalInherit := config.InjectionMode == "" || config.InjectionMode == dto.WorldbookInjectionInherit
+	if globalInherit && markerIndex >= 0 {
+		global = dto.WorldbookPlacement{Mode: dto.WorldbookInjectionInherit, Index: markerIndex, Role: messages[markerIndex].Role}
+	} else {
+		global.Fallback = global.Fallback || globalInherit
+	}
+	type insertion struct {
+		placement dto.WorldbookPlacement
+		group     worldbookInjectionGroup
+		marker    bool
+	}
+	insertions := make([]insertion, 0, len(preview.groups))
+	for _, group := range preview.groups {
+		placement := resolveWorldbookPlacement(&dto.WorldbookConfig{InjectionMode: group.mode, InjectionDepth: group.depth}, messages)
+		marker := group.mode == dto.WorldbookInjectionInherit && markerIndex >= 0
+		if marker {
+			placement = dto.WorldbookPlacement{Mode: dto.WorldbookInjectionInherit, Index: markerIndex, Role: messages[markerIndex].Role}
+		} else {
+			placement.Fallback = placement.Fallback || group.mode == dto.WorldbookInjectionInherit
+		}
+		if marker {
+			insertions = append(insertions, insertion{placement: placement, group: group, marker: true})
+		} else {
+			for index, decision := range group.decisions {
+				insertions = append(insertions, insertion{placement: placement, group: worldbookInjectionGroup{text: group.contents[index], decisions: []int{decision}}})
+			}
+		}
+	}
+	slices.SortStableFunc(insertions, func(a, b insertion) int {
+		if a.placement.Index != b.placement.Index {
+			return cmp.Compare(a.placement.Index, b.placement.Index)
+		}
+		if a.marker != b.marker {
+			if a.marker {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Compare(preview.Entries[a.group.decisions[0]].Order, preview.Entries[b.group.decisions[0]].Order)
+	})
+	offset := 0
+	globalIndex := global.Index
+	for start := 0; start < len(insertions); {
+		item := insertions[start]
+		placement := item.placement
+		placement.Index += offset
+		end := start + 1
+		if !item.marker {
+			texts := []string{item.group.text}
+			for end < len(insertions) && !insertions[end].marker && insertions[end].placement.Index == item.placement.Index {
+				texts = append(texts, insertions[end].group.text)
+				end++
+			}
+			text := strings.Join(texts, "\n\n")
+			if macro != nil {
+				text = macro.expand(text, 0)
+				if macro.warnings["macro expansion limit reached"] || len(text) > 16<<20 {
+					return nil, fmt.Errorf("worldbook macro expansion exceeded its limit")
+				}
+			}
+			final = slices.Insert(final, placement.Index, presetMessage{message: dto.Message{Role: "system", Content: text}, source: "worldbook"})
+			offset++
+			if item.placement.Index < globalIndex || global.Mode == dto.WorldbookInjectionInherit && item.placement.Index == globalIndex {
+				global.Index++
+			}
+		}
+		for _, grouped := range insertions[start:end] {
+			for _, index := range grouped.group.decisions {
+				actual := grouped.placement
+				actual.Index = placement.Index
+				preview.Entries[index].Placement = &actual
+			}
+		}
+		start = end
+	}
+	// The combined legacy placement continues to describe the global setting.
+	preview.Placement = &global
+	return final, nil
 }
 
 func resolveWorldbookPlacement(config *dto.WorldbookConfig, messages []dto.Message) dto.WorldbookPlacement {

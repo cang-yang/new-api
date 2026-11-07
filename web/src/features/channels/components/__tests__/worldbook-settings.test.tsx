@@ -81,6 +81,7 @@ test('worldbook edits apply only on confirmation and preserve other entries', as
   const onChange = mount()
   await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
   const dialog = screen.getByRole('dialog', { name: 'Manage worldbooks' })
+  await user.click(within(dialog).getByRole('button', { name: 'Edit City' }))
   await user.clear(within(dialog).getByLabelText('Entry content'))
   await user.type(
     within(dialog).getByLabelText('Entry content'),
@@ -152,7 +153,7 @@ test('normalized worldbook entries remain directly toggleable', async () => {
   ]
   const onChange = mount(JSON.stringify(normalized))
   await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
-  const toggle = screen.getByRole('switch', { name: 'Enable entry' })
+  const toggle = screen.getByRole('switch', { name: 'Enable City' })
   expect(toggle).toBeEnabled()
   await user.click(toggle)
   await user.click(screen.getByRole('button', { name: 'Apply changes' }))
@@ -167,12 +168,13 @@ test('invalid worldbook entries show the issue and keep the toggle editable', as
   invalid.books[0].entries[0].issues = ['regex']
   mount(JSON.stringify(invalid))
   await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  await user.click(screen.getByRole('button', { name: 'Edit City' }))
   expect(screen.getByText(/Invalid data/)).toBeVisible()
   expect(screen.getByText('regex')).toBeVisible()
   expect(screen.getByRole('switch', { name: 'Enable entry' })).toBeEnabled()
 })
 
-test('searches worldbook entries and selects one with the keyboard', async () => {
+test('searches the overview and opens an entry with the keyboard', async () => {
   const user = userEvent.setup()
   const multiple = structuredClone(config)
   multiple.books[0].entries.push({
@@ -185,15 +187,127 @@ test('searches worldbook entries and selects one with the keyboard', async () =>
   mount(JSON.stringify(multiple))
   await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
 
-  const entry = screen.getByRole('combobox', { name: 'Entry' })
-  await user.click(entry)
-  await user.type(entry, 'tower')
-  expect(screen.getByRole('option', { name: 'Tower district' })).toBeVisible()
-  await user.keyboard('{ArrowDown}{Enter}')
+  await user.type(
+    screen.getByRole('textbox', { name: 'Search entries...' }),
+    'tower'
+  )
+  expect(
+    screen.queryByRole('button', { name: 'Edit City' })
+  ).not.toBeInTheDocument()
+  screen.getByRole('button', { name: 'Edit Tower district' }).focus()
+  await user.keyboard('{Enter}')
 
   await waitFor(() =>
     expect(screen.getByLabelText('Entry content')).toHaveValue(
       'Tower background'
     )
   )
+})
+
+test('overview shows enabled and disabled entries and toggles without opening the editor', async () => {
+  const user = userEvent.setup()
+  const multiple = structuredClone(config)
+  multiple.books[0].entries.push({
+    ...multiple.books[0].entries[0],
+    id: 'tower',
+    name: 'Tower',
+    enabled: false,
+  })
+  const onChange = mount(JSON.stringify(multiple))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  expect(screen.getByRole('switch', { name: 'Enable City' })).toBeChecked()
+  expect(screen.getByRole('switch', { name: 'Enable Tower' })).not.toBeChecked()
+  await user.click(screen.getByRole('switch', { name: 'Enable Tower' }))
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(
+    JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[1].enabled
+  ).toBe(true)
+})
+
+test('entry position and search survive returning from the editor', async () => {
+  const user = userEvent.setup()
+  const onChange = mount()
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  await user.type(
+    screen.getByRole('textbox', { name: 'Search entries...' }),
+    'City'
+  )
+  await user.click(screen.getByRole('button', { name: 'Edit City' }))
+  await user.click(
+    screen.getByRole('combobox', { name: 'Entry insertion position' })
+  )
+  await user.click(
+    screen.getByRole('option', { name: 'Before the latest user message' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Back to all entries' }))
+  expect(
+    screen.getByRole('textbox', { name: 'Search entries...' })
+  ).toHaveValue('City')
+  expect(screen.getByText('Before the latest user message')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(
+    JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0].injection_mode
+  ).toBe('before_last_user')
+})
+
+test('import summary uses current issues rather than legacy blocking warning prose', async () => {
+  const user = userEvent.setup()
+  const old = structuredClone(config)
+  old.books[0].warnings = [
+    'Entry 0 is blocked by unsupported rules: depth, groupWeight',
+  ]
+  old.books[0].entries[0].normalized_rules = [
+    {
+      field: 'groupWeight',
+      action: 'ignored',
+      detail: 'field is not used by the gateway',
+    },
+  ]
+  mount(JSON.stringify(old))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  expect(screen.queryByText(/blocked by unsupported/)).not.toBeInTheDocument()
+  expect(
+    screen.getByText(
+      'Some advanced Tavern options are not used. Keyword matching remains available.'
+    )
+  ).toBeVisible()
+})
+
+test('import summary reports attention entries and filters to them', async () => {
+  const user = userEvent.setup()
+  const multiple = structuredClone(config)
+  multiple.books[0].entries.push({
+    ...multiple.books[0].entries[0],
+    id: 'broken',
+    name: 'Broken entry',
+    issues: ['regex'],
+  })
+  mount(JSON.stringify(multiple))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+
+  expect(screen.getByText('Imported 2 entries.')).toBeVisible()
+  expect(screen.getByText('1 need attention.')).toBeVisible()
+  await user.click(
+    screen.getByRole('button', { name: 'Review entries needing attention' })
+  )
+  expect(
+    screen.queryByRole('button', { name: 'Edit City' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.getByRole('button', { name: 'Edit Broken entry' })
+  ).toBeVisible()
+})
+
+test('overview clearly reports when the book cannot run', async () => {
+  const user = userEvent.setup()
+  const disabled = structuredClone(config)
+  disabled.enabled = false
+  mount(JSON.stringify(disabled))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+
+  expect(
+    screen.getByText(
+      'Worldbooks or this book are turned off. Entry switches are preserved but no entries will run.'
+    )
+  ).toBeVisible()
 })

@@ -24,7 +24,6 @@ import { useTranslation } from 'react-i18next'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
-import { Combobox } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -47,6 +46,7 @@ import {
   type WorldbookConfig,
 } from '../lib/worldbook'
 import { WorldbookEntryFields } from './worldbook-entry-fields'
+import { WorldbookEntryOverview } from './worldbook-entry-overview'
 import { WorldbookPreview } from './worldbook-preview'
 
 type Props = {
@@ -94,15 +94,14 @@ function ScopedWorldbookSettings(props: Props) {
     onSuccess: ({ next, book }) => {
       setDraft(next)
       setBookID(book.id)
-      setEntryID(book.entries[0]?.id || '')
+      setEntryID('')
     },
     onError: (error) => handleServerError(error),
     meta: { errorToast: false },
   })
   const locked = props.disabled || conflict || importFile.isPending
   const book = draft.books.find((item) => item.id === bookID) ?? draft.books[0]
-  const entry =
-    book?.entries.find((item) => item.id === entryID) ?? book?.entries[0]
+  const entry = book?.entries.find((item) => item.id === entryID)
   const valid = worldbookSchema.safeParse(draft).success
   const updateBook = (next: Worldbook) =>
     setDraft({
@@ -151,7 +150,7 @@ function ScopedWorldbookSettings(props: Props) {
             setInitial(JSON.stringify(current))
             setBaseline(props.value)
             setBookID(current.books[0]?.id || '')
-            setEntryID(current.books[0]?.entries[0]?.id || '')
+            setEntryID('')
             setTab('books')
             setOpen(true)
           }}
@@ -168,8 +167,8 @@ function ScopedWorldbookSettings(props: Props) {
         description={t(
           'For Chat Completions requests. Reads recent user and assistant text; does not store conversations.'
         )}
-        contentClassName='sm:max-w-4xl'
-        contentHeight='min(65dvh, 680px)'
+        contentClassName='sm:max-w-5xl'
+        contentHeight='min(70dvh, 760px)'
         bodyViewportClassName='overflow-hidden'
         bodyClassName='h-full'
         footer={
@@ -236,12 +235,12 @@ function ScopedWorldbookSettings(props: Props) {
             )}
             <TabsContent
               value={tab}
-              className='min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto pr-1'
+              className={`min-h-0 min-w-0 flex-1 overflow-x-hidden pr-1 ${tab === 'books' ? 'flex flex-col overflow-y-hidden' : 'overflow-y-auto'}`}
             >
               {tab === 'books' && (
-                <div className='space-y-4'>
+                <div className='flex min-h-0 flex-1 flex-col gap-3'>
                   <div
-                    className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed p-3'
+                    className='flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2'
                     onDragOver={(event) => event.preventDefault()}
                     onDrop={(event) => {
                       event.preventDefault()
@@ -286,7 +285,7 @@ function ScopedWorldbookSettings(props: Props) {
                   )}
                   {book && (
                     <>
-                      <div className='flex flex-wrap items-end gap-3'>
+                      <div className='flex shrink-0 flex-wrap items-end gap-3'>
                         <div className='min-w-0 flex-1 basis-full space-y-2 sm:basis-0'>
                           <Label htmlFor='worldbook-book'>
                             {t('Worldbook')}
@@ -335,61 +334,19 @@ function ScopedWorldbookSettings(props: Props) {
                           {t('Remove book')}
                         </Button>
                       </div>
-                      <p className='text-muted-foreground text-xs'>
-                        {t('{{count}} entries', { count: book.entries.length })}{' '}
-                        ·{' '}
-                        {t(
-                          'Do not also inject the same worldbook from your client.'
-                        )}
-                      </p>
-                      {!!book.warnings?.length && (
-                        <details className='rounded-lg border p-3 text-sm'>
-                          <summary className='cursor-pointer'>
-                            {t('Import notes')}
-                          </summary>
-                          <ul className='mt-2 list-inside list-disc space-y-1 text-xs break-words'>
-                            {[...new Set(book.warnings)].map((warning) => (
-                              <li key={warning}>{warning}</li>
-                            ))}
-                          </ul>
-                        </details>
-                      )}
-                      {!!book.entries.length && (
-                        <div className='space-y-2'>
-                          <Label htmlFor='worldbook-entry'>{t('Entry')}</Label>
-                          <Combobox
-                            value={entry?.id ?? null}
-                            onValueChange={(value) => {
-                              if (value) setEntryID(value)
-                            }}
-                            options={book.entries.map((item) => {
-                              let description: string | undefined
-                              if (item.issues?.length) {
-                                description = t('Invalid data')
-                              } else if (item.normalized_rules?.length) {
-                                description = t('Normalized for the gateway')
-                              }
-                              return {
-                                value: item.id,
-                                label: item.name || item.id,
-                                description,
-                              }
-                            })}
-                            aria-label={t('Entry')}
-                            placeholder={t('Search entries...')}
-                            searchPlaceholder={t('Search entries...')}
-                            emptyText={t('No entries found')}
-                            disabled={locked}
-                            className='w-full'
-                            popupClassName='w-[min(42rem,calc(100vw-2rem))]'
-                          />
-                        </div>
-                      )}
-                      {entry && (
-                        <WorldbookEntryFields
-                          key={`${book.id}:${entry.id}`}
-                          entry={entry}
+                      <div
+                        className={
+                          entry
+                            ? 'hidden'
+                            : 'flex min-h-0 flex-1 flex-col gap-3'
+                        }
+                      >
+                        <WorldbookEntryOverview
+                          key={book.id}
+                          book={book}
+                          active={draft.enabled && book.enabled}
                           disabled={locked}
+                          onEdit={setEntryID}
                           onChange={(next) =>
                             updateBook({
                               ...book,
@@ -399,6 +356,37 @@ function ScopedWorldbookSettings(props: Props) {
                             })
                           }
                         />
+                      </div>
+                      {entry && (
+                        <div className='flex min-h-0 flex-1 flex-col gap-3'>
+                          <div className='flex shrink-0 items-center gap-3 border-b pb-3'>
+                            <Button
+                              type='button'
+                              variant='outline'
+                              onClick={() => setEntryID('')}
+                            >
+                              {t('Back to all entries')}
+                            </Button>
+                            <h3 className='min-w-0 truncate text-sm font-semibold'>
+                              {entry.name || entry.id}
+                            </h3>
+                          </div>
+                          <div className='min-h-0 flex-1 overflow-y-auto pr-2'>
+                            <WorldbookEntryFields
+                              key={`${book.id}:${entry.id}`}
+                              entry={entry}
+                              disabled={locked}
+                              onChange={(next) =>
+                                updateBook({
+                                  ...book,
+                                  entries: book.entries.map((item) =>
+                                    item.id === next.id ? next : item
+                                  ),
+                                })
+                              }
+                            />
+                          </div>
+                        </div>
                       )}
                     </>
                   )}

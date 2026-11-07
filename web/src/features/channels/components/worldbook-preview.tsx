@@ -28,6 +28,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 
 import { previewWorldbook } from '../api'
 import type { WorldbookConfig } from '../lib/worldbook'
+import { worldbookPositionLabels } from '../lib/worldbook-placement'
 
 export function WorldbookPreview(props: {
   config: WorldbookConfig
@@ -155,6 +156,18 @@ export function WorldbookPreview(props: {
                 </span>
                 <span className='text-muted-foreground text-xs'>
                   {reasons[entry.reason] || entry.reason}
+                  {entry.placement && (
+                    <span className='ml-2'>
+                      {t(
+                        worldbookPositionLabels[entry.placement.mode] ||
+                          'Insertion position'
+                      )}
+                      {` · ${t('Message position {{index}}', { index: entry.placement.index + 1 })}`}
+                      {entry.placement.fallback
+                        ? ` · ${t('Fallback applied')}`
+                        : ''}
+                    </span>
+                  )}
                 </span>
               </div>
             ))}

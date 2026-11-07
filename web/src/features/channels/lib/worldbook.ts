@@ -38,6 +38,16 @@ export const worldbookEntrySchema = z
     whole_words: z.boolean(),
     priority: z.number().int(),
     prevent_recursion: z.boolean().optional(),
+    injection_mode: z
+      .enum([
+        'follow_global',
+        'inherit',
+        'system_prelude',
+        'before_last_user',
+        'at_depth',
+      ])
+      .optional(),
+    injection_depth: z.number().int().min(0).max(20).optional(),
     normalized_rules: z.array(worldbookNormalizedRuleSchema).optional(),
     issues: z.array(z.string()).optional(),
     source: z.unknown().optional(),
@@ -90,6 +100,7 @@ export type WorldbookPreviewResult = {
     status: 'included' | 'skipped'
     reason: string
     order?: number
+    placement?: WorldbookPlacement
   }[]
   warnings: string[]
   placement?: WorldbookPlacement
