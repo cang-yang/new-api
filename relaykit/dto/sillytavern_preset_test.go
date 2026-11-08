@@ -21,4 +21,33 @@ func TestSillyTavernToolProtocolValidation(t *testing.T) {
 	invalid.ToolProtocol = &SillyTavernToolProtocol{ResponseTarget: "xml"}
 	_, err = invalid.ParseAndValidate()
 	require.ErrorContains(t, err, "tool_protocol response_target")
+
+	withArgument := &SillyTavernPresetConfig{
+		Preset: valid.Preset,
+		ToolProtocol: &SillyTavernToolProtocol{
+			PresetFinal:      "answer",
+			ResponseTarget:   "json",
+			ResponseArgument: "extra.payload",
+		},
+	}
+	_, err = withArgument.ParseAndValidate()
+	require.NoError(t, err)
+
+	invalidArgument := *withArgument
+	invalidArgument.ToolProtocol = &SillyTavernToolProtocol{
+		PresetFinal:      "answer",
+		ResponseTarget:   "auto",
+		ResponseArgument: "extra",
+	}
+	_, err = invalidArgument.ParseAndValidate()
+	require.ErrorContains(t, err, "response_argument requires response_target")
+
+	invalidClientArgument := *withArgument
+	invalidClientArgument.ToolProtocol = &SillyTavernToolProtocol{
+		ClientFinal:      "reply",
+		ResponseTarget:   "json",
+		ResponseArgument: "extra",
+	}
+	_, err = invalidClientArgument.ParseAndValidate()
+	require.ErrorContains(t, err, "response_argument requires a preset_final")
 }

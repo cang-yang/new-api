@@ -22,7 +22,26 @@ func (p *PresetScriptResponse) restoreTools(body []byte, stream bool, deadline t
 	if !settings.ConsumeToolCalls || len(p.ownedTools) == 0 {
 		return body, nil
 	}
+	// The protocol is enabled but the client declared no machine-readable tool
+	// contract (for example it only asked for JSON in prompt text). Fall back to
+	// a generic projection so a client-shaped JSON payload embedded in the
+	// preset's terminal tool is still surfaced, then keep the existing pipeline.
+	// Ambiguous or conflicting client tool contracts are left untouched.
+	autoProject := false
+	if p.protocol != nil && p.protocol.audit.Enabled && !p.protocol.audit.Activated {
+		switch p.protocol.audit.Reason {
+		case "no_client_tool_contract", "response_projection_unsafe":
+			autoProject = true
+		}
+	}
 	return restorePresetToolCalls(body, stream, p.ownedTools, true, func(calls []*presetToolTextCall) (string, error) {
+		if autoProject {
+			if projected, ok, err := presetProtocolAutoJSONProjection(calls); err != nil {
+				return "", err
+			} else if ok {
+				return projected, nil
+			}
+		}
 		return p.formatOwnedCalls(calls, stream, deadline)
 	}, deadline)
 }

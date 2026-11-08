@@ -35,7 +35,15 @@ import {
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -62,6 +70,11 @@ export function PresetScriptSettings(props: Props) {
   const tavernEnabled = props.config.script_runtime === 'tavern-v1'
   const toolProtocol = record(props.config.tool_protocol)
   const toolProtocolEnabled = toolProtocol.enabled === true
+  const auxiliaryTools = Array.isArray(toolProtocol.auxiliary)
+    ? toolProtocol.auxiliary.filter(
+        (name): name is string => typeof name === 'string'
+      )
+    : []
   const scripts = discoverPresetScripts(props.config)
   const hasScripts = scripts.some((script) => script.enabled)
   const [preparing, setPreparing] = useState(false)
@@ -103,6 +116,22 @@ export function PresetScriptSettings(props: Props) {
     }
     props.onChange(next)
   }
+  const updateToolProtocol = (changes: Record<string, unknown>) => {
+    const next = { ...toolProtocol, ...changes }
+    for (const [key, value] of Object.entries(changes)) {
+      if (
+        value === '' ||
+        value === undefined ||
+        value === null ||
+        (Array.isArray(value) && value.length === 0)
+      ) {
+        delete next[key]
+      }
+    }
+    props.onChange({ ...props.config, tool_protocol: next })
+  }
+  const toolProtocolText = (key: string) =>
+    typeof toolProtocol[key] === 'string' ? (toolProtocol[key] as string) : ''
   return (
     <section
       className='mx-auto flex w-full max-w-3xl flex-col gap-4'
@@ -242,9 +271,143 @@ export function PresetScriptSettings(props: Props) {
           </FieldDescription>
           <FieldDescription>
             {t(
-              'Only applies when the client request declares its own tools. Requests without a client tool contract are left unchanged.'
+              'Coordinates with a declared client tool contract, and still restores a client-shaped JSON reply when the client only asks for a format in text.'
             )}
           </FieldDescription>
+          {toolProtocolEnabled && (enabled || tavernEnabled) ? (
+            <Collapsible className='min-w-0 space-y-3 border-t pt-4'>
+              <CollapsibleTrigger
+                render={
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    disabled={props.disabled}
+                  />
+                }
+              >
+                {t('Advanced tool protocol')}
+              </CollapsibleTrigger>
+              <CollapsibleContent className='space-y-3'>
+                <div className='grid gap-3 sm:grid-cols-2'>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-client-final`}>
+                      {t('Client final tool')}
+                    </FieldLabel>
+                    <Input
+                      id={`${id}-client-final`}
+                      value={toolProtocolText('client_final')}
+                      disabled={props.disabled}
+                      placeholder='client_reply'
+                      onChange={(event) =>
+                        updateToolProtocol({
+                          client_final: event.target.value,
+                        })
+                      }
+                    />
+                    <FieldDescription>
+                      {t(
+                        'Optional. Only use this when the original client declares the final tool.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-preset-final`}>
+                      {t('Preset final tool')}
+                    </FieldLabel>
+                    <Input
+                      id={`${id}-preset-final`}
+                      value={toolProtocolText('preset_final')}
+                      disabled={props.disabled}
+                      placeholder='final_reply'
+                      onChange={(event) =>
+                        updateToolProtocol({
+                          preset_final: event.target.value,
+                        })
+                      }
+                    />
+                    <FieldDescription>
+                      {t(
+                        'The preset tool whose result should become the client response.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field className='sm:col-span-2' data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-auxiliary-tools`}>
+                      {t('Auxiliary tools')}
+                    </FieldLabel>
+                    <Input
+                      id={`${id}-auxiliary-tools`}
+                      value={auxiliaryTools.join(', ')}
+                      disabled={props.disabled}
+                      placeholder='context, memory'
+                      onChange={(event) =>
+                        updateToolProtocol({
+                          auxiliary: event.target.value
+                            .split(',')
+                            .map((name) => name.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                    />
+                    <FieldDescription>
+                      {t(
+                        'Comma-separated preset tools that run before the final response.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-response-target`}>
+                      {t('Response target')}
+                    </FieldLabel>
+                    <Select
+                      value={toolProtocolText('response_target') || 'auto'}
+                      disabled={props.disabled}
+                      onValueChange={(value) => {
+                        if (typeof value === 'string') {
+                          updateToolProtocol({ response_target: value })
+                        }
+                      }}
+                    >
+                      <SelectTrigger
+                        id={`${id}-response-target`}
+                        className='w-full'
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectItem value='auto'>{t('Auto')}</SelectItem>
+                        <SelectItem value='text'>{t('Text')}</SelectItem>
+                        <SelectItem value='json'>{t('JSON')}</SelectItem>
+                        <SelectItem value='tool'>{t('Tool call')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-response-argument`}>
+                      {t('Response argument')}
+                    </FieldLabel>
+                    <Input
+                      id={`${id}-response-argument`}
+                      value={toolProtocolText('response_argument')}
+                      disabled={props.disabled}
+                      placeholder='payload'
+                      onChange={(event) =>
+                        updateToolProtocol({
+                          response_argument: event.target.value,
+                        })
+                      }
+                    />
+                    <FieldDescription>
+                      {t(
+                        'Optional argument path that contains the client JSON or text.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
           {!enabled && !tavernEnabled && (
             <FieldDescription>
               {t('Enable a server-side preset script first.')}

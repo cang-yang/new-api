@@ -146,6 +146,63 @@ test('script compatibility is explicit, preserves the preset and disables the co
   expect(saved.preset).toEqual(withHooks)
 })
 
+test('advanced tool protocol can project a preset terminal argument into the client response', async () => {
+  const user = userEvent.setup()
+  const withHooks = {
+    ...preset,
+    extensions: {
+      SPreset: {
+        ToolBindings: {
+          reply: { enabled: true, code: 'return {name:"soliumbra_reply"}' },
+          context: { enabled: true, code: 'return {name:"context"}' },
+        },
+      },
+    },
+  }
+  render(
+    <Editor
+      initialValue={JSON.stringify({
+        preset: withHooks,
+      })}
+    />
+  )
+  await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+  await user.click(screen.getByRole('tab', { name: 'Script compatibility' }))
+  await user.click(
+    screen.getByRole('radio', { name: 'Use preset settings (SPreset)' })
+  )
+  await user.click(
+    screen.getByRole('switch', {
+      name: 'Coordinate client and preset tool calls',
+    })
+  )
+  await user.click(
+    screen.getByRole('button', { name: 'Advanced tool protocol' })
+  )
+  await user.type(
+    screen.getByLabelText('Preset final tool'),
+    'soliumbra_reply'
+  )
+  await user.type(screen.getByLabelText('Auxiliary tools'), 'context')
+  await chooseSelectOption(
+    user,
+    screen.getByRole('combobox', { name: 'Response target' }),
+    'JSON'
+  )
+  await user.type(screen.getByLabelText('Response argument'), 'extra')
+  await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
+  const saved = JSON.parse(
+    screen.getByLabelText('Saved config').textContent || '{}'
+  )
+  expect(saved.tool_protocol).toEqual({
+    enabled: true,
+    preset_final: 'soliumbra_reply',
+    auxiliary: ['context'],
+    response_target: 'json',
+    response_argument: 'extra',
+  })
+})
+
 test('script compatibility hides the legacy adapter when the preset has no supported adapter', async () => {
   const user = userEvent.setup()
   render(<Editor />)

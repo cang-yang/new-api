@@ -878,6 +878,199 @@ func TestPresetProtocolJSONResponseProjection(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
 }
 
+func TestPresetProtocolJSONResponseProjectionFromArgument(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"reply": map[string]any{"enabled": true, "code": `return {name:"soliumbra_reply", parameters:{type:"object",properties:{extra:{type:"string"},think_nya:{type:"string"},game_content:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{
+		Enabled:          true,
+		PresetFinal:      "soliumbra_reply",
+		ResponseTarget:   "json",
+		ResponseArgument: "extra",
+	}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model:    "m",
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, presetProtocolContractJSON, trace.Protocol.Contract)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"extra\":\"{\\\"content\\\":\\\"visible reply\\\",\\\"emotion\\\":\\\"smile\\\"}\",\"think_nya\":\"hidden\",\"game_content\":\"<game>plain display text</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"{\"content\":\"visible reply\",\"emotion\":\"smile\"}"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
+	assert.NotContains(t, recorder.Body.String(), `plain display text`)
+	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+}
+
+func TestPresetProtocolAutoProjectsClientJSONFromOwnedToolArgument(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{
+		"ToolBindings": map[string]any{
+			"reply": map[string]any{"enabled": true, "code": `return {name:"soliumbra_reply", parameters:{type:"object",properties:{extra:{type:"string"},think_nya:{type:"string"},game_content:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+		},
+		"OutputPreprocessing": map[string]any{
+			"enabled":          true,
+			"consumeToolCalls": true,
+			"script":           `({buffer}) => ({output:buffer,hold:"",state:{accepted:true}})`,
+			"toolCallFormatter": map[string]any{
+				"enabled": true,
+				"script":  `({defaultText}) => defaultText`,
+			},
+		},
+	})
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model:    "m",
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Enabled)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, presetProtocolContractText, trace.Protocol.Contract)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"extra\":\"{\\\"content\\\":\\\"visible reply\\\",\\\"emotion\\\":\\\"smile\\\"}\",\"think_nya\":\"hidden\",\"game_content\":\"<game>plain display text</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"{\"content\":\"visible reply\",\"emotion\":\"smile\"}"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
+	assert.NotContains(t, recorder.Body.String(), `plain display text`)
+	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+}
+
+// A client that expresses its reply contract only in prompt text declares no
+// machine-readable tool, so the protocol plan stays inactive. When a preset
+// owns several terminal/auxiliary tools the response may still carry the
+// client's JSON payload inside one tool argument; the gateway must project it
+// generically instead of leaking the display text.
+func TestPresetProtocolAutoProjectsClientJSONWhenPlanIsInactive(t *testing.T) {
+	preset, err := common.Marshal(map[string]any{
+		"prompts": []any{
+			map[string]any{"identifier": "chatHistory", "marker": true},
+			map[string]any{"identifier": "reply", "content": "Reply using the declared format."},
+			map[string]any{"identifier": "context", "content": "Use the context tool when synchronization is required."},
+		},
+		"prompt_order": []any{map[string]any{"order": []any{
+			map[string]any{"identifier": "reply", "enabled": true},
+			map[string]any{"identifier": "context", "enabled": true},
+			map[string]any{"identifier": "chatHistory", "enabled": true},
+		}}},
+		"extensions": map[string]any{"SPreset": map[string]any{
+			"ToolBindings": map[string]any{
+				"reply":   map[string]any{"enabled": true, "code": `return {name:"soliumbra_reply", parameters:{type:"object",properties:{extra:{type:"string"},think_nya:{type:"string"},game_content:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+				"context": map[string]any{"enabled": true, "code": `return {name:"context", parameters:{type:"object",properties:{query:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+			},
+			"OutputPreprocessing": map[string]any{
+				"enabled":          true,
+				"consumeToolCalls": true,
+				"script":           `({buffer}) => ({output:buffer,hold:"",state:{accepted:true}})`,
+				"toolCallFormatter": map[string]any{
+					"enabled": true,
+					"script":  `({defaultText}) => defaultText`,
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	config := &dto.SillyTavernPresetConfig{
+		Preset:        preset,
+		ScriptRuntime: "spreset-v1",
+		ToolProtocol:  &dto.SillyTavernToolProtocol{Enabled: true},
+	}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model:    "m",
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.True(t, trace.Protocol.Enabled)
+	assert.False(t, trace.Protocol.Activated)
+	assert.Equal(t, "no_client_tool_contract", trace.Protocol.Reason)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"extra\":\"{\\\"content\\\":\\\"visible reply\\\",\\\"emotion\\\":\\\"smile\\\"}\",\"think_nya\":\"hidden\",\"game_content\":\"<game>plain display text</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Contains(t, recorder.Body.String(), `"content":"{\"content\":\"visible reply\",\"emotion\":\"smile\"}"`)
+	assert.Contains(t, recorder.Body.String(), `"finish_reason":"stop"`)
+	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
+	assert.NotContains(t, recorder.Body.String(), `plain display text`)
+	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+}
+
+func TestPresetProtocolAutoJSONArgumentHandlesTagWrappers(t *testing.T) {
+	inner := `{"content":"visible reply","emotion":"smile"}`
+	tests := []struct {
+		name        string
+		value       map[string]any
+		want        bool
+		wantContent string
+	}{
+		{
+			name:        "bare argument",
+			value:       map[string]any{"extra": inner, "think_nya": "hidden", "game_content": "<game>plain display text</game>"},
+			want:        true,
+			wantContent: "visible reply",
+		},
+		{
+			name:        "tag wrapped argument",
+			value:       map[string]any{"extra": "none", "think_nya": "hidden", "game_content": "<game>" + inner + "</game>"},
+			want:        true,
+			wantContent: "visible reply",
+		},
+		{
+			name:  "ambiguous bare arguments",
+			value: map[string]any{"extra": inner, "game_content": inner},
+			want:  false,
+		},
+		{
+			name:        "bare wins over wrapped",
+			value:       map[string]any{"extra": inner, "game_content": "<game>" + inner + "</game>"},
+			want:        true,
+			wantContent: "visible reply",
+		},
+		{
+			name:  "prose is not a contract",
+			value: map[string]any{"extra": "none", "game_content": "<game>plain display text</game>"},
+			want:  false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := presetProtocolAutoJSONArgument(map[string]any(test.value))
+			assert.Equal(t, test.want, ok)
+			if !test.want {
+				return
+			}
+			object, ok := got.(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, test.wantContent, object["content"])
+		})
+	}
+}
+
 func TestPresetProtocolAuxiliaryResponsePassthrough(t *testing.T) {
 	config := protocolScriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
 		"context": map[string]any{"enabled": true, "code": `return {name:"context", parameters:{type:"object",properties:{query:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},

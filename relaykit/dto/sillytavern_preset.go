@@ -40,11 +40,12 @@ type SillyTavernPresetConfig struct {
 // SillyTavernToolProtocol optionally resolves ambiguous tool roles without
 // tying the gateway to a specific preset, script, or tool name.
 type SillyTavernToolProtocol struct {
-	Enabled        bool     `json:"enabled"`
-	ClientFinal    string   `json:"client_final,omitempty"`
-	PresetFinal    string   `json:"preset_final,omitempty"`
-	Auxiliary      []string `json:"auxiliary,omitempty"`
-	ResponseTarget string   `json:"response_target,omitempty"` // auto, text, json, tool
+	Enabled          bool     `json:"enabled"`
+	ClientFinal      string   `json:"client_final,omitempty"`
+	PresetFinal      string   `json:"preset_final,omitempty"`
+	Auxiliary        []string `json:"auxiliary,omitempty"`
+	ResponseTarget   string   `json:"response_target,omitempty"`   // auto, text, json, tool
+	ResponseArgument string   `json:"response_argument,omitempty"` // optional tool argument path
 }
 
 // SillyTavernToolText is a declarative transport, not an executable preset
@@ -295,10 +296,22 @@ func validateSillyTavernToolProtocol(protocol *SillyTavernToolProtocol) error {
 	}
 	switch protocol.ResponseTarget {
 	case "", "auto", "text", "json", "tool":
-		return nil
 	default:
 		return fmt.Errorf("sillytavern_preset tool_protocol response_target must be auto, text, json, or tool")
 	}
+	if protocol.ResponseArgument == "" {
+		return nil
+	}
+	if protocol.ClientFinal != "" {
+		return fmt.Errorf("sillytavern_preset tool_protocol response_argument requires a preset_final tool")
+	}
+	if protocol.ResponseTarget != "json" && protocol.ResponseTarget != "text" {
+		return fmt.Errorf("sillytavern_preset tool_protocol response_argument requires response_target json or text")
+	}
+	if !validSillyTavernToolArgumentPath(protocol.ResponseArgument) {
+		return fmt.Errorf("sillytavern_preset tool_protocol response_argument must be a dot-separated argument path")
+	}
+	return nil
 }
 
 func validSillyTavernToolName(name string) bool {
@@ -310,6 +323,18 @@ func validSillyTavernToolName(name string) bool {
 			continue
 		}
 		return false
+	}
+	return true
+}
+
+func validSillyTavernToolArgumentPath(path string) bool {
+	if len(path) == 0 || len(path) > 256 {
+		return false
+	}
+	for segment := range strings.SplitSeq(path, ".") {
+		if !validSillyTavernToolName(segment) {
+			return false
+		}
 	}
 	return true
 }
