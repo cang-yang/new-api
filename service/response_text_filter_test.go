@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -417,4 +418,79 @@ func TestResponseTextFilterNoApplicableRulesPreservesImmediateStreaming(t *testi
 		assert.Equal(t, "data: first\n\n", recorder.Body.String())
 		assert.True(t, recorder.Flushed)
 	}
+}
+
+func TestResponseFailurePolicyVariesByStageAndContract(t *testing.T) {
+	base := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[]}`)}
+	policy := responseFailurePolicy(base, nil, "m", false)
+	assert.Equal(t, FailureSafeRaw, policy.Mode(FailureStageResponseValidation))
+	assert.Equal(t, FailureSafeRaw, policy.Mode(FailureStageResponseRestore))
+	assert.Equal(t, FailurePreserve, policy.Mode(FailureStageOutputProcessing))
+	assert.Equal(t, FailurePreserve, policy.Mode(FailureStageRegex))
+	assert.Equal(t, FailureReject, policy.Mode(FailureStageCrossChannelRetry))
+	assert.Equal(t, FailureStop, policy.Mode(FailureStageResponseStarted))
+
+	// A preset that owns a response script or transport must finish or fail.
+	scripted := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[]}`), ScriptRuntime: "spreset-v1"}
+	policy = responseFailurePolicy(scripted, nil, "m", false)
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageResponseValidation))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageResponseRestore))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageOutputProcessing))
+
+	// An explicit stage override wins over the script default.
+	override := &dto.SillyTavernPresetConfig{
+		Preset:        []byte(`{"prompts":[]}`),
+		ScriptRuntime: "spreset-v1",
+		FailurePolicy: &dto.SillyTavernFailurePolicy{ResponseRestore: "safe_raw"},
+	}
+	policy = responseFailurePolicy(override, nil, "m", false)
+	assert.Equal(t, FailureSafeRaw, policy.Mode(FailureStageResponseRestore))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageResponseValidation))
+
+	// Embedded regex error policy and explicit regex stages map cleanly.
+	policy = responseFailurePolicy(&dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[]}`), RegexFailurePolicy: "error"}, nil, "m", false)
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageRegex))
+	policy = responseFailurePolicy(&dto.SillyTavernPresetConfig{
+		Preset:        []byte(`{"prompts":[]}`),
+		FailurePolicy: &dto.SillyTavernFailurePolicy{Regex: "empty"},
+	}, nil, "m", false)
+	assert.Equal(t, FailureEmpty, policy.Mode(FailureStageRegex))
+}
+
+func TestResponseWriterStageModeFallsBackToDocumentedDefaults(t *testing.T) {
+	empty := &ResponseTextFilterWriter{}
+	assert.Equal(t, FailureSafeRaw, empty.stageMode(FailureStageResponseRestore))
+	assert.Equal(t, FailurePreserve, empty.stageMode(FailureStageOutputProcessing))
+	assert.Equal(t, FailureStop, empty.stageMode(FailureStageResponseStarted))
+
+	policy := AdaptationFailurePolicy{responseRestore: FailureFail, regex: FailureEmpty}
+	configured := &ResponseTextFilterWriter{policy: &policy}
+	assert.Equal(t, FailureFail, configured.stageMode(FailureStageResponseRestore))
+	assert.Equal(t, FailureEmpty, configured.stageMode(FailureStageRegex))
+}
+
+func TestResponseErrorStageTagging(t *testing.T) {
+	tagged := newResponseStageError(FailureStageRegex, errors.New("boom"))
+	assert.Equal(t, FailureStageRegex, responseErrorStage(tagged))
+	assert.Equal(t, FailureStageResponseValidation, responseErrorStage(errors.New("plain")))
+	assert.Nil(t, newResponseStageError(FailureStageRegex, nil))
+}
+
+func TestResponseInternalToolNamesIncludeTransportAndContent(t *testing.T) {
+	writer := &ResponseTextFilterWriter{toolText: &dto.SillyTavernToolText{Enabled: true, Name: "transport"}}
+	assert.True(t, writer.internalToolNames()["transport"])
+	assert.False(t, writer.rawResponseSafeForFallback())
+
+	plain := &ResponseTextFilterWriter{}
+	assert.Nil(t, plain.internalToolNames())
+	assert.True(t, plain.rawResponseSafeForFallback())
+
+	content := &ResponseTextFilterWriter{scriptResponse: &PresetScriptResponse{
+		protocol: &presetProtocolPlan{
+			audit:    PresetProtocolAudit{Activated: true},
+			internal: map[string]bool{"final_reply": true},
+		},
+	}}
+	assert.True(t, content.internalToolNames()["final_reply"])
+	assert.False(t, content.rawResponseSafeForFallback())
 }

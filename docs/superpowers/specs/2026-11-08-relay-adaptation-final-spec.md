@@ -18,14 +18,20 @@
 - 新增显式工具角色列表 `action`、`content`，与既有 `client_final`、`preset_final`、`auxiliary` 一起由渠道保存，不再靠推断。
 - 世界书导入高风险字段（`probability < 100`、生效的 `characterFilter`、`group`/`groupWeight`/`groupScoring`、`sticky`/`cooldown`/`delay`、`role`、酒馆原始位置字段）标记为 `risk`，条目导入后自动停用，原始 JSON 保留在 `source`，由用户一次性确认后简化启用。
 - 世界书条目总览和详情页提供可见的“需要确认”状态与“确认并启用”操作，不出现灰色死开关。
+- 世界书条目存在未解决 `issues` 时不能启用或“确认”，开关保持可点击并说明原因（第 9.5、9.6 节）。
 - 下拉框统一使用项目 `Select`/`Combobox`，`NativeSelect` 已退役并由 oxlint `no-restricted-imports` 拦截。
+- 渠道级 `AdaptationProfile`、`AdaptationBasePlan` 与冻结的 `AdaptationResolvedPlan` 数据模型（第 4、5.3 节）。
+- 每个工具角色的可见性策略对象 `visibility_policy`：审计中输出 `auxiliary/action/content` 的生效可见性，指纹包含可见性摘要，网关内部工具集合参与响应侧泄露检查（第 5.2、7 节）。
+- 分阶段 `failure_policy` 的实际执行：响应恢复、响应校验、输出预处理和接收正则各自按阶段取值，`safe_raw` 仅在无网关内部工具时可回退，接收正则支持 `preserve`/`empty`/`fail`（第 12 节）。
+- 跨渠道重试的计划一致性校验：`adaptationRetryMismatch` 复用渠道级指纹比较，冻结计划在重试时复用 `initialPresetAudit`，不再重新推断协议（第 4.2、12 节）。
+- 预设能力报告：渠道编辑器内提供“能力报告”按钮，调用 `POST /api/channel/sillytavern/inspect`，展示探测到的工具、能力、警告和条目运行状态（第 10.1、14.2 节）。
+- 适配概览：渠道编辑器顶部展示运行时、工具协调开关、最终回复模式和参与协调的工具数量（第 14.1 节）。
+- 阶段级失败策略控件和可见性说明（第 5.3、14.4 节）。
 
 尚未落地（仍按本文件作为目标）：
 
-- 渠道级 `AdaptationProfile` 与冻结的 `RequestPlan`/`ResolvedPlan` 数据模型（第 4、5.3 节）。
-- 完整的分阶段 `failure_policy` 与计划指纹跨渠道重试校验（第 12 节）。
-- 能力报告、诊断 trace 和第三层预览界面（第 10.1、14.3 节）。
-- 每个工具角色的可见性策略对象 `visibility_policy`（当前按第 7 节的默认可见性执行）。
+- 第三层实时请求诊断 trace 的专用界面；当前通过审计字段和日志展示阶段结论（第 14.3、17 节）。
+- 能力报告和冻结计划的服务端指纹缓存（第 10.2、13 节）；当前每次请求按预算重新生成计划，未做跨请求缓存。
 
 ## 1. 最终目标
 

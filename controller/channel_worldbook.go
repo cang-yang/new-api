@@ -46,3 +46,21 @@ func PreviewChannelWorldbook(c *gin.Context) {
 	}
 	common.ApiSuccess(c, preview)
 }
+
+func InspectChannelSillyTavernPreset(c *gin.Context) {
+	var request struct {
+		SillyTavernPreset *dto.SillyTavernPresetConfig `json:"sillytavern_preset,omitempty"`
+		Request           *dto.GeneralOpenAIRequest    `json:"request,omitempty"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, dto.MaxSillyTavernPresetBytes+(2<<20))
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Preset capability request is invalid or too large"})
+		return
+	}
+	report, err := service.BuildPresetCapabilityReport(request.SillyTavernPreset, request.Request)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	common.ApiSuccess(c, report)
+}

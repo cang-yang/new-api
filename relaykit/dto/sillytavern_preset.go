@@ -21,34 +21,63 @@ type SillyTavernPresetConfig struct {
 	ParameterPolicy    string          `json:"parameter_policy,omitempty"` // preset (default) or client
 	// PostProcessing controls the optional final message normalization:
 	// none, merge, semi_strict, strict, or single_user.
-	PostProcessing      string                   `json:"post_processing,omitempty"`
-	ReferenceSource     string                   `json:"reference_source,omitempty"` // custom, openai, or newapi (default)
-	ContextMode         string                   `json:"context_mode,omitempty"`     // compatibility (default) or exact
-	Patches             []SillyTavernPresetPatch `json:"patches,omitempty"`
-	EntryOverrides      map[string]bool          `json:"entry_overrides,omitempty"`
-	EnableEmbeddedRegex bool                     `json:"enable_embedded_regex,omitempty"`
-	EnableSendRegex     bool                     `json:"enable_send_regex,omitempty"`
-	RegexOverrides      map[string]bool          `json:"regex_overrides,omitempty"`
-	MacroValues         map[string]string        `json:"macro_values,omitempty"`
-	TimeZone            string                   `json:"time_zone,omitempty"`
-	ToolText            *SillyTavernToolText     `json:"tool_text,omitempty"`
-	ScriptRuntime       string                   `json:"script_runtime,omitempty"` // empty (off), spreset-v1, tavern-v1
-	ScriptModules       map[string]string        `json:"script_modules,omitempty"` // administrator-pinned JS modules; never fetched
-	ToolProtocol        *SillyTavernToolProtocol `json:"tool_protocol,omitempty"`
+	PostProcessing      string                    `json:"post_processing,omitempty"`
+	ReferenceSource     string                    `json:"reference_source,omitempty"` // custom, openai, or newapi (default)
+	ContextMode         string                    `json:"context_mode,omitempty"`     // compatibility (default) or exact
+	Patches             []SillyTavernPresetPatch  `json:"patches,omitempty"`
+	EntryOverrides      map[string]bool           `json:"entry_overrides,omitempty"`
+	EnableEmbeddedRegex bool                      `json:"enable_embedded_regex,omitempty"`
+	EnableSendRegex     bool                      `json:"enable_send_regex,omitempty"`
+	RegexOverrides      map[string]bool           `json:"regex_overrides,omitempty"`
+	MacroValues         map[string]string         `json:"macro_values,omitempty"`
+	TimeZone            string                    `json:"time_zone,omitempty"`
+	ToolText            *SillyTavernToolText      `json:"tool_text,omitempty"`
+	ScriptRuntime       string                    `json:"script_runtime,omitempty"` // empty (off), spreset-v1, tavern-v1
+	ScriptModules       map[string]string         `json:"script_modules,omitempty"` // administrator-pinned JS modules; never fetched
+	ToolProtocol        *SillyTavernToolProtocol  `json:"tool_protocol,omitempty"`
+	FailurePolicy       *SillyTavernFailurePolicy `json:"failure_policy,omitempty"`
 }
 
 // SillyTavernToolProtocol optionally resolves ambiguous tool roles without
 // tying the gateway to a specific preset, script, or tool name.
 type SillyTavernToolProtocol struct {
-	Enabled          bool     `json:"enabled"`
-	ClientFinal      string   `json:"client_final,omitempty"`
-	PresetFinal      string   `json:"preset_final,omitempty"`
-	Auxiliary        []string `json:"auxiliary,omitempty"`
-	Action           []string `json:"action,omitempty"`
-	Content          []string `json:"content,omitempty"`
-	ResponseTarget   string   `json:"response_target,omitempty"`   // auto, text, json, tool
-	ResponseArgument string   `json:"response_argument,omitempty"` // optional tool argument path
-	PhasePolicy      string   `json:"phase_policy,omitempty"`      // request (default), always_auxiliary, always_final, disabled
+	Enabled          bool                       `json:"enabled"`
+	ClientFinal      string                     `json:"client_final,omitempty"`
+	PresetFinal      string                     `json:"preset_final,omitempty"`
+	Auxiliary        []string                   `json:"auxiliary,omitempty"`
+	Action           []string                   `json:"action,omitempty"`
+	Content          []string                   `json:"content,omitempty"`
+	ResponseTarget   string                     `json:"response_target,omitempty"`   // auto, text, json, tool
+	ResponseArgument string                     `json:"response_argument,omitempty"` // optional tool argument path
+	PhasePolicy      string                     `json:"phase_policy,omitempty"`      // request (default), always_auxiliary, always_final, disabled
+	VisibilityPolicy *SillyTavernToolVisibility `json:"visibility_policy,omitempty"`
+}
+
+// SillyTavernToolVisibility controls which role groups may be returned to the
+// client. Content containers are gateway-internal by default; action and
+// auxiliary tools remain client-visible so the client can complete the turn.
+type SillyTavernToolVisibility struct {
+	Auxiliary string `json:"auxiliary,omitempty"` // client_visible (default)
+	Action    string `json:"action,omitempty"`    // client_visible (default)
+	Content   string `json:"content,omitempty"`   // gateway_internal (default)
+}
+
+// SillyTavernFailurePolicy is deliberately stage-scoped. The gateway does not
+// use a hidden global strict flag: every fallback decision reads the stage
+// value that applies to the operation it is about to perform.
+type SillyTavernFailurePolicy struct {
+	Preflight          string `json:"preflight,omitempty"`
+	Worldbook          string `json:"worldbook,omitempty"`
+	Precompile         string `json:"precompile,omitempty"`
+	Preset             string `json:"preset,omitempty"`
+	Script             string `json:"script,omitempty"`
+	ToolResolution     string `json:"tool_resolution,omitempty"`
+	ResponseValidation string `json:"response_validation,omitempty"`
+	ResponseRestore    string `json:"response_restore,omitempty"`
+	OutputProcessing   string `json:"output_processing,omitempty"`
+	Regex              string `json:"regex,omitempty"`
+	CrossChannelRetry  string `json:"cross_channel_retry,omitempty"`
+	ResponseStarted    string `json:"response_started,omitempty"`
 }
 
 // SillyTavernToolText is a declarative transport, not an executable preset
@@ -154,6 +183,9 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 		return nil, fmt.Errorf("preset script runtime and native tool_text transport cannot both be enabled")
 	}
 	if err := validateSillyTavernToolProtocol(c.ToolProtocol); err != nil {
+		return nil, err
+	}
+	if err := validateSillyTavernFailurePolicy(c.FailurePolicy); err != nil {
 		return nil, err
 	}
 	if c.ToolText != nil && c.ToolText.Enabled {
@@ -312,6 +344,56 @@ func validateSillyTavernToolProtocol(protocol *SillyTavernToolProtocol) error {
 			seen[name] = true
 		}
 	}
+	roleOwners := make(map[string]string)
+	for field, names := range map[string][]string{
+		"client_final": []string{protocol.ClientFinal},
+		"preset_final": []string{protocol.PresetFinal},
+		"auxiliary":    protocol.Auxiliary,
+		"action":       protocol.Action,
+		"content":      protocol.Content,
+	} {
+		for _, name := range names {
+			if name == "" {
+				continue
+			}
+			if previous, exists := roleOwners[name]; exists {
+				if previous == "preset_final" && field == "content" || previous == "content" && field == "preset_final" {
+					continue
+				}
+				return fmt.Errorf("sillytavern_preset tool_protocol tool roles must be mutually exclusive; %q is declared as both %s and %s", name, previous, field)
+			}
+			roleOwners[name] = field
+		}
+	}
+	if protocol.VisibilityPolicy != nil {
+		values := map[string]string{
+			"auxiliary": protocol.VisibilityPolicy.Auxiliary,
+			"action":    protocol.VisibilityPolicy.Action,
+			"content":   protocol.VisibilityPolicy.Content,
+		}
+		defaults := map[string]string{
+			"auxiliary": "client_visible",
+			"action":    "client_visible",
+			"content":   "gateway_internal",
+		}
+		for field, value := range values {
+			if value == "" {
+				continue
+			}
+			if value != "client_visible" && value != "gateway_internal" {
+				return fmt.Errorf("sillytavern_preset tool_protocol visibility.%s must be client_visible or gateway_internal", field)
+			}
+			if field == "auxiliary" && value != defaults[field] {
+				return fmt.Errorf("sillytavern_preset tool_protocol visibility.auxiliary must be client_visible")
+			}
+			if field == "action" && value != defaults[field] {
+				return fmt.Errorf("sillytavern_preset tool_protocol visibility.action must be client_visible")
+			}
+			if field == "content" && value != defaults[field] {
+				return fmt.Errorf("sillytavern_preset tool_protocol visibility.content must be gateway_internal")
+			}
+		}
+	}
 	switch protocol.ResponseTarget {
 	case "", "auto", "text", "json", "tool":
 	default:
@@ -333,6 +415,46 @@ func validateSillyTavernToolProtocol(protocol *SillyTavernToolProtocol) error {
 	}
 	if !validSillyTavernToolArgumentPath(protocol.ResponseArgument) {
 		return fmt.Errorf("sillytavern_preset tool_protocol response_argument must be a dot-separated argument path")
+	}
+	return nil
+}
+
+func validateSillyTavernFailurePolicy(policy *SillyTavernFailurePolicy) error {
+	if policy == nil {
+		return nil
+	}
+	allowed := map[string]map[string]bool{
+		"preflight":           {"": true, "request_passthrough": true, "fail": true},
+		"worldbook":           {"": true, "skip": true, "fail": true},
+		"precompile":          {"": true, "request_passthrough": true, "fail": true},
+		"preset":              {"": true, "request_passthrough": true, "fail": true},
+		"script":              {"": true, "request_passthrough": true, "fail": true},
+		"tool_resolution":     {"": true, "tool_protocol_passthrough": true, "fail": true},
+		"response_validation": {"": true, "safe_raw": true, "fail": true},
+		"response_restore":    {"": true, "safe_raw": true, "fail": true},
+		"output_processing":   {"": true, "preserve": true, "fail": true},
+		"regex":               {"": true, "preserve": true, "empty": true, "fail": true},
+		"cross_channel_retry": {"": true, "reject": true},
+		"response_started":    {"": true, "stop": true},
+	}
+	values := map[string]string{
+		"preflight":           policy.Preflight,
+		"worldbook":           policy.Worldbook,
+		"precompile":          policy.Precompile,
+		"preset":              policy.Preset,
+		"script":              policy.Script,
+		"tool_resolution":     policy.ToolResolution,
+		"response_validation": policy.ResponseValidation,
+		"response_restore":    policy.ResponseRestore,
+		"output_processing":   policy.OutputProcessing,
+		"regex":               policy.Regex,
+		"cross_channel_retry": policy.CrossChannelRetry,
+		"response_started":    policy.ResponseStarted,
+	}
+	for field, value := range values {
+		if !allowed[field][value] {
+			return fmt.Errorf("sillytavern_preset failure_policy.%s has unsupported value %q", field, value)
+		}
 	}
 	return nil
 }

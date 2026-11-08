@@ -55,6 +55,10 @@ import {
   scriptPreparationIssueMessage,
   presetRecord as record,
 } from '../lib/preset-script-preparation'
+import {
+  PresetAdapterOverview,
+  PresetCapabilityReportSettings,
+} from './preset-capability-report'
 
 type Props = {
   config: Record<string, unknown>
@@ -134,11 +138,24 @@ export function PresetScriptSettings(props: Props) {
   }
   const toolProtocolText = (key: string) =>
     typeof toolProtocol[key] === 'string' ? (toolProtocol[key] as string) : ''
+  const failurePolicy = record(props.config.failure_policy)
+  const failurePolicyText = (key: string) =>
+    typeof failurePolicy[key] === 'string' ? (failurePolicy[key] as string) : ''
+  const updateFailurePolicy = (changes: Record<string, unknown>) => {
+    const next = { ...failurePolicy, ...changes }
+    for (const [key, value] of Object.entries(changes)) {
+      if (value === '' || value === undefined || value === null) {
+        delete next[key]
+      }
+    }
+    props.onChange({ ...props.config, failure_policy: next })
+  }
   return (
     <section
       className='mx-auto flex w-full max-w-3xl flex-col gap-4'
       aria-label={t('Script compatibility')}
     >
+      <PresetAdapterOverview config={props.config} />
       <FieldSet disabled={props.disabled}>
         <FieldLegend id={`${id}-mode`} variant='label'>
           {t('How should this preset be processed?')}
@@ -498,6 +515,11 @@ export function PresetScriptSettings(props: Props) {
                     </FieldDescription>
                   </Field>
                 </div>
+                <p className='text-muted-foreground text-xs leading-relaxed'>
+                  {t(
+                    'Visibility is fixed to keep the client contract intact: auxiliary and action tools stay client-visible, while content tools are gateway-internal and are only projected into the final text or JSON.'
+                  )}
+                </p>
               </CollapsibleContent>
             </Collapsible>
           ) : null}
@@ -514,6 +536,159 @@ export function PresetScriptSettings(props: Props) {
             </p>
           ) : null}
         </FieldGroup>
+        <FieldGroup className='rounded-lg border p-4'>
+          <FieldLegend variant='label'>{t('Failure handling')}</FieldLegend>
+          <FieldDescription>
+            {t(
+              'Each stage decides on its own. Safe defaults never leak a preset tool or emit a half-converted reply.'
+            )}
+          </FieldDescription>
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${id}-failure-worldbook`}>
+                {t('Worldbook failure')}
+              </FieldLabel>
+              <Select
+                value={failurePolicyText('worldbook') || 'skip'}
+                disabled={props.disabled}
+                onValueChange={(value) => {
+                  if (typeof value === 'string') {
+                    updateFailurePolicy({ worldbook: value })
+                  }
+                }}
+              >
+                <SelectTrigger
+                  id={`${id}-failure-worldbook`}
+                  className='w-full'
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value='skip'>
+                    {t('Skip the worldbook and continue')}
+                  </SelectItem>
+                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${id}-failure-preset`}>
+                {t('Preset or script failure')}
+              </FieldLabel>
+              <Select
+                value={failurePolicyText('preset') || 'request_passthrough'}
+                disabled={props.disabled}
+                onValueChange={(value) => {
+                  if (typeof value === 'string') {
+                    updateFailurePolicy({
+                      preset: value,
+                      script: value,
+                      precompile: value,
+                    })
+                  }
+                }}
+              >
+                <SelectTrigger id={`${id}-failure-preset`} className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value='request_passthrough'>
+                    {t('Send the original request unchanged')}
+                  </SelectItem>
+                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${id}-failure-tool`}>
+                {t('Tool role failure')}
+              </FieldLabel>
+              <Select
+                value={
+                  failurePolicyText('tool_resolution') ||
+                  'tool_protocol_passthrough'
+                }
+                disabled={props.disabled}
+                onValueChange={(value) => {
+                  if (typeof value === 'string') {
+                    updateFailurePolicy({ tool_resolution: value })
+                  }
+                }}
+              >
+                <SelectTrigger id={`${id}-failure-tool`} className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value='tool_protocol_passthrough'>
+                    {t('Keep tools but skip coordination')}
+                  </SelectItem>
+                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${id}-failure-response`}>
+                {t('Reply restore failure')}
+              </FieldLabel>
+              <Select
+                value={failurePolicyText('response_restore') || 'safe_raw'}
+                disabled={props.disabled}
+                onValueChange={(value) => {
+                  if (typeof value === 'string') {
+                    updateFailurePolicy({
+                      response_restore: value,
+                      response_validation: value,
+                    })
+                  }
+                }}
+              >
+                <SelectTrigger id={`${id}-failure-response`} className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value='safe_raw'>
+                    {t('Send the raw reply only when it is safe')}
+                  </SelectItem>
+                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field data-disabled={props.disabled}>
+              <FieldLabel htmlFor={`${id}-failure-regex`}>
+                {t('Receive regex failure')}
+              </FieldLabel>
+              <Select
+                value={failurePolicyText('regex') || 'preserve'}
+                disabled={props.disabled}
+                onValueChange={(value) => {
+                  if (typeof value === 'string') {
+                    updateFailurePolicy({ regex: value })
+                  }
+                }}
+              >
+                <SelectTrigger id={`${id}-failure-regex`} className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent alignItemWithTrigger={false}>
+                  <SelectItem value='preserve'>
+                    {t('Keep the original text')}
+                  </SelectItem>
+                  <SelectItem value='empty'>{t('Empty the text')}</SelectItem>
+                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <FieldDescription>
+            {t(
+              'A cross-channel retry is always rejected when the frozen plan would change, and a reply that has already started is never rewritten.'
+            )}
+          </FieldDescription>
+        </FieldGroup>
+        <PresetCapabilityReportSettings
+          config={props.config}
+          disabled={props.disabled}
+        />
         {supported && scripts.length > 0 && (
           <p className='text-muted-foreground text-sm'>
             {t(

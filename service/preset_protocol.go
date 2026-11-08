@@ -19,6 +19,9 @@ const (
 	presetProtocolContractText = "text"
 	presetProtocolContractJSON = "json"
 	presetProtocolContractTool = "tool"
+
+	presetProtocolVisibilityClientVisible   = "client_visible"
+	presetProtocolVisibilityGatewayInternal = "gateway_internal"
 )
 
 // PresetProtocolAudit is safe to expose in request traces. It deliberately
@@ -34,6 +37,9 @@ type PresetProtocolAudit struct {
 	PresetFinal      string   `json:"preset_final,omitempty"`
 	FinalTool        string   `json:"final_tool,omitempty"`
 	Auxiliary        []string `json:"auxiliary,omitempty"`
+	Actions          []string `json:"actions,omitempty"`
+	Contents         []string `json:"contents,omitempty"`
+	Visibility       string   `json:"visibility,omitempty"`
 	ResponseArgument string   `json:"response_argument,omitempty"`
 	Diagnostics      []string `json:"diagnostics,omitempty"`
 	Fingerprint      string   `json:"fingerprint,omitempty"`
@@ -45,6 +51,8 @@ type presetProtocolPlan struct {
 	presetFinal      string
 	finalTool        string
 	auxiliary        []string
+	actions          []string
+	contents         []string
 	contract         string
 	responseTarget   string
 	responseArgument string
@@ -52,6 +60,8 @@ type presetProtocolPlan struct {
 	validationMode   int
 	phase            string
 	terminal         dto.ToolCallRequest
+	visible          map[string]bool
+	internal         map[string]bool
 }
 
 // buildPresetProtocolPlan returns a plan only when the gateway can safely
@@ -122,6 +132,15 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	if protocol != nil && protocol.PresetFinal != "" && clientFinal != "" {
 		return nil, 0, fmt.Errorf("sillytavern_preset tool_protocol preset_final cannot replace a client response tool")
 	}
+	actions := []string(nil)
+	contents := []string(nil)
+	if protocol != nil {
+		actions = orderedToolNames(compiled.Tools, protocol.Action)
+		contents = orderedToolNames(compiled.Tools, protocol.Content)
+	}
+	if clientFinal == "" && presetFinal == "" && len(contents) == 1 {
+		presetFinal = contents[0]
+	}
 	if clientFinal == "" && len(ownedOrder) == 0 {
 		return inactivePresetProtocolPlan(true, true, "no_client_or_preset_contract"), 0, nil
 	}
@@ -172,10 +191,18 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		}
 	}
 	auxiliary = orderedToolNames(compiled.Tools, auxiliary)
+	auxiliary = subtractToolNames(auxiliary, actions)
+	auxiliary = subtractToolNames(auxiliary, contents)
 	if slices.Contains(auxiliary, finalTool) {
 		return nil, 0, fmt.Errorf("sillytavern_preset protocol auxiliary tools cannot include the final tool")
 	}
-	if len(auxiliary) == 0 && clientFinal == "" && presetFinal == "" {
+	responseTarget := protocolResponseTarget(protocol)
+	if responseTarget == "text" || responseTarget == "json" || protocol != nil && protocol.ResponseArgument != "" {
+		if presetOwnedFinal && !slices.Contains(contents, finalTool) {
+			contents = append(contents, finalTool)
+		}
+	}
+	if len(auxiliary) == 0 && len(actions) == 0 && len(contents) == 0 && clientFinal == "" && presetFinal == "" {
 		return nil, 0, nil
 	}
 
@@ -199,7 +226,7 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		return inactivePresetProtocolPlan(true, true, "response_projection_unsafe"), 0, nil
 	}
 
-	active := len(auxiliary) > 0 || contract == presetProtocolContractJSON || presetOwnedFinal
+	active := len(auxiliary) > 0 || len(actions) > 0 || len(contents) > 0 || contract == presetProtocolContractJSON || presetOwnedFinal
 	if !active {
 		return inactivePresetProtocolPlan(true, true, "no_projection_needed"), 0, nil
 	}
@@ -208,6 +235,8 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		presetFinal:      presetFinal,
 		finalTool:        finalTool,
 		auxiliary:        auxiliary,
+		actions:          actions,
+		contents:         contents,
 		contract:         contract,
 		responseTarget:   protocolResponseTarget(protocol),
 		responseArgument: protocolResponseArgument(protocol),
@@ -225,8 +254,13 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		PresetFinal:      presetFinal,
 		FinalTool:        finalTool,
 		Auxiliary:        append([]string(nil), auxiliary...),
+		Actions:          append([]string(nil), actions...),
+		Contents:         append([]string(nil), contents...),
 		ResponseArgument: protocolResponseArgument(protocol),
+		Visibility:       presetProtocolVisibilitySummary(protocol),
 	}
+	plan.visible = presetProtocolVisibleTools(plan, protocol)
+	plan.internal = presetProtocolInternalTools(plan, finalTool, presetOwnedFinal)
 	plan.audit.Fingerprint = plan.fingerprint()
 	return plan, plan.validationMode, nil
 }
@@ -261,6 +295,99 @@ func protocolPhasePolicy(protocol *dto.SillyTavernToolProtocol) string {
 		return "request"
 	}
 	return protocol.PhasePolicy
+}
+
+// presetProtocolRoleVisibility resolves the effective visibility for the three
+// configurable role groups. Auxiliary and action tools stay client-visible so
+// the client can complete the turn; content containers stay gateway-internal so
+// the model's terminal call is projected instead of leaked.
+func presetProtocolRoleVisibility(protocol *dto.SillyTavernToolProtocol) (auxiliary, action, content string) {
+	auxiliary = presetProtocolVisibilityClientVisible
+	action = presetProtocolVisibilityClientVisible
+	content = presetProtocolVisibilityGatewayInternal
+	if protocol == nil || protocol.VisibilityPolicy == nil {
+		return auxiliary, action, content
+	}
+	if value := protocol.VisibilityPolicy.Auxiliary; value != "" {
+		auxiliary = value
+	}
+	if value := protocol.VisibilityPolicy.Action; value != "" {
+		action = value
+	}
+	if value := protocol.VisibilityPolicy.Content; value != "" {
+		content = value
+	}
+	return auxiliary, action, content
+}
+
+func presetProtocolVisibilitySummary(protocol *dto.SillyTavernToolProtocol) string {
+	auxiliary, action, content := presetProtocolRoleVisibility(protocol)
+	return "auxiliary=" + auxiliary + ",action=" + action + ",content=" + content
+}
+
+// presetProtocolVisibleTools returns the tool names that may be returned to the
+// client for their configured role. Client-final tools and client-visible
+// auxiliary/action tools qualify; content containers do not.
+func presetProtocolVisibleTools(plan *presetProtocolPlan, protocol *dto.SillyTavernToolProtocol) map[string]bool {
+	auxiliaryVisibility, actionVisibility, _ := presetProtocolRoleVisibility(protocol)
+	visible := make(map[string]bool)
+	for _, name := range plan.auxiliary {
+		if auxiliaryVisibility == presetProtocolVisibilityClientVisible {
+			visible[name] = true
+		}
+	}
+	for _, name := range plan.actions {
+		if actionVisibility == presetProtocolVisibilityClientVisible {
+			visible[name] = true
+		}
+	}
+	if plan.clientFinal != "" {
+		visible[plan.clientFinal] = true
+	}
+	return visible
+}
+
+// presetProtocolInternalTools returns the tool names that must never be
+// returned to the client: a preset-owned terminal/content tool whose result is
+// projected by the gateway.
+func presetProtocolInternalTools(plan *presetProtocolPlan, finalTool string, presetOwnedFinal bool) map[string]bool {
+	internal := make(map[string]bool)
+	if presetOwnedFinal && finalTool != "" {
+		internal[finalTool] = true
+	}
+	for _, name := range plan.contents {
+		internal[name] = true
+	}
+	for _, name := range plan.auxiliary {
+		if !plan.visible[name] {
+			internal[name] = true
+		}
+	}
+	for _, name := range plan.actions {
+		if !plan.visible[name] {
+			internal[name] = true
+		}
+	}
+	return internal
+}
+
+// InternalToolNames exposes the gateway-internal tool set for response-side
+// leakage checks. The caller only uses it to prove that a raw response cannot
+// safely bypass projection.
+func (p *presetProtocolPlan) InternalToolNames() map[string]bool {
+	if p == nil {
+		return nil
+	}
+	return p.internal
+}
+
+// VisibleToolNames reports whether a tool call observed in an upstream response
+// may be returned to the client unchanged.
+func (p *presetProtocolPlan) VisibleToolNames() map[string]bool {
+	if p == nil {
+		return nil
+	}
+	return p.visible
 }
 
 func presetProtocolHasResponseFormatter(response *PresetScriptResponse) bool {
@@ -309,6 +436,23 @@ func orderedToolNames(tools []dto.ToolCallRequest, names []string) []string {
 		}
 	}
 	return ordered
+}
+
+func subtractToolNames(names, excluded []string) []string {
+	if len(names) == 0 || len(excluded) == 0 {
+		return names
+	}
+	skip := make(map[string]bool, len(excluded))
+	for _, name := range excluded {
+		skip[name] = true
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if !skip[name] {
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 // clientDeclaresToolContract reports whether the incoming request carries any
@@ -475,8 +619,11 @@ func (p *presetProtocolPlan) fingerprint() string {
 		PresetFinal      string
 		FinalTool        string
 		Auxiliary        []string
+		Actions          []string
+		Contents         []string
+		Visibility       string
 	}{
-		Version:          "preset-protocol-v4",
+		Version:          "preset-protocol-v5",
 		Enabled:          p.audit.Enabled,
 		ResponseTarget:   p.responseTarget,
 		ResponseArgument: p.responseArgument,
@@ -486,6 +633,9 @@ func (p *presetProtocolPlan) fingerprint() string {
 		PresetFinal:      p.presetFinal,
 		FinalTool:        p.finalTool,
 		Auxiliary:        p.auxiliary,
+		Actions:          p.actions,
+		Contents:         p.contents,
+		Visibility:       p.audit.Visibility,
 	})
 	if err != nil {
 		return ""
@@ -504,11 +654,14 @@ func (p *presetProtocolPlan) phaseForMessages(messages []dto.Message) string {
 	case "always_final":
 		return presetProtocolPhaseFinal
 	}
-	if len(p.auxiliary) == 0 {
+	if len(p.auxiliary) == 0 && len(p.actions) == 0 {
 		return presetProtocolPhaseFinal
 	}
 	auxiliary := make(map[string]bool, len(p.auxiliary))
 	for _, name := range p.auxiliary {
+		auxiliary[name] = true
+	}
+	for _, name := range p.actions {
 		auxiliary[name] = true
 	}
 	callNames := make(map[string]string)
@@ -567,6 +720,8 @@ func (p *presetProtocolPlan) applyRequest(request *dto.GeneralOpenAIRequest) err
 	selected := []string{p.finalTool}
 	if p.phase == presetProtocolPhaseAuxiliary {
 		selected = append([]string(nil), p.auxiliary...)
+		selected = append(selected, p.actions...)
+		selected = orderedToolNames(request.Tools, selected)
 	}
 	if len(selected) == 0 {
 		return fmt.Errorf("preset protocol has no tools for phase %q", p.phase)

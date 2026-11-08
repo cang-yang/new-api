@@ -144,33 +144,60 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 	originalRequest := request
-	var rawWorldbookScanRequest *kitdto.GeneralOpenAIRequest
+	var originalRequestSnapshot *kitdto.GeneralOpenAIRequest
 	if chat, ok := request.(*kitdto.GeneralOpenAIRequest); ok {
 		if copied, copyErr := common.DeepCopy(chat); copyErr == nil {
-			rawWorldbookScanRequest = copied
+			originalRequestSnapshot = copied
 		}
 	}
 	defer service.ClosePresetScriptResponse(c)
 	initialChannelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	initialOtherSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	if err := validatePresetScriptEndpoint(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName, relayInfo.RelayMode); err != nil {
-		newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
-		return
+		if service.AdaptationFailureMode(initialOtherSettings.SillyTavernPreset, service.FailureStagePreflight) == service.FailureFail {
+			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		initialOtherSettings.SillyTavernPreset = nil
+		initialOtherSettings.Worldbook = nil
+		initialOtherSettings.ResponseTextFilter = nil
+		common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, initialOtherSettings)
 	}
 	request, err = applySelectedRequestTextRegex(c, request, relayInfo.OriginModelName)
 	if err != nil {
 		newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		return
 	}
+	profile := service.NewAdaptationProfile(
+		initialOtherSettings.SillyTavernPreset,
+		initialOtherSettings.Worldbook,
+		initialOtherSettings.ResponseTextFilter,
+		initialOtherSettings.ResponseTextFilter,
+	)
+	var initialBasePlan *service.AdaptationBasePlan
+	if profile != nil {
+		if chat, ok := request.(*kitdto.GeneralOpenAIRequest); ok {
+			initialBasePlan, err = service.BuildBasePlan(profile, originalRequestSnapshot, chat)
+			if err != nil {
+				newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				return
+			}
+		}
+	}
 	sendRegexApplied := request != originalRequest
 	originalRequest = request
 	relayInfo.Request = request
 	if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions {
-		compiled, trace, compileErr := compileSelectedSillyTavernPreset(c, originalRequest, rawWorldbookScanRequest)
+		var matchedMessages *kitdto.GeneralOpenAIRequest
+		if initialBasePlan != nil {
+			matchedMessages = initialBasePlan.Matched
+		}
+		compiled, trace, compileErr := compileSelectedSillyTavernPreset(c, originalRequest, matchedMessages, profile)
 		if compileErr != nil {
 			newAPIError = types.NewErrorWithStatusCode(compileErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			return
 		}
+		service.AttachAdaptationPlan(&trace, initialBasePlan)
 		relayInfo.Request = compiled
 		relayInfo.PresetAudit = trace
 		if chat, ok := compiled.(*kitdto.GeneralOpenAIRequest); ok && chat.ReasoningEffort != "" {
@@ -231,8 +258,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		service.AppendUsedChannel(c, channel.Id)
 		selectedSettingsForScripts, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 		if err := validatePresetScriptEndpoint(selectedSettingsForScripts.SillyTavernPreset, relayInfo.OriginModelName, relayInfo.RelayMode); err != nil {
-			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
-			break
+			if service.AdaptationFailureMode(selectedSettingsForScripts.SillyTavernPreset, service.FailureStagePreflight) == service.FailureFail {
+				newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				break
+			}
+			selectedSettingsForScripts.SillyTavernPreset = nil
+			selectedSettingsForScripts.Worldbook = nil
+			selectedSettingsForScripts.ResponseTextFilter = nil
+			common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, selectedSettingsForScripts)
 		}
 		if sendRegexApplied && selectedChannelUsesBodyPassthrough(c, relayInfo.OriginModelName) {
 			newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot use body passthrough after send-side regex"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
@@ -240,20 +273,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if channel.Id != initialChannelID {
 			selected := channel.GetOtherSettings()
-			if (sendRegexApplied || selected.ResponseTextFilter != nil && selected.ResponseTextFilter.EnableSend || selected.SillyTavernPreset != nil && selected.SillyTavernPreset.EnableSendRegex) && (!reflect.DeepEqual(sendRegexRetrySettings(initialOtherSettings.ResponseTextFilter), sendRegexRetrySettings(selected.ResponseTextFilter)) || !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName), presetRequestRetrySettings(selected.SillyTavernPreset, relayInfo.OriginModelName))) {
-				newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry across channels with different send-side regex settings"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+			if reason := adaptationRetryMismatch(initialOtherSettings, selected, relayInfo.OriginModelName, relayInfo.RelayMode == relayconstant.RelayModeChatCompletions, sendRegexApplied); reason != "" {
+				newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("%s", reason), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 				break
 			}
 		}
 		if relayInfo.RelayMode == relayconstant.RelayModeChatCompletions {
-			if channel.Id != initialChannelID {
-				selectedSettings, _ := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
-				if !reflect.DeepEqual(presetRequestRetrySettings(initialOtherSettings.SillyTavernPreset, relayInfo.OriginModelName), presetRequestRetrySettings(selectedSettings.SillyTavernPreset, relayInfo.OriginModelName)) ||
-					!reflect.DeepEqual(worldbookRequestRetrySettings(initialOtherSettings.Worldbook), worldbookRequestRetrySettings(selectedSettings.Worldbook)) {
-					newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("cannot retry a chat request across channels with different SillyTavern request processors"), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
-					break
-				}
-			}
 			relayInfo.Request, relayInfo.PresetAudit = initialCompiledRequest, initialPresetAudit
 		}
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
@@ -351,6 +376,28 @@ func sendRegexRetrySettings(config *kitdto.ResponseTextFilter) *kitdto.ResponseT
 	return &copy
 }
 
+// adaptationRetryMismatch reports a cross-channel retry that would silently
+// change the frozen request plan. Receive-only text rules are intentionally
+// excluded: the response filter is rebuilt for the selected channel and never
+// changes the outbound request or the tool plan.
+func adaptationRetryMismatch(initial, selected kitdto.ChannelOtherSettings, model string, chat bool, sendRegexApplied bool) string {
+	if chat {
+		if !reflect.DeepEqual(presetRequestRetrySettings(initial.SillyTavernPreset, model), presetRequestRetrySettings(selected.SillyTavernPreset, model)) {
+			return "cannot retry a chat request across channels with different SillyTavern request processors"
+		}
+		if !reflect.DeepEqual(worldbookRequestRetrySettings(initial.Worldbook), worldbookRequestRetrySettings(selected.Worldbook)) {
+			return "cannot retry a chat request across channels with different worldbook request processors"
+		}
+	}
+	if sendRegexApplied || selected.ResponseTextFilter != nil && selected.ResponseTextFilter.EnableSend || selected.SillyTavernPreset != nil && selected.SillyTavernPreset.EnableSendRegex {
+		if !reflect.DeepEqual(sendRegexRetrySettings(initial.ResponseTextFilter), sendRegexRetrySettings(selected.ResponseTextFilter)) ||
+			!reflect.DeepEqual(presetRequestRetrySettings(initial.SillyTavernPreset, model), presetRequestRetrySettings(selected.SillyTavernPreset, model)) {
+			return "cannot retry across channels with different send-side regex settings"
+		}
+	}
+	return ""
+}
+
 func presetRequestRetrySettings(config *kitdto.SillyTavernPresetConfig, model string) *kitdto.SillyTavernPresetConfig {
 	if config == nil || len(config.Models) > 0 && !slices.Contains(config.Models, model) {
 		return nil
@@ -406,12 +453,20 @@ func validatePresetScriptEndpoint(preset *kitdto.SillyTavernPresetConfig, model 
 	return nil
 }
 
-func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request, worldbookScanRequest *kitdto.GeneralOpenAIRequest) (kitdto.Request, service.PresetCompileTrace, error) {
+func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request, worldbookScanRequest *kitdto.GeneralOpenAIRequest, profiles ...*service.AdaptationProfile) (kitdto.Request, service.PresetCompileTrace, error) {
 	var zero service.PresetCompileTrace
 	settings, ok := common.GetContextKeyType[kitdto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	if !ok || settings.SillyTavernPreset == nil && settings.Worldbook == nil {
 		return request, zero, nil
 	}
+	profile := (*service.AdaptationProfile)(nil)
+	if len(profiles) > 0 {
+		profile = profiles[0]
+	}
+	if profile == nil {
+		profile = service.NewAdaptationProfile(settings.SillyTavernPreset, settings.Worldbook, settings.ResponseTextFilter, settings.ResponseTextFilter)
+	}
+	failurePolicy := profile.FailurePolicy()
 	chatRequest, ok := request.(*kitdto.GeneralOpenAIRequest)
 	if !ok {
 		return request, zero, nil
@@ -468,7 +523,18 @@ func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request, wo
 		scanRequest = worldbookScanRequest
 	}
 	compiled, trace, err := service.CompileWorldbookFrom(settings.Worldbook, preset, scanRequest, chatRequest, context)
+	if err != nil && settings.Worldbook != nil && failurePolicy.Mode(service.FailureStageWorldbook) == service.FailureSkip {
+		compiled, trace, err = service.CompileWorldbookFrom(nil, preset, scanRequest, chatRequest, context)
+		trace.Warnings = append(trace.Warnings, "worldbook skipped after a matching or configuration failure")
+	}
 	if err != nil {
+		if failurePolicy.Mode(service.FailureStagePrecompile) == service.FailureRequestPassthrough ||
+			failurePolicy.Mode(service.FailureStagePreset) == service.FailureRequestPassthrough ||
+			failurePolicy.Mode(service.FailureStageScript) == service.FailureRequestPassthrough {
+			return request, service.PresetCompileTrace{
+				Warnings: []string{"request adaptation skipped after a preset or script failure"},
+			}, nil
+		}
 		return compiled, trace, err
 	}
 	service.AttachPresetScriptResponse(c, trace)

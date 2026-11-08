@@ -49,13 +49,14 @@ type PresetMessageSource struct {
 }
 
 type PresetCompileTrace struct {
-	Worldbook      *WorldbookPreview     `json:"worldbook,omitempty"`
-	Protocol       *PresetProtocolAudit  `json:"protocol,omitempty"`
-	Name           string                `json:"name"`
-	Mode           string                `json:"mode"`
-	Messages       []PresetMessageSource `json:"messages"`
-	Warnings       []string              `json:"warnings,omitempty"`
-	ScriptResponse *PresetScriptResponse `json:"-"`
+	Worldbook      *WorldbookPreview       `json:"worldbook,omitempty"`
+	Protocol       *PresetProtocolAudit    `json:"protocol,omitempty"`
+	Plan           *AdaptationResolvedPlan `json:"plan,omitempty"`
+	Name           string                  `json:"name"`
+	Mode           string                  `json:"mode"`
+	Messages       []PresetMessageSource   `json:"messages"`
+	Warnings       []string                `json:"warnings,omitempty"`
+	ScriptResponse *PresetScriptResponse   `json:"-"`
 }
 
 type presetMessage struct {
@@ -587,9 +588,18 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 		plan, mode, err := buildPresetProtocolPlan(protocolRequest, compiled, config, trace.ScriptResponse)
 		if err != nil {
-			return nil, trace, err
-		}
-		if plan != nil {
+			if AdaptationFailureMode(config, FailureStageToolResolution) == FailureToolProtocolPassthrough {
+				trace.Protocol = &PresetProtocolAudit{
+					Enabled:     true,
+					Eligible:    true,
+					Activated:   false,
+					Reason:      string(FailureToolProtocolPassthrough),
+					Diagnostics: []string{string(FailureToolProtocolPassthrough), err.Error()},
+				}
+			} else {
+				return nil, trace, err
+			}
+		} else if plan != nil {
 			protocolPlan = plan
 			trace.Protocol = &plan.audit
 			trace.ScriptResponse.protocol = plan

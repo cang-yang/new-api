@@ -25,6 +25,7 @@ import {
 import {
   parseWorldbook,
   worldbookConfirmEntry,
+  worldbookEntryBlocked,
   worldbookNeedsReview,
   worldbookRiskFields,
   worldbookSchema,
@@ -160,4 +161,28 @@ test('risky imports stay disabled until the supported subset is confirmed', () =
     { field: 'position', action: 'ignored' },
   ])
   expect(worldbookNeedsReview(confirmed)).toBe(false)
+})
+
+test('an entry with unresolved issues cannot be confirmed or enabled', () => {
+  const entry: WorldbookEntry = {
+    id: 'entry',
+    name: 'Broken',
+    content: 'Lore',
+    enabled: false,
+    constant: false,
+    keys: ['moon'],
+    secondary_keys: [],
+    secondary_logic: 'none',
+    case_sensitive: false,
+    whole_words: false,
+    priority: 0,
+    normalized_rules: [{ field: 'sticky', action: 'risk' }],
+    issues: ['invalid regular expression'],
+  }
+  expect(worldbookEntryBlocked(entry)).toBe(true)
+  const confirmed = worldbookConfirmEntry(entry)
+  expect(confirmed.enabled).toBe(false)
+  expect(confirmed.issues).toEqual(['invalid regular expression'])
+  expect(worldbookRiskFields(confirmed)).toEqual(['sticky'])
+  expect(worldbookNeedsReview(confirmed)).toBe(true)
 })

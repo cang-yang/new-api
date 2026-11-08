@@ -78,6 +78,40 @@ export async function previewWorldbook(
   return requireServerSuccess(response.data).data
 }
 
+export type PresetCapabilityEntry = {
+  identifier: string
+  name?: string
+  role?: string
+  kind: string
+  status: string
+  detail?: string
+}
+
+export type PresetCapabilityReport = {
+  name: string
+  mode: string
+  model: string
+  has_script_runtime: boolean
+  script_runtime?: string
+  tool_names: string[]
+  capabilities: string[]
+  warnings: string[]
+  entries: PresetCapabilityEntry[]
+}
+
+// Runs the bounded preset probe so the editor can show what the gateway can
+// actually execute for the current draft instead of guessing from the file.
+export async function inspectPresetCapability(
+  sillyTavernPreset: unknown,
+  request?: unknown
+): Promise<PresetCapabilityReport> {
+  const response = await api.post('/api/channel/sillytavern/inspect', {
+    sillytavern_preset: sillyTavernPreset,
+    request,
+  })
+  return requireServerSuccess(response.data).data
+}
+
 export async function getChannelPriorityOrder(): Promise<PriorityOrder> {
   const response = await api.get<{ success: boolean; data: PriorityOrder }>(
     '/api/channel/priority/order',

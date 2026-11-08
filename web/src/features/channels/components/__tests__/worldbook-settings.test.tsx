@@ -174,6 +174,23 @@ test('invalid worldbook entries show the issue and keep the toggle editable', as
   expect(screen.getByRole('switch', { name: 'Enable entry' })).toBeEnabled()
 })
 
+test('an invalid worldbook entry cannot be enabled from the editor', async () => {
+  const user = userEvent.setup()
+  const invalid = structuredClone(config)
+  invalid.books[0].entries[0].enabled = false
+  invalid.books[0].entries[0].issues = ['invalid regular expression']
+  const onChange = mount(JSON.stringify(invalid))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  await user.click(screen.getByRole('button', { name: 'Edit City' }))
+  const toggle = screen.getByRole('switch', { name: 'Enable entry' })
+  expect(toggle).toBeEnabled()
+  await user.click(toggle)
+  expect(toggle).not.toBeChecked()
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  const saved = JSON.parse(onChange.mock.lastCall?.[0] ?? '{}')
+  expect(saved.books?.[0]?.entries?.[0]?.enabled).toBe(false)
+})
+
 test('searches the overview and opens an entry with the keyboard', async () => {
   const user = userEvent.setup()
   const multiple = structuredClone(config)

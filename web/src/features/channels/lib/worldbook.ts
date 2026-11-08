@@ -99,7 +99,17 @@ export function worldbookNeedsReview(entry: WorldbookEntry): boolean {
   return !!entry.issues?.length || worldbookRiskFields(entry).length > 0
 }
 
+// An entry with unresolved validation issues can never run. It must not be
+// enabled or "confirmed" until the source data is corrected; the switch stays
+// interactive so the operator can see why it is blocked.
+export function worldbookEntryBlocked(entry: WorldbookEntry): boolean {
+  return !!entry.issues?.length
+}
+
 export function worldbookConfirmEntry(entry: WorldbookEntry): WorldbookEntry {
+  if (worldbookEntryBlocked(entry)) {
+    return entry
+  }
   return {
     ...entry,
     enabled: true,

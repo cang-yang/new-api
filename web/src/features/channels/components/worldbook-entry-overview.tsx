@@ -37,6 +37,7 @@ import { Switch } from '@/components/ui/switch'
 
 import {
   worldbookConfirmEntry,
+  worldbookEntryBlocked,
   worldbookNeedsReview,
   worldbookRiskFields,
   type Worldbook,
@@ -57,6 +58,7 @@ export function WorldbookEntryOverview(props: {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
   const [pending, setPending] = useState<WorldbookEntry | null>(null)
+  const [blocked, setBlocked] = useState<WorldbookEntry | null>(null)
   const enabled = props.book.entries.filter((entry) => entry.enabled).length
   const attention = props.book.entries.filter(worldbookNeedsReview).length
   const entries = props.book.entries.filter((entry) => {
@@ -110,9 +112,15 @@ export function WorldbookEntryOverview(props: {
             checked={entry.enabled}
             disabled={props.disabled}
             onCheckedChange={(value) => {
-              if (value && worldbookRiskFields(entry).length) {
-                setPending(entry)
-                return
+              if (value) {
+                if (worldbookEntryBlocked(entry)) {
+                  setBlocked(entry)
+                  return
+                }
+                if (worldbookRiskFields(entry).length) {
+                  setPending(entry)
+                  return
+                }
               }
               props.onChange({ ...entry, enabled: value })
             }}
@@ -162,7 +170,9 @@ export function WorldbookEntryOverview(props: {
           props.onEnableAll
             ? () => {
                 const review = props.book.entries.filter(
-                  (entry) => worldbookRiskFields(entry).length > 0
+                  (entry) =>
+                    !worldbookEntryBlocked(entry) &&
+                    worldbookRiskFields(entry).length > 0
                 )
                 if (review.length) props.onEnableAll?.(review)
               }
@@ -248,6 +258,23 @@ export function WorldbookEntryOverview(props: {
           if (pending) props.onChange(worldbookConfirmEntry(pending))
           setPending(null)
         }}
+      />
+      <ConfirmDialog
+        open={blocked !== null}
+        onOpenChange={(next) => {
+          if (!next) setBlocked(null)
+        }}
+        title={t('{{name}} cannot be enabled yet', {
+          name: blocked?.name || blocked?.id || '',
+        })}
+        desc={t(
+          'This entry is missing required data, so it can never run: {{issues}}. Fix the entry before enabling it. It stays disabled and no trigger fields are discarded.',
+          {
+            issues: blocked?.issues?.join(' · ') ?? '',
+          }
+        )}
+        confirmText={t('Close')}
+        handleConfirm={() => setBlocked(null)}
       />
     </section>
   )

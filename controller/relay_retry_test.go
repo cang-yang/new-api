@@ -59,6 +59,44 @@ func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
 	assert.NotEqual(t, presetRequestRetrySettings(&firstProtocol, "m"), presetRequestRetrySettings(&secondProtocol, "m"))
 }
 
+func TestAdaptationRetryMismatchRejectsCrossChannelPlanChanges(t *testing.T) {
+	base := dto.ChannelOtherSettings{
+		SillyTavernPreset: &dto.SillyTavernPresetConfig{
+			Preset: []byte(`{"prompts":[]}`),
+			ToolProtocol: &dto.SillyTavernToolProtocol{
+				Enabled: true,
+			},
+		},
+	}
+	receiveOnly := base
+	receiveOnly.ResponseTextFilter = &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
+		{ID: "receive", Stage: "receive", Action: "replace", Pattern: "x", Replacement: "y"},
+	}}
+	assert.Empty(t, adaptationRetryMismatch(base, receiveOnly, "m", true, false), "receive-only rules must not block failover")
+
+	changedProtocol := base
+	changedProtocol.SillyTavernPreset = &dto.SillyTavernPresetConfig{
+		Preset: []byte(`{"prompts":[]}`),
+		ToolProtocol: &dto.SillyTavernToolProtocol{
+			Enabled:     true,
+			ClientFinal: "reply",
+		},
+	}
+	assert.NotEmpty(t, adaptationRetryMismatch(base, changedProtocol, "m", true, false))
+
+	changedWorldbook := base
+	changedWorldbook.SillyTavernPreset = nil
+	changedWorldbook.Worldbook = &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true}}}
+	assert.NotEmpty(t, adaptationRetryMismatch(base, changedWorldbook, "m", true, false))
+
+	changedSend := base
+	changedSend.SillyTavernPreset = nil
+	changedSend.ResponseTextFilter = &dto.ResponseTextFilter{Mode: "rules", EnableSend: true, Rules: []dto.TextRegexRule{
+		{ID: "send", Stage: "send", Action: "replace", Pattern: "a", Replacement: "b"},
+	}}
+	assert.NotEmpty(t, adaptationRetryMismatch(base, changedSend, "m", true, true))
+}
+
 func TestSelectedChannelResponseRegexUsesContextSettings(t *testing.T) {
 	filter := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
 		{ID: "remove-wrapper", Stage: "receive", Action: "replace", Pattern: `/<\/?Interleaving\s*>/gi`},
@@ -136,7 +174,7 @@ func TestSillyTavernRejectsRoutePassthrough(t *testing.T) {
 
 func TestWorldbookCompilationDoesNotMutateClientRequest(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("opaque body"))
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "first lore"}}}}}
 	settings := dto.ChannelOtherSettings{Worldbook: config, SillyTavernPreset: &dto.SillyTavernPresetConfig{Models: []string{"other"}, Preset: []byte("inactive")}}
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, settings)
@@ -166,6 +204,49 @@ func TestWorldbookKeywordsUsePrePresetScanRequest(t *testing.T) {
 	assert.Equal(t, "lore", compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content)
 }
 
+func TestWorldbookFailureHonorsSkipPolicy(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{
+		ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{
+			ID: "e", Enabled: true, Keys: []string{"/(?=moon)/"}, Content: "lore",
+		}},
+	}}}
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{
+		Worldbook: config,
+		SillyTavernPreset: &dto.SillyTavernPresetConfig{
+			Preset:        []byte(`{"prompts":[{"identifier":"main","content":"x"}],"prompt_order":[{"order":[{"identifier":"main","enabled":true}]}]}`),
+			Models:        []string{"other"},
+			FailurePolicy: &dto.SillyTavernFailurePolicy{Worldbook: "skip"},
+		},
+	})
+	request := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "moon"}}}
+
+	compiled, trace, err := compileSelectedSillyTavernPreset(c, request, request)
+	require.NoError(t, err)
+	assert.Equal(t, request, compiled)
+	assert.NotEmpty(t, trace.Warnings)
+}
+
+func TestPresetFailureHonorsRequestPassthroughPolicy(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{
+		SillyTavernPreset: &dto.SillyTavernPresetConfig{
+			Preset: []byte(`{"prompts":[}`),
+			FailurePolicy: &dto.SillyTavernFailurePolicy{
+				Preset: "request_passthrough",
+			},
+		},
+	})
+	request := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+
+	compiled, trace, err := compileSelectedSillyTavernPreset(c, request, request)
+	require.NoError(t, err)
+	assert.Equal(t, request, compiled)
+	assert.NotEmpty(t, trace.Warnings)
+}
+
 func TestWorldbookAPIContract(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -189,6 +270,26 @@ func TestWorldbookAPIContract(t *testing.T) {
 	assert.True(t, gjson.Get(recorder.Body.String(), "data.warnings").IsArray())
 	assert.Equal(t, "system_prelude", gjson.Get(recorder.Body.String(), "data.placement.mode").String())
 	assert.Equal(t, int64(0), gjson.Get(recorder.Body.String(), "data.placement.index").Int())
+}
+
+func TestSillyTavernCapabilityAPIContract(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/channel/sillytavern/inspect", strings.NewReader(`{
+		"sillytavern_preset": {
+			"preset": {
+				"prompts": [{"identifier":"main","content":"hello"}],
+				"prompt_order": [{"order":[{"identifier":"main","enabled":true}]}]
+			},
+			"tool_protocol": {"enabled": true}
+		},
+		"request": {"model":"m","messages":[{"role":"user","content":"probe"}]}
+	}`))
+	InspectChannelSillyTavernPreset(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.True(t, gjson.Get(recorder.Body.String(), "success").Bool())
+	assert.Equal(t, "m", gjson.Get(recorder.Body.String(), "data.model").String())
+	assert.True(t, gjson.Get(recorder.Body.String(), "data.entries.0.status").String() == "enabled")
 }
 
 func TestSillyTavernInactivePresetPreservesGatewayRequest(t *testing.T) {

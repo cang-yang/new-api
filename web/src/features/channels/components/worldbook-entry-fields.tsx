@@ -34,6 +34,7 @@ import { Textarea } from '@/components/ui/textarea'
 
 import {
   worldbookConfirmEntry,
+  worldbookEntryBlocked,
   worldbookRiskFields,
   type WorldbookEntry,
 } from '../lib/worldbook'
@@ -51,13 +52,13 @@ export function WorldbookEntryFields(props: {
   const [secondary, setSecondary] = useState(
     props.entry.secondary_keys.join('\n')
   )
-  const invalid = !!props.entry.issues?.length
+  const invalid = worldbookEntryBlocked(props.entry)
   const risk = worldbookRiskFields(props.entry)
   const update = (patch: Partial<WorldbookEntry>) =>
     props.onChange({ ...props.entry, ...patch })
   return (
     <fieldset disabled={props.disabled} className='min-w-0 space-y-4'>
-      {!!risk.length && (
+      {!!risk.length && !invalid && (
         <div
           role='alert'
           className='space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
@@ -99,7 +100,10 @@ export function WorldbookEntryFields(props: {
           id={`${id}-enabled`}
           checked={props.entry.enabled}
           disabled={props.disabled}
-          onCheckedChange={(enabled) => update({ enabled })}
+          onCheckedChange={(enabled) => {
+            if (enabled && invalid) return
+            update({ enabled })
+          }}
         />
       </div>
       <div className='space-y-2'>

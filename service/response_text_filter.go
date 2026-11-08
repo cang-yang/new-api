@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -29,7 +30,8 @@ type ResponseTextFilterWriter struct {
 	hasFilter      bool
 	toolText       *dto.SillyTavernToolText
 	scriptResponse *PresetScriptResponse
-	strictFailure  bool
+	policy         *AdaptationFailurePolicy
+	forceEmpty     bool
 	status         int
 	buffer         bytes.Buffer
 	tooLarge       bool
@@ -37,6 +39,31 @@ type ResponseTextFilterWriter struct {
 	warned         bool
 	transformErr   error
 	deadline       time.Time
+}
+
+// responseStageError tags a processing failure with the pipeline stage that
+// produced it so the writer can apply the channel's stage-scoped failure policy.
+type responseStageError struct {
+	stage FailureStage
+	err   error
+}
+
+func (e *responseStageError) Error() string { return e.err.Error() }
+func (e *responseStageError) Unwrap() error { return e.err }
+
+func newResponseStageError(stage FailureStage, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &responseStageError{stage: stage, err: err}
+}
+
+func responseErrorStage(err error) FailureStage {
+	var staged *responseStageError
+	if errors.As(err, &staged) {
+		return staged.stage
+	}
+	return FailureStageResponseValidation
 }
 
 func BeginResponseTextFilter(c *gin.Context, config *dto.ResponseTextFilter, model string) *ResponseTextFilterWriter {
@@ -95,12 +122,12 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 		return nil
 	}
 	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, toolText: toolText, scriptResponse: scriptResponse, status: c.Writer.Status()}
-	w.strictFailure = scriptEnabled || toolText != nil || textRegexRequiresStrictFailure(config, preset, model, false)
+	w.policy = responseFailurePolicy(preset, config, model, false)
 	if len(warnings) > 0 {
-		w.transformErr = fmt.Errorf("preset regex compatibility failure")
+		w.transformErr = newResponseStageError(FailureStageRegex, fmt.Errorf("preset regex compatibility failure"))
 	}
 	if setupErr != nil {
-		w.transformErr = fmt.Errorf("response regex configuration failure")
+		w.transformErr = newResponseStageError(FailureStageRegex, fmt.Errorf("response regex configuration failure"))
 	}
 	if config != nil {
 		w.config = *config
@@ -110,6 +137,91 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 	}
 	c.Writer = w
 	return w
+}
+
+// responseFailurePolicy resolves the authoritative stage policy for the
+// response pipeline. A preset's explicit failure policy wins; otherwise the
+// documented defaults apply. Legacy regex strictness maps onto the regex and
+// response stages so older channel rules keep failing safe.
+func responseFailurePolicy(preset *dto.SillyTavernPresetConfig, config *dto.ResponseTextFilter, model string, send bool) *AdaptationFailurePolicy {
+	policy := (&AdaptationProfile{Preset: preset}).FailurePolicy()
+	// A preset that owns a response script or a declarative tool transport has
+	// a contracted response pipeline: the run must complete or the gateway
+	// cannot guarantee what the client receives. Unless the operator set an
+	// explicit stage value, those stages fail closed instead of leaking.
+	strictPipeline := preset != nil && (preset.ScriptRuntime != "" || preset.ToolText != nil && preset.ToolText.Enabled)
+	if strictPipeline {
+		configured := preset.FailurePolicy
+		if configured == nil || configured.ResponseValidation == "" {
+			policy.responseValidation = FailureFail
+		}
+		if configured == nil || configured.ResponseRestore == "" {
+			policy.responseRestore = FailureFail
+		}
+		if configured == nil || configured.OutputProcessing == "" {
+			policy.outputProcessing = FailureFail
+		}
+	}
+	if preset != nil && preset.RegexFailurePolicy == "error" {
+		policy.regex = FailureFail
+	}
+	if textRegexRequiresStrictFailure(config, preset, model, send) {
+		policy.responseValidation = FailureFail
+		policy.responseRestore = FailureFail
+		policy.outputProcessing = FailureFail
+		if preset == nil || preset.RegexFailurePolicy == "" {
+			policy.regex = FailureFail
+		}
+	}
+	return &policy
+}
+
+// stageMode returns the failure behavior for a stage. When no policy is
+// attached the documented safe defaults apply so callers never silently leak.
+func (w *ResponseTextFilterWriter) stageMode(stage FailureStage) FailureMode {
+	if w.policy != nil {
+		return w.policy.Mode(stage)
+	}
+	switch stage {
+	case FailureStageResponseValidation, FailureStageResponseRestore:
+		return FailureSafeRaw
+	case FailureStageOutputProcessing, FailureStageRegex:
+		return FailurePreserve
+	case FailureStageResponseStarted:
+		return FailureStop
+	default:
+		return FailureSafeRaw
+	}
+}
+
+// internalToolNames reports the gateway-internal tools whose presence in a raw
+// upstream body would leak preset internals to the client.
+func (w *ResponseTextFilterWriter) internalToolNames() map[string]bool {
+	internal := make(map[string]bool)
+	if w.toolText != nil && w.toolText.Enabled && w.toolText.Name != "" {
+		internal[w.toolText.Name] = true
+	}
+	if w.scriptResponse != nil {
+		if w.scriptResponse.protocol != nil && w.scriptResponse.protocol.audit.Activated {
+			for name := range w.scriptResponse.protocol.InternalToolNames() {
+				internal[name] = true
+			}
+		} else {
+			for name := range w.scriptResponse.ownedTools {
+				internal[name] = true
+			}
+		}
+	}
+	if len(internal) == 0 {
+		return nil
+	}
+	return internal
+}
+
+// rawResponseSafeForFallback proves that bypassing projection cannot leak a
+// gateway-internal tool to the client.
+func (w *ResponseTextFilterWriter) rawResponseSafeForFallback() bool {
+	return len(w.internalToolNames()) == 0
 }
 
 func (w *ResponseTextFilterWriter) WriteHeader(code int) {
@@ -134,7 +246,9 @@ func (w *ResponseTextFilterWriter) Write(data []byte) (int, error) {
 		return w.ResponseWriter.Write(data)
 	}
 	if w.buffer.Len()+len(data) > maxFilteredResponseBytes {
-		if w.strictFailure {
+		// A response we cannot finish buffering can only be released raw when
+		// doing so cannot leak a gateway-internal tool.
+		if w.stageMode(FailureStageResponseRestore) == FailureFail || !w.rawResponseSafeForFallback() {
 			w.blocked = true
 			w.buffer.Reset()
 			return len(data), nil
@@ -186,44 +300,76 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 	}
 	if success && w.status < 400 {
 		w.deadline = time.Now().Add(2 * time.Second)
-		var filtered []byte
-		var err error
 		stream := strings.Contains(w.Header().Get("Content-Type"), "text/event-stream")
-		prepared := body
-		if w.transformErr == nil {
-			prepared, err = restorePresetToolText(body, stream, w.toolText, w.deadline)
-			if err == nil && w.scriptResponse != nil {
-				prepared, err = w.scriptResponse.restoreTools(prepared, stream, w.deadline)
+		filtered, err := w.processResponse(body, stream)
+		if err != nil {
+			stage := responseErrorStage(err)
+			switch w.stageMode(stage) {
+			case FailureFail:
+				w.Header().Del("Content-Length")
+				if w.scriptResponse != nil {
+					return fmt.Errorf("preset script response processing failed at stage %s: %w", stage, err)
+				}
+				return fmt.Errorf("response text filter could not safely process the response at stage %s: %w", stage, err)
+			case FailureEmpty:
+				emptied, emptyErr := w.emptyResponse(body, stream)
+				if emptyErr != nil {
+					w.Header().Del("Content-Length")
+					return fmt.Errorf("response text filter could not empty an invalid response: %w", emptyErr)
+				}
+				body = emptied
+			case FailureSafeRaw:
+				if w.rawResponseSafeForFallback() {
+					logger.LogWarn(c, "Response text filter sent the raw upstream response after a safe fallback at stage "+string(stage))
+				} else {
+					w.Header().Del("Content-Length")
+					return fmt.Errorf("response text filter refused to leak a gateway-internal tool at stage %s: %w", stage, err)
+				}
+			default:
+				logger.LogWarn(c, "Response text filter preserved the raw response after a recoverable failure at stage "+string(stage))
 			}
-		}
-		if w.transformErr != nil {
-			err = w.transformErr
-		} else if err == nil {
-			if stream {
-				filtered, err = w.filterSSE(prepared)
-			} else {
-				filtered, err = w.filterJSON(prepared)
-			}
-		}
-		if w.transformErr != nil {
-			err = w.transformErr
-		}
-		if err == nil {
-			body = filtered
-		} else if w.strictFailure {
-			w.Header().Del("Content-Length")
-			if w.scriptResponse != nil {
-				return fmt.Errorf("preset script response processing failed: %w", err)
-			}
-			return fmt.Errorf("response text filter could not safely parse or transform the response")
 		} else {
-			logger.LogWarn(c, "Response text filter bypassed an unsupported or malformed response")
+			body = filtered
 		}
 	}
 	w.Header().Del("Content-Length")
 	w.ResponseWriter.WriteHeader(w.status)
 	_, err := w.ResponseWriter.Write(body)
 	return err
+}
+
+// processResponse runs restore, validation and transformation in the fixed
+// order and tags any failure with its pipeline stage.
+func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]byte, error) {
+	if w.transformErr != nil {
+		return nil, w.transformErr
+	}
+	prepared, err := restorePresetToolText(body, stream, w.toolText, w.deadline)
+	if err != nil {
+		return nil, newResponseStageError(FailureStageResponseRestore, err)
+	}
+	if w.scriptResponse != nil {
+		prepared, err = w.scriptResponse.restoreTools(prepared, stream, w.deadline)
+		if err != nil {
+			return nil, newResponseStageError(FailureStageResponseRestore, err)
+		}
+	}
+	if stream {
+		return w.filterSSE(prepared)
+	}
+	return w.filterJSON(prepared)
+}
+
+// emptyResponse emits the client-visible text slots as empty strings. It only
+// runs for the explicit regex "empty" failure policy.
+func (w *ResponseTextFilterWriter) emptyResponse(body []byte, stream bool) ([]byte, error) {
+	w.forceEmpty = true
+	w.transformErr = nil
+	defer func() { w.forceEmpty = false }()
+	if stream {
+		return w.filterSSE(body)
+	}
+	return w.filterJSON(body)
 }
 
 type responseTextSlot struct {
@@ -234,11 +380,14 @@ type responseTextSlot struct {
 
 func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 	original := text
+	if w.forceEmpty {
+		return "", text != ""
+	}
 	if w.scriptResponse != nil {
 		var err error
 		text, err = w.scriptResponse.processText(text, w.deadline)
 		if err != nil {
-			w.transformErr = err
+			w.transformErr = newResponseStageError(FailureStageOutputProcessing, err)
 			return original, false
 		}
 	}
@@ -258,7 +407,7 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 	}
 	for _, script := range w.regexes {
 		if !w.deadline.IsZero() && time.Now().After(w.deadline) {
-			w.transformErr = fmt.Errorf("response regex execution budget exceeded")
+			w.transformErr = newResponseStageError(FailureStageRegex, fmt.Errorf("response regex execution budget exceeded"))
 			return original, false
 		}
 		replaced, err := script.replace(text)
@@ -267,7 +416,7 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 				common.SysError("Response regex execution failed; the entire rule chain follows the failure policy; response text and patterns omitted")
 				w.warned = true
 			}
-			w.transformErr = fmt.Errorf("response regex execution failed or exceeded output limit")
+			w.transformErr = newResponseStageError(FailureStageRegex, fmt.Errorf("response regex execution failed or exceeded output limit"))
 			return original, false
 		}
 		text = replaced
@@ -404,7 +553,7 @@ func textSlots(payload map[string]any, stream bool, includeEmpty ...bool) []resp
 func (w *ResponseTextFilterWriter) filterJSON(body []byte) ([]byte, error) {
 	var payload map[string]any
 	if err := common.UnmarshalPreservingNumbers(body, &payload); err != nil {
-		return nil, err
+		return nil, newResponseStageError(FailureStageResponseValidation, err)
 	}
 	slots := textSlots(payload, false, w.scriptResponse != nil)
 	groups := map[string][]responseTextSlot{}
@@ -412,7 +561,7 @@ func (w *ResponseTextFilterWriter) filterJSON(body []byte) ([]byte, error) {
 		groups[slot.group] = append(groups[slot.group], slot)
 	}
 	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 {
-		return nil, fmt.Errorf("Tavern runtime requires exactly one final text response choice")
+		return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("Tavern runtime requires exactly one final text response choice"))
 	}
 	changed := false
 	for _, group := range groups {
@@ -439,9 +588,12 @@ func (w *ResponseTextFilterWriter) filterJSON(body []byte) ([]byte, error) {
 	}
 	encoded, err := common.Marshal(payload)
 	if len(encoded) > maxFilteredResponseBytes {
-		return nil, fmt.Errorf("filtered JSON response exceeds size limit")
+		return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("filtered JSON response exceeds size limit"))
 	}
-	return encoded, err
+	if err != nil {
+		return nil, newResponseStageError(FailureStageResponseValidation, err)
+	}
+	return encoded, nil
 }
 
 func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
@@ -471,7 +623,7 @@ func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
 		data := strings.Join(dataLines, "\n")
 		if data != "" && strings.TrimSpace(data) != "[DONE]" {
 			if err := common.UnmarshalPreservingNumbers([]byte(data), &item.payload); err != nil {
-				return nil, fmt.Errorf("invalid JSON in response SSE event")
+				return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("invalid JSON in response SSE event"))
 			}
 			item.slots = textSlots(item.payload, true, w.scriptResponse != nil)
 			for _, slot := range item.slots {
@@ -481,7 +633,7 @@ func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
 		frames = append(frames, item)
 	}
 	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 {
-		return nil, fmt.Errorf("Tavern runtime requires exactly one final text response choice")
+		return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("Tavern runtime requires exactly one final text response choice"))
 	}
 	changed := false
 	for _, group := range groups {
@@ -514,7 +666,7 @@ func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
 		} else {
 			data, err := common.Marshal(item.payload)
 			if err != nil {
-				return nil, err
+				return nil, newResponseStageError(FailureStageResponseValidation, err)
 			}
 			written := false
 			for _, line := range item.lines {
@@ -534,7 +686,7 @@ func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
 		}
 		out.WriteByte('\n')
 		if out.Len() > maxFilteredResponseBytes {
-			return nil, fmt.Errorf("filtered SSE response exceeds size limit")
+			return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("filtered SSE response exceeds size limit"))
 		}
 	}
 	return out.Bytes(), nil

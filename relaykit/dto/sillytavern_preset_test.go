@@ -63,4 +63,27 @@ func TestSillyTavernToolProtocolValidation(t *testing.T) {
 	invalidContent.ToolProtocol = &SillyTavernToolProtocol{Content: []string{"reply_payload", "reply_payload"}}
 	_, err = invalidContent.ParseAndValidate()
 	require.ErrorContains(t, err, "tool_protocol content names")
+
+	invalidVisibility := *valid
+	invalidVisibility.ToolProtocol = &SillyTavernToolProtocol{
+		Action: []string{"lookup"},
+		VisibilityPolicy: &SillyTavernToolVisibility{
+			Action: "gateway_internal",
+		},
+	}
+	_, err = invalidVisibility.ParseAndValidate()
+	require.ErrorContains(t, err, "tool_protocol visibility")
+
+	conflictingRoles := *valid
+	conflictingRoles.ToolProtocol = &SillyTavernToolProtocol{
+		Auxiliary: []string{"context"},
+		Action:    []string{"context"},
+	}
+	_, err = conflictingRoles.ParseAndValidate()
+	require.ErrorContains(t, err, "tool_protocol tool roles")
+
+	invalidFailurePolicy := *valid
+	invalidFailurePolicy.FailurePolicy = &SillyTavernFailurePolicy{Worldbook: "explode"}
+	_, err = invalidFailurePolicy.ParseAndValidate()
+	require.ErrorContains(t, err, "failure_policy.worldbook")
 }
