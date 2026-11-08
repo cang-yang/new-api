@@ -105,7 +105,7 @@ jobs:
           STAMP="$(TZ=Asia/Shanghai date +'%Y.%m.%d')"
           SHORT_SHA="${GITHUB_SHA::12}"
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/new-api"
-          VERSION="lab-${STAMP}-${SHORT_SHA::7}"
+          VERSION="v${STAMP}-lab.${SHORT_SHA::7}"
           echo "${VERSION}" > VERSION
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
