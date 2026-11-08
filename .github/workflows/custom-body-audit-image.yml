@@ -102,9 +102,10 @@ jobs:
         id: meta
         shell: bash
         run: |
+          STAMP="$(TZ=Asia/Shanghai date +'%Y.%m.%d')"
           SHORT_SHA="${GITHUB_SHA::12}"
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/new-api"
-          VERSION="personal-lab-${SHORT_SHA}"
+          VERSION="lab-${STAMP}-${SHORT_SHA::7}"
           echo "${VERSION}" > VERSION
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
