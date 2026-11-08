@@ -82,9 +82,11 @@ export function PresetAdapterOverview(props: {
       ? toolProtocol.response_target
       : 'auto'
   let runtimeLabel = t('Do not use preset extras')
-  if (runtime === 'spreset-v1')
+  if (runtime === 'spreset-v1') {
     runtimeLabel = t('Use preset settings (SPreset)')
-  else if (runtime === 'tavern-v1') runtimeLabel = t('Run bundled scripts')
+  } else if (runtime === 'tavern-v1') {
+    runtimeLabel = t('Run bundled scripts')
+  }
   const coordination = toolProtocolEnabled
     ? t('Tool coordination on')
     : t('Tool coordination off')

@@ -52,6 +52,7 @@ type PresetCompileTrace struct {
 	Worldbook      *WorldbookPreview       `json:"worldbook,omitempty"`
 	Protocol       *PresetProtocolAudit    `json:"protocol,omitempty"`
 	Plan           *AdaptationResolvedPlan `json:"plan,omitempty"`
+	Diagnostics    *AdaptationDiagnostic   `json:"diagnostics,omitempty"`
 	Name           string                  `json:"name"`
 	Mode           string                  `json:"mode"`
 	Messages       []PresetMessageSource   `json:"messages"`

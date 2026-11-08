@@ -122,6 +122,33 @@ func TestAdaptationProfileFingerprintIsDeterministic(t *testing.T) {
 	assert.NotEqual(t, first, changed)
 }
 
+func TestAdaptationPlanMetadataCacheIsBoundedAndRequestScoped(t *testing.T) {
+	clearAdaptationPlanMetadataCache()
+	profile := &AdaptationProfile{Enabled: true, Preset: &dto.SillyTavernPresetConfig{
+		Preset: []byte(`{"prompts":[],"prompt_order":[]}`),
+	}}
+	firstRequest := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "one"}}}
+	secondRequest := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "two"}}}
+
+	first, err := BuildBasePlan(profile, firstRequest, firstRequest)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	second, err := BuildBasePlan(profile, firstRequest, firstRequest)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	third, err := BuildBasePlan(profile, secondRequest, secondRequest)
+	require.NoError(t, err)
+	require.NotNil(t, third)
+
+	adaptationPlanMetadataCache.Lock()
+	entries := len(adaptationPlanMetadataCache.entries)
+	adaptationPlanMetadataCache.Unlock()
+	assert.Equal(t, 2, entries)
+	assert.NotSame(t, first.Original, second.Original)
+	assert.Equal(t, "one", first.Original.Messages[0].Content)
+	assert.Equal(t, "two", third.Original.Messages[0].Content)
+}
+
 func TestResolveAdaptationPlanFreezesPhaseAndRoleIdentity(t *testing.T) {
 	original := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
 	profile := &AdaptationProfile{Enabled: true, Preset: &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[],"prompt_order":[]}`)}}

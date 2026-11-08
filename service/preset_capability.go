@@ -1,9 +1,13 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -30,10 +34,49 @@ type PresetCapabilityReport struct {
 	Entries          []PresetCapabilityEntry `json:"entries"`
 }
 
+const (
+	presetCapabilityCacheLimit = 64
+	presetCapabilityCacheTTL   = 10 * time.Minute
+)
+
+type presetCapabilityCacheEntry struct {
+	expiresAt time.Time
+	report    *PresetCapabilityReport
+}
+
+type presetCapabilityCacheStore struct {
+	sync.Mutex
+	entries map[string]presetCapabilityCacheEntry
+	order   []string
+}
+
+var presetCapabilityCache = presetCapabilityCacheStore{
+	entries: make(map[string]presetCapabilityCacheEntry),
+}
+
 // BuildPresetCapabilityReport parses the preset and runs one bounded probe so
 // the UI can show static prompts plus tools that the server-side script
 // actually observed for the supplied request shape.
 func BuildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest) (*PresetCapabilityReport, error) {
+	if config == nil {
+		return buildPresetCapabilityReport(config, request)
+	}
+	key, err := presetCapabilityCacheKey(config, request)
+	if err != nil {
+		return nil, err
+	}
+	if report, ok := presetCapabilityCache.get(key); ok {
+		return clonePresetCapabilityReport(report)
+	}
+	report, err := buildPresetCapabilityReport(config, request)
+	if err != nil {
+		return nil, err
+	}
+	presetCapabilityCache.put(key, report)
+	return clonePresetCapabilityReport(report)
+}
+
+func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest) (*PresetCapabilityReport, error) {
 	if config == nil {
 		return &PresetCapabilityReport{
 			Name:         "No preset",
@@ -157,4 +200,68 @@ func BuildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		})
 	}
 	return report, nil
+}
+
+func presetCapabilityCacheKey(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest) (string, error) {
+	payload, err := common.Marshal(struct {
+		Config  *dto.SillyTavernPresetConfig
+		Request *dto.GeneralOpenAIRequest
+	}{Config: config, Request: request})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func clonePresetCapabilityReport(report *PresetCapabilityReport) (*PresetCapabilityReport, error) {
+	if report == nil {
+		return nil, nil
+	}
+	copy, err := common.DeepCopy(report)
+	if err != nil {
+		return nil, err
+	}
+	return copy, nil
+}
+
+func (c *presetCapabilityCacheStore) get(key string) (*PresetCapabilityReport, bool) {
+	c.Lock()
+	defer c.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(c.entries, key)
+		return nil, false
+	}
+	return entry.report, true
+}
+
+func (c *presetCapabilityCacheStore) put(key string, report *PresetCapabilityReport) {
+	if report == nil {
+		return
+	}
+	c.Lock()
+	defer c.Unlock()
+	if _, exists := c.entries[key]; !exists {
+		c.order = append(c.order, key)
+	}
+	c.entries[key] = presetCapabilityCacheEntry{
+		expiresAt: time.Now().Add(presetCapabilityCacheTTL),
+		report:    report,
+	}
+	for len(c.order) > presetCapabilityCacheLimit {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+}
+
+func clearPresetCapabilityCache() {
+	presetCapabilityCache.Lock()
+	defer presetCapabilityCache.Unlock()
+	presetCapabilityCache.entries = make(map[string]presetCapabilityCacheEntry)
+	presetCapabilityCache.order = nil
 }

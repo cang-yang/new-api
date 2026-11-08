@@ -198,6 +198,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			return
 		}
 		service.AttachAdaptationPlan(&trace, initialBasePlan)
+		service.AttachAdaptationDiagnostic(c, trace.Diagnostics)
 		relayInfo.Request = compiled
 		relayInfo.PresetAudit = trace
 		if chat, ok := compiled.(*kitdto.GeneralOpenAIRequest); ok && chat.ReasoningEffort != "" {
@@ -322,6 +323,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				newAPIError = types.NewError(filterErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
 		}
+		service.RecordAdaptationWriteback(c, newAPIError == nil)
+		service.RefreshBodyAuditAdaptationSnapshot(c, relayInfo)
 
 		if newAPIError == nil {
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)

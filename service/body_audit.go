@@ -85,9 +85,11 @@ type bodyAuditCapture struct {
 	attemptId          int64
 	attemptPersistOnce sync.Once
 	clientPersistOnce  sync.Once
+	info               *relaycommon.RelayInfo
 }
 
 const bodyAuditClientResponseKey = "body_audit_client_response"
+const bodyAuditCaptureKey = "body_audit_capture"
 
 type bodyAuditClientResponseCapture struct {
 	mu       sync.Mutex
@@ -198,7 +200,9 @@ func BeginBodyAudit(c *gin.Context, req *http.Request, info *relaycommon.RelayIn
 		modelName: info.UpstreamModelName,
 		request:   newLimitedAuditBuffer(limit),
 		response:  newLimitedAuditBuffer(limit),
+		info:      info,
 	}
+	c.Set(bodyAuditCaptureKey, capture)
 	capture.beginTrace(c, req, info)
 	if value, exists := c.Get(bodyAuditClientResponseKey); exists {
 		if session, ok := value.(*bodyAuditClientResponseCapture); ok && session != nil {
@@ -233,6 +237,37 @@ func WrapBodyAuditResponse(capture *bodyAuditCapture, resp *http.Response) {
 func SaveBodyAuditRequestFailure(capture *bodyAuditCapture) {
 	if capture != nil {
 		capture.save(false)
+	}
+}
+
+// RefreshBodyAuditAdaptationSnapshot rewrites the attempt's immutable config
+// snapshot after response processing added its diagnostics. The snapshot still
+// contains no bodies or credentials; the request/response blobs remain in
+// their existing dedicated fields.
+func RefreshBodyAuditAdaptationSnapshot(c *gin.Context, info *relaycommon.RelayInfo) {
+	if !constant.BodyAuditEnabled || c == nil || info == nil {
+		return
+	}
+	value, exists := c.Get(bodyAuditCaptureKey)
+	if !exists {
+		return
+	}
+	capture, ok := value.(*bodyAuditCapture)
+	if !ok || capture == nil || capture.attemptId == 0 {
+		return
+	}
+	payload, err := buildAttemptConfigSnapshot(c, info)
+	if err != nil {
+		logger.LogError(nil, "failed to refresh audit adaptation snapshot: "+err.Error())
+		return
+	}
+	snapshot, err := model.GetOrCreateAuditConfigSnapshot("attempt", payload)
+	if err != nil {
+		logger.LogError(nil, "failed to create refreshed audit adaptation snapshot: "+err.Error())
+		return
+	}
+	if err := model.UpdateAuditAttemptConfigSnapshot(capture.attemptId, snapshot.Id); err != nil {
+		logger.LogError(nil, "failed to link refreshed audit adaptation snapshot: "+err.Error())
 	}
 }
 

@@ -286,6 +286,23 @@ func UpdateAuditAttemptOutcome(attemptId int64, durationMs int64, outcome string
 	return nil
 }
 
+// UpdateAuditAttemptConfigSnapshot links the latest immutable policy snapshot
+// to an attempt. Request and response bodies are deliberately stored in blobs,
+// so refreshing this pointer never duplicates wire payloads.
+func UpdateAuditAttemptConfigSnapshot(attemptId, configSnapshotId int64) error {
+	result := DB.Model(&AuditAttempt{}).Where("id = ?", attemptId).Updates(map[string]any{
+		"updated_at":         nowMillis(),
+		"config_snapshot_id": configSnapshotId,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func ListAuditAttempts(traceId int64) ([]AuditAttempt, error) {
 	var attempts []AuditAttempt
 	err := DB.Where("trace_id = ?", traceId).Order("attempt_no ASC").Find(&attempts).Error

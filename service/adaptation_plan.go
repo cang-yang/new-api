@@ -3,6 +3,8 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -80,6 +82,28 @@ type AdaptationResolvedPlan struct {
 type AdaptationRequestPlan struct {
 	Base     *AdaptationBasePlan
 	Resolved *AdaptationResolvedPlan
+}
+
+const (
+	adaptationPlanMetadataCacheLimit = 256
+	adaptationPlanMetadataCacheTTL   = 10 * time.Minute
+)
+
+type adaptationPlanMetadata struct {
+	profileFingerprint string
+	contract           ContractClass
+	clientFinal        string
+	expiresAt          time.Time
+}
+
+type adaptationPlanMetadataCacheStore struct {
+	sync.Mutex
+	entries map[string]adaptationPlanMetadata
+	order   []string
+}
+
+var adaptationPlanMetadataCache = adaptationPlanMetadataCacheStore{
+	entries: make(map[string]adaptationPlanMetadata),
 }
 
 func NewAdaptationProfile(preset *dto.SillyTavernPresetConfig, worldbook *dto.WorldbookConfig, sendRules, receiveRules *dto.ResponseTextFilter) *AdaptationProfile {
@@ -218,12 +242,25 @@ func BuildBasePlan(profile *AdaptationProfile, original, matched *dto.GeneralOpe
 	}
 	contract := ClassifyContract(originalCopy)
 	clientFinal := ""
-	if originalCopy != nil {
-		clientFinal = inferClientFinalTool(originalCopy, originalCopy, nil)
-	}
 	profileFingerprint, err := adaptationProfileFingerprint(profile)
 	if err != nil {
 		return nil, err
+	}
+	requestHash := hashRequest(originalCopy)
+	metadataKey := adaptationPlanMetadataCacheKey(profileFingerprint, requestHash)
+	if metadata, ok := adaptationPlanMetadataCache.get(metadataKey); ok {
+		contract = metadata.contract
+		clientFinal = metadata.clientFinal
+	} else {
+		if originalCopy != nil {
+			clientFinal = inferClientFinalTool(originalCopy, originalCopy, nil)
+		}
+		adaptationPlanMetadataCache.put(metadataKey, adaptationPlanMetadata{
+			profileFingerprint: profileFingerprint,
+			contract:           contract,
+			clientFinal:        clientFinal,
+			expiresAt:          time.Now().Add(adaptationPlanMetadataCacheTTL),
+		})
 	}
 	plan := &AdaptationBasePlan{
 		Profile:            profile,
@@ -255,7 +292,11 @@ func ResolveAdaptationPlan(base *AdaptationBasePlan, protocol *presetProtocolPla
 // attaches it to the existing secret-free preset trace. It is intentionally
 // side-effect-free when no adaptation plan exists.
 func AttachAdaptationPlan(trace *PresetCompileTrace, base *AdaptationBasePlan) *AdaptationResolvedPlan {
-	if trace == nil || base == nil {
+	if trace == nil {
+		return nil
+	}
+	if base == nil {
+		trace.Diagnostics = BuildAdaptationDiagnostic(trace)
 		return nil
 	}
 	var protocol *presetProtocolPlan
@@ -267,6 +308,7 @@ func AttachAdaptationPlan(trace *PresetCompileTrace, base *AdaptationBasePlan) *
 	if trace.ScriptResponse != nil {
 		trace.ScriptResponse.resolvedPlan = resolved
 	}
+	trace.Diagnostics = BuildAdaptationDiagnostic(trace)
 	return resolved
 }
 
@@ -345,6 +387,46 @@ func adaptationPlanFingerprint(plan *AdaptationBasePlan) string {
 	encoded, _ := common.Marshal(payload)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
+}
+
+func adaptationPlanMetadataCacheKey(profileFingerprint, requestHash string) string {
+	sum := sha256.Sum256([]byte(profileFingerprint + "\x00" + requestHash))
+	return hex.EncodeToString(sum[:])
+}
+
+func (c *adaptationPlanMetadataCacheStore) get(key string) (adaptationPlanMetadata, bool) {
+	c.Lock()
+	defer c.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return adaptationPlanMetadata{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(c.entries, key)
+		return adaptationPlanMetadata{}, false
+	}
+	return entry, true
+}
+
+func (c *adaptationPlanMetadataCacheStore) put(key string, metadata adaptationPlanMetadata) {
+	c.Lock()
+	defer c.Unlock()
+	if _, exists := c.entries[key]; !exists {
+		c.order = append(c.order, key)
+	}
+	c.entries[key] = metadata
+	for len(c.order) > adaptationPlanMetadataCacheLimit {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+}
+
+func clearAdaptationPlanMetadataCache() {
+	adaptationPlanMetadataCache.Lock()
+	defer adaptationPlanMetadataCache.Unlock()
+	adaptationPlanMetadataCache.entries = make(map[string]adaptationPlanMetadata)
+	adaptationPlanMetadataCache.order = nil
 }
 
 func adaptationResolvedFingerprint(plan *AdaptationResolvedPlan) string {

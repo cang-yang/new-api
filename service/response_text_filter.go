@@ -30,6 +30,7 @@ type ResponseTextFilterWriter struct {
 	hasFilter      bool
 	toolText       *dto.SillyTavernToolText
 	scriptResponse *PresetScriptResponse
+	diagnostic     *AdaptationDiagnostic
 	policy         *AdaptationFailurePolicy
 	forceEmpty     bool
 	status         int
@@ -122,6 +123,7 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 		return nil
 	}
 	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, toolText: toolText, scriptResponse: scriptResponse, status: c.Writer.Status()}
+	w.diagnostic = adaptationDiagnosticFromContext(c)
 	w.policy = responseFailurePolicy(preset, config, model, false)
 	if len(warnings) > 0 {
 		w.transformErr = newResponseStageError(FailureStageRegex, fmt.Errorf("preset regex compatibility failure"))
@@ -304,6 +306,7 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		filtered, err := w.processResponse(body, stream)
 		if err != nil {
 			stage := responseErrorStage(err)
+			w.recordStage(stage, "failed", err)
 			switch w.stageMode(stage) {
 			case FailureFail:
 				w.Header().Del("Content-Length")
@@ -312,6 +315,7 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 				}
 				return fmt.Errorf("response text filter could not safely process the response at stage %s: %w", stage, err)
 			case FailureEmpty:
+				w.recordStage(FailureStageRegex, "fallback", fmt.Errorf("response text emptied by failure policy"))
 				emptied, emptyErr := w.emptyResponse(body, stream)
 				if emptyErr != nil {
 					w.Header().Del("Content-Length")
@@ -320,12 +324,14 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 				body = emptied
 			case FailureSafeRaw:
 				if w.rawResponseSafeForFallback() {
+					w.recordStage(FailureStageResponseRestore, "fallback", fmt.Errorf("raw upstream response sent after safe fallback"))
 					logger.LogWarn(c, "Response text filter sent the raw upstream response after a safe fallback at stage "+string(stage))
 				} else {
 					w.Header().Del("Content-Length")
 					return fmt.Errorf("response text filter refused to leak a gateway-internal tool at stage %s: %w", stage, err)
 				}
 			default:
+				w.recordStage(stage, "fallback", fmt.Errorf("raw response preserved after recoverable failure"))
 				logger.LogWarn(c, "Response text filter preserved the raw response after a recoverable failure at stage "+string(stage))
 			}
 		} else {
@@ -335,6 +341,12 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 	w.Header().Del("Content-Length")
 	w.ResponseWriter.WriteHeader(w.status)
 	_, err := w.ResponseWriter.Write(body)
+	if err == nil {
+		w.recordStage(FailureStageResponseStarted, "completed", nil, map[string]any{
+			"body_bytes": len(body),
+			"stream":     strings.Contains(w.Header().Get("Content-Type"), "text/event-stream"),
+		})
+	}
 	return err
 }
 
@@ -342,22 +354,69 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 // order and tags any failure with its pipeline stage.
 func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]byte, error) {
 	if w.transformErr != nil {
+		w.recordStage(FailureStageResponseValidation, "failed", w.transformErr)
 		return nil, w.transformErr
 	}
+	w.recordStage(FailureStageResponseValidation, "completed", nil, map[string]any{
+		"body_bytes": len(body),
+		"stream":     stream,
+	})
 	prepared, err := restorePresetToolText(body, stream, w.toolText, w.deadline)
 	if err != nil {
+		w.recordStage(FailureStageResponseRestore, "failed", err)
 		return nil, newResponseStageError(FailureStageResponseRestore, err)
 	}
 	if w.scriptResponse != nil {
 		prepared, err = w.scriptResponse.restoreTools(prepared, stream, w.deadline)
 		if err != nil {
+			w.recordStage(FailureStageResponseRestore, "failed", err)
 			return nil, newResponseStageError(FailureStageResponseRestore, err)
 		}
 	}
+	w.recordStage(FailureStageResponseRestore, "completed", nil, map[string]any{
+		"changed":    !bytes.Equal(body, prepared),
+		"body_bytes": len(prepared),
+	})
+	var filtered []byte
 	if stream {
-		return w.filterSSE(prepared)
+		filtered, err = w.filterSSE(prepared)
+	} else {
+		filtered, err = w.filterJSON(prepared)
 	}
-	return w.filterJSON(prepared)
+	if err != nil {
+		stage := responseErrorStage(err)
+		w.recordStage(stage, "failed", err)
+		return nil, err
+	}
+	w.recordStage(FailureStageOutputProcessing, "completed", nil, nil)
+	w.recordStage(FailureStageRegex, regexDiagnosticStatus(w), nil, map[string]any{
+		"has_text_rule": w.hasFilter,
+		"regex_count":   len(w.regexes),
+		"changed":       !bytes.Equal(prepared, filtered),
+	})
+	return filtered, nil
+}
+
+func (w *ResponseTextFilterWriter) recordStage(stage FailureStage, status string, err error, details ...map[string]any) {
+	if w == nil || w.diagnostic == nil {
+		return
+	}
+	if len(details) > 0 && len(details[0]) > 0 {
+		w.diagnostic.Record(string(stage), status, "", details[0])
+		return
+	}
+	summary := ""
+	if err != nil {
+		summary = err.Error()
+	}
+	w.diagnostic.Record(string(stage), status, summary, nil)
+}
+
+func regexDiagnosticStatus(w *ResponseTextFilterWriter) string {
+	if w == nil || !w.hasFilter && len(w.regexes) == 0 {
+		return "skipped"
+	}
+	return "completed"
 }
 
 // emptyResponse emits the client-visible text slots as empty strings. It only

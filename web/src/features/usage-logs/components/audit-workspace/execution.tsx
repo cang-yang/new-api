@@ -36,6 +36,7 @@ import type { AuditCapture } from '../../lib/audit-workspace'
 import { diffJsonText } from '../../lib/json-diff'
 import type { BodyAudit } from '../../types'
 import { AuditReplayDialog } from '../dialogs/audit-replay-dialog'
+import { AuditDiagnostics } from './diagnostics'
 import { AuditPayload } from './payload'
 import { ReadingViewport } from './reader'
 
@@ -57,6 +58,13 @@ export function AuditExecution(props: { audit: BodyAudit }) {
   const previous =
     selected &&
     attempts.find((item) => item.attempt_no === selected.attempt_no - 1)
+  const diagnostic = (() => {
+    const snapshot = selected?.config_snapshot?.canonical_json
+    if (!snapshot) return undefined
+    const preset = snapshot.sillytavern_preset
+    if (preset === null || typeof preset !== 'object') return undefined
+    return (preset as Record<string, unknown>).diagnostics
+  })()
   const diff = useMemo(() => {
     if (
       !selected ||
@@ -178,6 +186,7 @@ export function AuditExecution(props: { audit: BodyAudit }) {
             { value: 'response', label: t('Attempt response') },
             { value: 'diff', label: t('Changes from previous attempt') },
             { value: 'config', label: t('Execution config') },
+            { value: 'diagnostics', label: t('Adaptation diagnostics') },
           ]}
         >
           <SelectTrigger
@@ -194,6 +203,9 @@ export function AuditExecution(props: { audit: BodyAudit }) {
               {t('Changes from previous attempt')}
             </SelectItem>
             <SelectItem value='config'>{t('Execution config')}</SelectItem>
+            <SelectItem value='diagnostics'>
+              {t('Adaptation diagnostics')}
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -206,14 +218,22 @@ export function AuditExecution(props: { audit: BodyAudit }) {
           onRetry={() => void query.refetch()}
         />
       )}
-      {(!multiple || (!query.isLoading && !query.isError)) && (
-        <AuditPayload
-          key={`${selected.id}:${part}`}
-          capture={capture}
-          notice={notice}
-          emptyMessage={emptyMessage}
-        />
-      )}
+      {(!multiple || (!query.isLoading && !query.isError)) &&
+        part === 'diagnostics' && (
+          <AuditDiagnostics
+            key={`${selected.id}:diagnostics`}
+            value={diagnostic}
+          />
+        )}
+      {(!multiple || (!query.isLoading && !query.isError)) &&
+        part !== 'diagnostics' && (
+          <AuditPayload
+            key={`${selected.id}:${part}`}
+            capture={capture}
+            notice={notice}
+            emptyMessage={emptyMessage}
+          />
+        )}
       <AuditReplayDialog
         open={replayOpen}
         onOpenChange={setReplayOpen}
