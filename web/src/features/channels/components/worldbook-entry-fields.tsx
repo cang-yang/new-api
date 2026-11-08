@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -31,7 +32,11 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
-import type { WorldbookEntry } from '../lib/worldbook'
+import {
+  worldbookConfirmEntry,
+  worldbookRiskFields,
+  type WorldbookEntry,
+} from '../lib/worldbook'
 import { WorldbookEntryNotes } from './worldbook-import-summary'
 import { WorldbookPlacementFields } from './worldbook-placement-fields'
 
@@ -47,10 +52,35 @@ export function WorldbookEntryFields(props: {
     props.entry.secondary_keys.join('\n')
   )
   const invalid = !!props.entry.issues?.length
+  const risk = worldbookRiskFields(props.entry)
   const update = (patch: Partial<WorldbookEntry>) =>
     props.onChange({ ...props.entry, ...patch })
   return (
     <fieldset disabled={props.disabled} className='min-w-0 space-y-4'>
+      {!!risk.length && (
+        <div
+          role='alert'
+          className='space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+        >
+          <p>
+            {t(
+              'This entry was imported disabled because it uses behavior the gateway cannot reproduce: {{fields}}.',
+              { fields: risk.join(', ') }
+            )}
+          </p>
+          {!props.entry.enabled && (
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              disabled={props.disabled}
+              onClick={() => props.onChange(worldbookConfirmEntry(props.entry))}
+            >
+              {t('Confirm and enable')}
+            </Button>
+          )}
+        </div>
+      )}
       {invalid && (
         <div
           role='alert'

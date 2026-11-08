@@ -298,6 +298,56 @@ test('import summary reports attention entries and filters to them', async () =>
   ).toBeVisible()
 })
 
+test('enabling an entry with unsupported behavior asks once and keeps the supported parts', async () => {
+  const user = userEvent.setup()
+  const risky = structuredClone(config)
+  const entry = risky.books[0].entries[0]
+  entry.enabled = false
+  entry.normalized_rules = [
+    {
+      field: 'sticky',
+      action: 'risk',
+      detail: 'activation timing cannot be reproduced',
+    },
+  ]
+  const onChange = mount(JSON.stringify(risky))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  expect(screen.getByText('1 need review before they can run.')).toBeVisible()
+  const toggle = screen.getByRole('switch', { name: 'Enable City' })
+  expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await user.click(toggle)
+  expect(screen.getByRole('alertdialog')).toBeVisible()
+  expect(screen.getByText(/cannot reproduce: sticky/)).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Confirm and enable' }))
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(
+    JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0]
+  ).toMatchObject({ enabled: true, normalized_rules: [] })
+})
+
+test('import summary confirms every risky entry at once', async () => {
+  const user = userEvent.setup()
+  const risky = structuredClone(config)
+  const entry = risky.books[0].entries[0]
+  entry.enabled = false
+  entry.normalized_rules = [
+    {
+      field: 'probability',
+      action: 'risk',
+      detail: 'random activation cannot be reproduced',
+    },
+  ]
+  const onChange = mount(JSON.stringify(risky))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  await user.click(
+    screen.getByRole('button', { name: 'Confirm and enable 1 entries' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(
+    JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0]
+  ).toMatchObject({ enabled: true, normalized_rules: [] })
+})
+
 test('overview clearly reports when the book cannot run', async () => {
   const user = userEvent.setup()
   const disabled = structuredClone(config)

@@ -460,6 +460,10 @@ func TestWorldbookImportNormalizesPersonalGatewaySemantics(t *testing.T) {
 		assert.Empty(t, book.Entries[0].Issues)
 		assertWorldbookNormalizedField(t, book.Entries[0], "sticky")
 		assertWorldbookNormalizedField(t, book.Entries[0], "probability")
+		assert.False(t, book.Entries[0].Enabled, "behavior that cannot be reproduced must not enable the entry silently")
+		assertWorldbookRuleAction(t, book.Entries[0], "sticky", "risk")
+		assertWorldbookRuleAction(t, book.Entries[0], "probability", "risk")
+		assert.NotEmpty(t, book.Entries[0].Source, "the original entry must be kept for review")
 	}
 	book, err := ImportWorldbook("simplified", []byte(`{"id":"book","enabled":true,"entries":[{"id":"entry","enabled":true,"constant":true,"content":"lore","keys":[],"secondary_keys":[],"secondary_logic":"none","source":{"sticky":3,"probability":50}}]}`))
 	require.NoError(t, err)
@@ -471,6 +475,23 @@ func TestWorldbookImportNormalizesPersonalGatewaySemantics(t *testing.T) {
 			assert.Error(t, err, "malformed alias %s must not weaken a trigger", field)
 		}
 	}
+}
+
+func TestWorldbookImportKeepsSupportedEntriesEnabled(t *testing.T) {
+	raw := `{"entries":[
+		{"comment":"plain","key":["moon"],"content":"lore"},
+		{"comment":"defaults","constant":true,"content":"lore","probability":100,"position":0},
+		{"comment":"inert filter","constant":true,"content":"lore","characterFilter":{"names":[],"isExclude":false,"scenario":null}},
+		{"comment":"filtered","constant":true,"content":"lore","characterFilter":{"names":["Alice"],"isExclude":false,"scenario":null}}
+	]}`
+	book, err := ImportWorldbook("mix", []byte(raw))
+	require.NoError(t, err)
+	require.Len(t, book.Entries, 4)
+	assert.True(t, book.Entries[0].Enabled, "an entry without unsupported behavior stays enabled")
+	assert.True(t, book.Entries[1].Enabled, "probability 100 and placement 0 are the Tavern defaults")
+	assert.True(t, book.Entries[2].Enabled, "an empty character filter does not restrict anything")
+	assert.False(t, book.Entries[3].Enabled, "an active character filter must be reviewed first")
+	assertWorldbookRuleAction(t, book.Entries[3], "characterFilter", "risk")
 }
 
 func TestWorldbookPreventRecursionStopsAssociation(t *testing.T) {
@@ -499,6 +520,17 @@ func assertWorldbookNormalizedField(t *testing.T, entry dto.WorldbookEntry, fiel
 	t.Helper()
 	for _, rule := range entry.NormalizedRules {
 		if rule.Field == field {
+			return
+		}
+	}
+	t.Fatalf("normalized field %q not found: %#v", field, entry.NormalizedRules)
+}
+
+func assertWorldbookRuleAction(t *testing.T, entry dto.WorldbookEntry, field, action string) {
+	t.Helper()
+	for _, rule := range entry.NormalizedRules {
+		if rule.Field == field {
+			assert.Equal(t, action, rule.Action, "unexpected action for field %q", field)
 			return
 		}
 	}

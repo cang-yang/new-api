@@ -213,6 +213,7 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 	// each imported identity a new request-wide ID, retaining duplicate IDs
 	// within the same source so normal deduplication still applies.
 	identities := map[string]string{}
+	riskyEntries := 0
 	for i := range book.Entries {
 		var fields map[string]json.RawMessage
 		if err := common.Unmarshal(entries[i], &fields); err != nil || fields == nil {
@@ -252,6 +253,17 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 			}
 			book.Warnings = append(book.Warnings, fmt.Sprintf("Entry %s was normalized: %s", book.Entries[i].ID, strings.Join(compactWorldbookStrings(fields), ", ")))
 		}
+		if riskFields := worldbookRiskFields(normalizedRules); len(riskFields) > 0 {
+			// Behavior that cannot be reproduced changes when or how often an
+			// entry triggers, so it is never enabled silently. The user
+			// reviews and confirms the simplification once per entry.
+			book.Entries[i].Enabled = false
+			riskyEntries++
+			if len(book.Entries[i].Source) == 0 {
+				book.Entries[i].Source = entries[i]
+			}
+			book.Warnings = append(book.Warnings, fmt.Sprintf("Entry %s needs review before it can run: %s", book.Entries[i].ID, strings.Join(compactWorldbookStrings(riskFields), ", ")))
+		}
 		if book.Entries[i].Keys == nil {
 			book.Entries[i].Keys = []string{}
 		}
@@ -280,6 +292,9 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 		}
 		book.Warnings = append(book.Warnings, "Book was normalized: "+strings.Join(compactWorldbookStrings(fields), ", "))
 	}
+	if riskyEntries > 0 {
+		book.Warnings = append(book.Warnings, fmt.Sprintf("%d imported entries need review before they can run", riskyEntries))
+	}
 	config := dto.WorldbookConfig{Books: []dto.Worldbook{book}}
 	if err := config.Validate(); err != nil {
 		return book, err
@@ -305,7 +320,7 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 				switch extension {
 				case "position", "depth", "display_index":
 					if worldbookBehaviorActive(setting) {
-						rules = append(rules, worldbookIgnoredRule("extensions."+extension, "per-entry placement is handled by the global injection mode"))
+						rules = append(rules, worldbookRiskRule("extensions."+extension, "the original Tavern placement cannot be reproduced; choose an insertion position instead"))
 					}
 					continue
 				}
@@ -313,13 +328,33 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 					rules = append(rules, worldbookIgnoredRule("extensions."+extension, "extension behavior is not used by the gateway"))
 				}
 			}
-		case "probability", "useProbability":
+		case "probability":
+			if worldbookProbabilityChangesActivation(value) {
+				rules = append(rules, worldbookRiskRule(key, "random activation cannot be reproduced; matching always includes the entry"))
+			}
+		case "useProbability":
 			if worldbookBehaviorActive(value) {
 				rules = append(rules, worldbookIgnoredRule(key, "probability is treated as always eligible after matching"))
 			}
-		case "position", "displayIndex", "depth", "characterFilter", "group", "groupWeight", "groupScoring", "sticky", "cooldown", "delay", "role":
+		case "characterFilter":
+			if worldbookCharacterFilterActive(value) {
+				rules = append(rules, worldbookRiskRule(key, "character or scenario filtering cannot be reproduced; the entry would match every request"))
+			}
+		case "group", "groupWeight", "groupScoring":
 			if worldbookBehaviorActive(value) {
-				rules = append(rules, worldbookIgnoredRule(key, "field is not used by the gateway"))
+				rules = append(rules, worldbookRiskRule(key, "entry grouping cannot be reproduced"))
+			}
+		case "sticky", "cooldown", "delay":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookRiskRule(key, "activation timing cannot be reproduced; the entry would trigger on every keyword match"))
+			}
+		case "role":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookRiskRule(key, "per-entry role override cannot be reproduced"))
+			}
+		case "position", "displayIndex", "depth":
+			if worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookRiskRule(key, "the original Tavern placement cannot be reproduced; choose an insertion position instead"))
 			}
 		case "addMemo", "memo":
 			if worldbookBehaviorActive(value) {
@@ -340,6 +375,55 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 
 func worldbookIgnoredRule(field, detail string) dto.WorldbookNormalizedRule {
 	return dto.WorldbookNormalizedRule{Field: field, Action: "ignored", Detail: detail}
+}
+
+func worldbookRiskRule(field, detail string) dto.WorldbookNormalizedRule {
+	return dto.WorldbookNormalizedRule{Field: field, Action: "risk", Detail: detail}
+}
+
+func worldbookRiskFields(rules []dto.WorldbookNormalizedRule) []string {
+	fields := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Action == "risk" {
+			fields = append(fields, rule.Field)
+		}
+	}
+	return fields
+}
+
+// worldbookProbabilityChangesActivation reports whether an imported
+// probability field would change when the entry triggers. A probability of
+// 100 is the SillyTavern default and behaves exactly like always eligible.
+func worldbookProbabilityChangesActivation(value json.RawMessage) bool {
+	if !worldbookBehaviorActive(value) {
+		return false
+	}
+	var probability float64
+	if err := common.Unmarshal(value, &probability); err != nil {
+		return true
+	}
+	return probability < 100
+}
+
+// worldbookCharacterFilterActive reports whether a Tavern character filter
+// actually restricts the entry. Exports include an inert empty filter on most
+// entries, which must not be treated as unsupported behavior.
+func worldbookCharacterFilterActive(value json.RawMessage) bool {
+	if !worldbookBehaviorActive(value) {
+		return false
+	}
+	var filter struct {
+		Names     []string `json:"names"`
+		IsExclude bool     `json:"isExclude"`
+		Scenario  *string  `json:"scenario"`
+	}
+	if err := common.Unmarshal(value, &filter); err != nil {
+		return true
+	}
+	if len(filter.Names) > 0 {
+		return true
+	}
+	return filter.Scenario != nil && strings.TrimSpace(*filter.Scenario) != ""
 }
 
 func compactWorldbookStrings(values []string) []string {

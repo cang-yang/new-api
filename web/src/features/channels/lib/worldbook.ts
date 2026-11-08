@@ -20,7 +20,7 @@ import { z } from 'zod'
 
 export const worldbookNormalizedRuleSchema = z.object({
   field: z.string(),
-  action: z.enum(['mapped', 'ignored']),
+  action: z.enum(['mapped', 'ignored', 'risk']),
   detail: z.string().optional(),
 })
 
@@ -85,6 +85,29 @@ export const worldbookSchema = z
 export type WorldbookConfig = z.infer<typeof worldbookSchema>
 export type Worldbook = z.infer<typeof worldbookBookSchema>
 export type WorldbookEntry = z.infer<typeof worldbookEntrySchema>
+
+// Imported behavior the gateway cannot reproduce is marked "risk" and the
+// entry arrives disabled. The user reviews it once, then confirms the
+// supported subset.
+export function worldbookRiskFields(entry: WorldbookEntry): string[] {
+  return (entry.normalized_rules ?? [])
+    .filter((rule) => rule.action === 'risk')
+    .map((rule) => rule.field)
+}
+
+export function worldbookNeedsReview(entry: WorldbookEntry): boolean {
+  return !!entry.issues?.length || worldbookRiskFields(entry).length > 0
+}
+
+export function worldbookConfirmEntry(entry: WorldbookEntry): WorldbookEntry {
+  return {
+    ...entry,
+    enabled: true,
+    normalized_rules: (entry.normalized_rules ?? []).filter(
+      (rule) => rule.action !== 'risk'
+    ),
+  }
+}
 export type WorldbookPlacement = {
   mode: 'inherit' | 'system_prelude' | 'before_last_user' | 'at_depth'
   index: number

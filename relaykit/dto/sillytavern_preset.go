@@ -44,8 +44,11 @@ type SillyTavernToolProtocol struct {
 	ClientFinal      string   `json:"client_final,omitempty"`
 	PresetFinal      string   `json:"preset_final,omitempty"`
 	Auxiliary        []string `json:"auxiliary,omitempty"`
+	Action           []string `json:"action,omitempty"`
+	Content          []string `json:"content,omitempty"`
 	ResponseTarget   string   `json:"response_target,omitempty"`   // auto, text, json, tool
 	ResponseArgument string   `json:"response_argument,omitempty"` // optional tool argument path
+	PhasePolicy      string   `json:"phase_policy,omitempty"`      // request (default), always_auxiliary, always_final, disabled
 }
 
 // SillyTavernToolText is a declarative transport, not an executable preset
@@ -294,10 +297,30 @@ func validateSillyTavernToolProtocol(protocol *SillyTavernToolProtocol) error {
 		}
 		seen[name] = true
 	}
+	for field, names := range map[string][]string{
+		"action":  protocol.Action,
+		"content": protocol.Content,
+	} {
+		if len(names) > 64 {
+			return fmt.Errorf("sillytavern_preset tool_protocol allows at most 64 %s tools", field)
+		}
+		seen := make(map[string]bool, len(names))
+		for _, name := range names {
+			if !validSillyTavernToolName(name) || seen[name] {
+				return fmt.Errorf("sillytavern_preset tool_protocol %s names must be unique and use 1 to 64 ASCII letters, digits, underscores, or hyphens", field)
+			}
+			seen[name] = true
+		}
+	}
 	switch protocol.ResponseTarget {
 	case "", "auto", "text", "json", "tool":
 	default:
 		return fmt.Errorf("sillytavern_preset tool_protocol response_target must be auto, text, json, or tool")
+	}
+	switch protocol.PhasePolicy {
+	case "", "request", "always_auxiliary", "always_final", "disabled":
+	default:
+		return fmt.Errorf("sillytavern_preset tool_protocol phase_policy must be request, always_auxiliary, always_final, or disabled")
 	}
 	if protocol.ResponseArgument == "" {
 		return nil

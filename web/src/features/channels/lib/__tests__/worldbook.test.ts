@@ -22,7 +22,14 @@ import {
   CHANNEL_FORM_DEFAULT_VALUES,
   transformFormDataToCreatePayload,
 } from '../channel-form'
-import { parseWorldbook, worldbookSchema } from '../worldbook'
+import {
+  parseWorldbook,
+  worldbookConfirmEntry,
+  worldbookNeedsReview,
+  worldbookRiskFields,
+  worldbookSchema,
+  type WorldbookEntry,
+} from '../worldbook'
 
 test('channel save preserves worldbook separately from preset and other settings', () => {
   const config = {
@@ -113,6 +120,7 @@ test('normalized and invalid entry metadata survive parsing', () => {
               priority: 0,
               normalized_rules: [
                 { field: 'probability', action: 'ignored' },
+                { field: 'sticky', action: 'risk' },
               ],
               issues: ['regex'],
             },
@@ -121,6 +129,35 @@ test('normalized and invalid entry metadata survive parsing', () => {
       ],
     })
   )
-  expect(parsed?.books[0].entries[0].normalized_rules).toHaveLength(1)
+  expect(parsed?.books[0].entries[0].normalized_rules).toHaveLength(2)
   expect(parsed?.books[0].entries[0].issues).toEqual(['regex'])
+})
+
+test('risky imports stay disabled until the supported subset is confirmed', () => {
+  const entry: WorldbookEntry = {
+    id: 'entry',
+    name: 'Entry',
+    content: 'Lore',
+    enabled: false,
+    constant: false,
+    keys: ['moon'],
+    secondary_keys: [],
+    secondary_logic: 'none',
+    case_sensitive: false,
+    whole_words: false,
+    priority: 0,
+    normalized_rules: [
+      { field: 'sticky', action: 'risk' },
+      { field: 'position', action: 'ignored' },
+    ],
+  }
+  expect(worldbookRiskFields(entry)).toEqual(['sticky'])
+  expect(worldbookNeedsReview(entry)).toBe(true)
+  const confirmed = worldbookConfirmEntry(entry)
+  expect(confirmed.enabled).toBe(true)
+  expect(worldbookRiskFields(confirmed)).toEqual([])
+  expect(confirmed.normalized_rules).toEqual([
+    { field: 'position', action: 'ignored' },
+  ])
+  expect(worldbookNeedsReview(confirmed)).toBe(false)
 })

@@ -48,6 +48,7 @@ type presetProtocolPlan struct {
 	contract         string
 	responseTarget   string
 	responseArgument string
+	phasePolicy      string
 	validationMode   int
 	phase            string
 	terminal         dto.ToolCallRequest
@@ -65,6 +66,9 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	if protocol == nil || !protocol.Enabled {
 		return inactivePresetProtocolPlan(false, false, "tool_protocol_disabled"), 0, nil
 	}
+	if protocol.PhasePolicy == "disabled" {
+		return inactivePresetProtocolPlan(true, false, "tool_protocol_phase_disabled"), 0, nil
+	}
 	ownedOrder := orderedOwnedToolNames(compiled, response.ownedTools)
 	if protocol != nil {
 		if protocol.ClientFinal != "" {
@@ -78,6 +82,13 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		for _, name := range protocol.Auxiliary {
 			if _, ok := findToolByName(compiled.Tools, name); !ok {
 				return nil, 0, fmt.Errorf("sillytavern_preset tool_protocol auxiliary tool %q is not present in the compiled request", name)
+			}
+		}
+		for field, names := range map[string][]string{"action": protocol.Action, "content": protocol.Content} {
+			for _, name := range names {
+				if _, ok := findToolByName(compiled.Tools, name); !ok {
+					return nil, 0, fmt.Errorf("sillytavern_preset tool_protocol %s tool %q is not present in the compiled request", field, name)
+				}
 			}
 		}
 	}
@@ -175,6 +186,10 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	if !safe {
 		return inactivePresetProtocolPlan(true, true, "response_projection_unsafe"), 0, nil
 	}
+	if contract != presetProtocolContractTool && !presetProtocolHasResponseFormatter(response) &&
+		protocol != nil && protocol.ResponseArgument == "" {
+		return inactivePresetProtocolPlan(true, true, "response_projection_requires_explicit_argument"), 0, nil
+	}
 	// A preset terminal tool cannot be silently projected into a client tool
 	// whose schema was never exposed to the model.
 	if contract == presetProtocolContractTool && presetOwnedFinal {
@@ -196,6 +211,7 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		contract:         contract,
 		responseTarget:   protocolResponseTarget(protocol),
 		responseArgument: protocolResponseArgument(protocol),
+		phasePolicy:      protocolPhasePolicy(protocol),
 		validationMode:   1,
 		terminal:         terminal,
 	}
@@ -238,6 +254,18 @@ func protocolResponseArgument(protocol *dto.SillyTavernToolProtocol) string {
 		return ""
 	}
 	return protocol.ResponseArgument
+}
+
+func protocolPhasePolicy(protocol *dto.SillyTavernToolProtocol) string {
+	if protocol == nil || protocol.PhasePolicy == "" {
+		return "request"
+	}
+	return protocol.PhasePolicy
+}
+
+func presetProtocolHasResponseFormatter(response *PresetScriptResponse) bool {
+	return response != nil && response.settings != nil &&
+		response.settings.OutputPreprocessing.ToolCallFormatter.Enabled
 }
 
 func orderedOwnedToolNames(request *dto.GeneralOpenAIRequest, owned map[string]bool) []string {
@@ -441,6 +469,7 @@ func (p *presetProtocolPlan) fingerprint() string {
 		Enabled          bool
 		ResponseTarget   string
 		ResponseArgument string
+		PhasePolicy      string
 		Contract         string
 		ClientFinal      string
 		PresetFinal      string
@@ -451,6 +480,7 @@ func (p *presetProtocolPlan) fingerprint() string {
 		Enabled:          p.audit.Enabled,
 		ResponseTarget:   p.responseTarget,
 		ResponseArgument: p.responseArgument,
+		PhasePolicy:      p.phasePolicy,
 		Contract:         p.contract,
 		ClientFinal:      p.clientFinal,
 		PresetFinal:      p.presetFinal,
@@ -465,7 +495,16 @@ func (p *presetProtocolPlan) fingerprint() string {
 }
 
 func (p *presetProtocolPlan) phaseForMessages(messages []dto.Message) string {
-	if p == nil || len(p.auxiliary) == 0 {
+	if p == nil {
+		return presetProtocolPhaseFinal
+	}
+	switch p.phasePolicy {
+	case "always_auxiliary":
+		return presetProtocolPhaseAuxiliary
+	case "always_final":
+		return presetProtocolPhaseFinal
+	}
+	if len(p.auxiliary) == 0 {
 		return presetProtocolPhaseFinal
 	}
 	auxiliary := make(map[string]bool, len(p.auxiliary))
@@ -586,27 +625,20 @@ func (p *presetProtocolPlan) restoreTerminal(response *PresetScriptResponse, bod
 			}
 			return presetTerminalText(value, p.terminal), nil
 		}
-		if p.contract == presetProtocolContractJSON {
-			return encodePresetProtocolProjection(decoded)
-		}
-		// When no explicit contract is configured, detect a client-shaped JSON
-		// payload embedded in any string argument of the preset's terminal tool.
-		// Tool and argument names are never hardcoded here: the shape of the
-		// payload decides, and ambiguity falls through to the text formatter.
-		if p.contract == presetProtocolContractText && p.responseTarget == "auto" {
-			if projected, ok := presetProtocolAutoJSONArgument(decoded); ok {
-				return encodePresetProtocolProjection(projected)
-			}
-		}
-		if p.contract == presetProtocolContractText && response != nil &&
-			response.settings != nil && response.settings.OutputPreprocessing.ToolCallFormatter.Enabled {
+		if presetProtocolHasResponseFormatter(response) {
 			text, err := response.formatOwnedCalls(calls, stream, deadline)
 			if err != nil {
 				return "", err
 			}
+			if p.contract == presetProtocolContractJSON {
+				var decoded any
+				if err := common.UnmarshalPreservingNumbers([]byte(text), &decoded); err != nil {
+					return "", fmt.Errorf("preset protocol toolCallFormatter must return valid JSON for a JSON contract")
+				}
+			}
 			return text, nil
 		}
-		return presetTerminalText(decoded, p.terminal), nil
+		return "", fmt.Errorf("preset protocol response projection requires response_argument or toolCallFormatter")
 	}, deadline)
 }
 
@@ -647,176 +679,6 @@ func presetProtocolJSONArgument(value any) (any, error) {
 		return nil, fmt.Errorf("preset protocol response_argument must contain valid JSON")
 	}
 	return decoded, nil
-}
-
-func presetProtocolAutoJSONArgument(value any) (any, bool) {
-	object, ok := value.(map[string]any)
-	if !ok || len(object) == 0 {
-		return nil, false
-	}
-	var bare map[string]any
-	bareFound := 0
-	var wrapped map[string]any
-	wrappedFound := 0
-	body := ""
-	bodyFound := 0
-	for _, raw := range object {
-		text, ok := raw.(string)
-		if !ok {
-			continue
-		}
-		if decoded, ok := presetProtocolClientJSONObject(text); ok {
-			bare = decoded
-			bareFound++
-			continue
-		}
-		inner, wrappedOK := presetProtocolStripSingleTagWrapper(text)
-		if !wrappedOK {
-			continue
-		}
-		if decoded, ok := presetProtocolClientJSONObject(inner); ok {
-			wrapped = decoded
-			wrappedFound++
-			continue
-		}
-		// A tag such as <game>...</game> can hold the reply body on its own
-		// while the client envelope (emotion, options, ...) sits in another
-		// argument. Keep the inner text so it can be merged below.
-		if trimmed := strings.TrimSpace(inner); trimmed != "" {
-			body = trimmed
-			bodyFound++
-		}
-	}
-	var candidate map[string]any
-	switch {
-	case bareFound == 1:
-		candidate = bare
-	case bareFound == 0 && wrappedFound == 1:
-		candidate = wrapped
-	default:
-		return nil, false
-	}
-	textKey, hasText := presetProtocolResponseTextField(candidate)
-	if hasText {
-		return candidate, true
-	}
-	// The model split the reply: the envelope carries everything except the
-	// body, which arrived wrapped in a tag. Rebuild one client JSON object
-	// without hardcoding any preset, tool, or argument name.
-	if bodyFound != 1 {
-		return nil, false
-	}
-	merged := make(map[string]any, len(candidate)+1)
-	for key, item := range candidate {
-		merged[key] = item
-	}
-	merged[textKey] = body
-	return merged, true
-}
-
-func presetProtocolClientJSONObject(text string) (map[string]any, bool) {
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "{") {
-		return nil, false
-	}
-	var decoded map[string]any
-	if common.UnmarshalPreservingNumbers([]byte(trimmed), &decoded) != nil {
-		return nil, false
-	}
-	if !presetProtocolLooksLikeClientResponse(decoded) {
-		return nil, false
-	}
-	return decoded, true
-}
-
-// presetProtocolStripSingleTagWrapper removes one surrounding XML-like tag
-// whose name is not hardcoded, so any "<tag>payload</tag>" shape is handled the
-// same way. Tags with attributes or nested markup are left untouched.
-func presetProtocolStripSingleTagWrapper(text string) (string, bool) {
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "<") {
-		return "", false
-	}
-	openEnd := strings.Index(trimmed, ">")
-	if openEnd <= 1 {
-		return "", false
-	}
-	name := trimmed[1:openEnd]
-	if name == "" || strings.ContainsAny(name, "<> \t\r\n/") {
-		return "", false
-	}
-	closeTag := "</" + name + ">"
-	if !strings.HasSuffix(trimmed, closeTag) {
-		return "", false
-	}
-	return strings.TrimSpace(trimmed[openEnd+1 : len(trimmed)-len(closeTag)]), true
-}
-
-// presetProtocolAutoJSONProjection inspects the preset-owned tool calls in a
-// response that never reached an activated protocol plan and projects a
-// client-shaped JSON payload embedded in one argument. It is deliberately
-// conservative: exactly one owned call and exactly one JSON object carrying a
-// response-like field, otherwise the caller keeps the existing pipeline.
-func presetProtocolAutoJSONProjection(calls []*presetToolTextCall) (string, bool, error) {
-	if len(calls) != 1 {
-		return "", false, nil
-	}
-	var decoded any
-	if err := common.UnmarshalPreservingNumbers([]byte(calls[0].arguments.String()), &decoded); err != nil {
-		return "", false, nil
-	}
-	projected, ok := presetProtocolAutoJSONArgument(decoded)
-	if !ok {
-		return "", false, nil
-	}
-	text, err := encodePresetProtocolProjection(projected)
-	if err != nil {
-		return "", false, err
-	}
-	return text, true, nil
-}
-
-var presetProtocolTextFields = []string{"content", "message", "text", "output", "response", "reply"}
-
-// presetProtocolEnvelopeFields identify a client reply object that carries
-// structured metadata even when its text field is absent or empty, so the
-// adapter can merge a separately wrapped body back into it.
-var presetProtocolEnvelopeFields = []string{"emotion", "control", "observe", "intent", "opts", "options", "choices", "state", "mood"}
-
-// presetProtocolResponseTextField returns the effective text field name and
-// whether it already holds a non-empty string.
-func presetProtocolResponseTextField(value map[string]any) (string, bool) {
-	field := ""
-	for _, key := range presetProtocolTextFields {
-		raw, ok := value[key]
-		if !ok {
-			continue
-		}
-		if field == "" {
-			field = key
-		}
-		if text, ok := raw.(string); ok && strings.TrimSpace(text) != "" {
-			return key, true
-		}
-	}
-	if field == "" {
-		field = "content"
-	}
-	return field, false
-}
-
-func presetProtocolLooksLikeClientResponse(value map[string]any) bool {
-	for _, key := range presetProtocolTextFields {
-		if _, ok := value[key]; ok {
-			return true
-		}
-	}
-	for _, key := range presetProtocolEnvelopeFields {
-		if _, ok := value[key]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func presetTerminalText(value any, terminal dto.ToolCallRequest) string {

@@ -41,6 +41,7 @@ import { importWorldbook } from '../api'
 import {
   createWorldbookConfig,
   parseWorldbook,
+  worldbookConfirmEntry,
   worldbookSchema,
   type Worldbook,
   type WorldbookConfig,
@@ -352,6 +353,16 @@ function ScopedWorldbookSettings(props: Props) {
                               ...book,
                               entries: book.entries.map((item) =>
                                 item.id === next.id ? next : item
+                              ),
+                            })
+                          }
+                          onEnableAll={(review) =>
+                            updateBook({
+                              ...book,
+                              entries: book.entries.map((item) =>
+                                review.some((entry) => entry.id === item.id)
+                                  ? worldbookConfirmEntry(item)
+                                  : item
                               ),
                             })
                           }

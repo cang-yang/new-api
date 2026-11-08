@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   StaticDataTable,
   type StaticDataTableColumn,
@@ -34,7 +35,13 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 
-import type { Worldbook, WorldbookEntry } from '../lib/worldbook'
+import {
+  worldbookConfirmEntry,
+  worldbookNeedsReview,
+  worldbookRiskFields,
+  type Worldbook,
+  type WorldbookEntry,
+} from '../lib/worldbook'
 import { worldbookPositionLabels } from '../lib/worldbook-placement'
 import { WorldbookImportSummary } from './worldbook-import-summary'
 
@@ -43,19 +50,19 @@ export function WorldbookEntryOverview(props: {
   active: boolean
   disabled?: boolean
   onChange: (entry: WorldbookEntry) => void
+  onEnableAll?: (entries: WorldbookEntry[]) => void
   onEdit: (id: string) => void
 }) {
   const { t } = useTranslation()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
+  const [pending, setPending] = useState<WorldbookEntry | null>(null)
   const enabled = props.book.entries.filter((entry) => entry.enabled).length
-  const attention = props.book.entries.filter(
-    (entry) => !!entry.issues?.length
-  ).length
+  const attention = props.book.entries.filter(worldbookNeedsReview).length
   const entries = props.book.entries.filter((entry) => {
     if (filter === 'enabled' && !entry.enabled) return false
     if (filter === 'disabled' && entry.enabled) return false
-    if (filter === 'attention' && !entry.issues?.length) return false
+    if (filter === 'attention' && !worldbookNeedsReview(entry)) return false
     const text = [entry.name, ...entry.keys].join('\n').toLowerCase()
     return text.includes(query.trim().toLowerCase())
   })
@@ -75,10 +82,19 @@ export function WorldbookEntryOverview(props: {
           >
             {entry.name || entry.id}
           </Button>
-          {!!entry.issues?.length && (
+          {entry.issues?.length ? (
             <p className='text-destructive text-xs' data-table-text='secondary'>
               {t('Needs attention')}
             </p>
+          ) : (
+            worldbookRiskFields(entry).length > 0 && (
+              <p
+                className='text-xs text-amber-600 dark:text-amber-500'
+                data-table-text='secondary'
+              >
+                {t('Needs review')}
+              </p>
+            )
           )}
         </div>
       ),
@@ -93,9 +109,13 @@ export function WorldbookEntryOverview(props: {
             aria-label={t('Enable {{name}}', { name: entry.name || entry.id })}
             checked={entry.enabled}
             disabled={props.disabled}
-            onCheckedChange={(value) =>
+            onCheckedChange={(value) => {
+              if (value && worldbookRiskFields(entry).length) {
+                setPending(entry)
+                return
+              }
               props.onChange({ ...entry, enabled: value })
-            }
+            }}
           />
           <span className='text-xs' data-table-text='secondary'>
             {entry.enabled ? t('Enabled') : t('Disabled')}
@@ -138,6 +158,16 @@ export function WorldbookEntryOverview(props: {
       <WorldbookImportSummary
         book={props.book}
         onReview={() => setFilter('attention')}
+        onEnableAll={
+          props.onEnableAll
+            ? () => {
+                const review = props.book.entries.filter(
+                  (entry) => worldbookRiskFields(entry).length > 0
+                )
+                if (review.length) props.onEnableAll?.(review)
+              }
+            : undefined
+        }
       />
       <div className='flex shrink-0 flex-wrap items-center gap-2'>
         <p className='mr-auto text-sm font-medium'>
@@ -199,6 +229,26 @@ export function WorldbookEntryOverview(props: {
           emptyContent={t('No entries found')}
         />
       </div>
+      <ConfirmDialog
+        open={pending !== null}
+        onOpenChange={(next) => {
+          if (!next) setPending(null)
+        }}
+        title={t('Enable {{name}}?', {
+          name: pending?.name || pending?.id || '',
+        })}
+        desc={t(
+          'This entry uses options the gateway cannot reproduce: {{fields}}. Enabling it keeps only the supported parts and may widen when it triggers. The original import is kept.',
+          {
+            fields: pending ? worldbookRiskFields(pending).join(', ') : '',
+          }
+        )}
+        confirmText={t('Confirm and enable')}
+        handleConfirm={() => {
+          if (pending) props.onChange(worldbookConfirmEntry(pending))
+          setPending(null)
+        }}
+      />
     </section>
   )
 }

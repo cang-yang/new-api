@@ -12,6 +12,9 @@ func TestSillyTavernToolProtocolValidation(t *testing.T) {
 		ToolProtocol: &SillyTavernToolProtocol{
 			ClientFinal: "client_reply",
 			Auxiliary:   []string{"context"},
+			Action:      []string{"lookup"},
+			Content:     []string{"reply_payload"},
+			PhasePolicy: "always_final",
 		},
 	}
 	_, err := valid.ParseAndValidate()
@@ -50,4 +53,14 @@ func TestSillyTavernToolProtocolValidation(t *testing.T) {
 	}
 	_, err = invalidClientArgument.ParseAndValidate()
 	require.ErrorContains(t, err, "response_argument requires a preset_final")
+
+	invalidPhasePolicy := *valid
+	invalidPhasePolicy.ToolProtocol = &SillyTavernToolProtocol{PhasePolicy: "sometimes"}
+	_, err = invalidPhasePolicy.ParseAndValidate()
+	require.ErrorContains(t, err, "tool_protocol phase_policy")
+
+	invalidContent := *valid
+	invalidContent.ToolProtocol = &SillyTavernToolProtocol{Content: []string{"reply_payload", "reply_payload"}}
+	_, err = invalidContent.ParseAndValidate()
+	require.ErrorContains(t, err, "tool_protocol content names")
 }

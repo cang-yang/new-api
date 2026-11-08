@@ -70,11 +70,13 @@ export function PresetScriptSettings(props: Props) {
   const tavernEnabled = props.config.script_runtime === 'tavern-v1'
   const toolProtocol = record(props.config.tool_protocol)
   const toolProtocolEnabled = toolProtocol.enabled === true
-  const auxiliaryTools = Array.isArray(toolProtocol.auxiliary)
-    ? toolProtocol.auxiliary.filter(
-        (name): name is string => typeof name === 'string'
-      )
-    : []
+  const toolNameList = (value: unknown) =>
+    Array.isArray(value)
+      ? value.filter((name): name is string => typeof name === 'string')
+      : []
+  const auxiliaryTools = toolNameList(toolProtocol.auxiliary)
+  const actionTools = toolNameList(toolProtocol.action)
+  const contentTools = toolNameList(toolProtocol.content)
   const scripts = discoverPresetScripts(props.config)
   const hasScripts = scripts.some((script) => script.enabled)
   const [preparing, setPreparing] = useState(false)
@@ -271,7 +273,7 @@ export function PresetScriptSettings(props: Props) {
           </FieldDescription>
           <FieldDescription>
             {t(
-              'Coordinates with a declared client tool contract, and still restores a client-shaped JSON reply when the client only asks for a format in text.'
+              'Only coordinates tools the client declares in the request. A format that appears only in prompt text is never guessed.'
             )}
           </FieldDescription>
           {toolProtocolEnabled && (enabled || tavernEnabled) ? (
@@ -332,7 +334,10 @@ export function PresetScriptSettings(props: Props) {
                       )}
                     </FieldDescription>
                   </Field>
-                  <Field className='sm:col-span-2' data-disabled={props.disabled}>
+                  <Field
+                    className='sm:col-span-2'
+                    data-disabled={props.disabled}
+                  >
                     <FieldLabel htmlFor={`${id}-auxiliary-tools`}>
                       {t('Auxiliary tools')}
                     </FieldLabel>
@@ -353,6 +358,94 @@ export function PresetScriptSettings(props: Props) {
                     <FieldDescription>
                       {t(
                         'Comma-separated preset tools that run before the final response.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-action-tools`}>
+                      {t('Action tools')}
+                    </FieldLabel>
+                    <Input
+                      id={`${id}-action-tools`}
+                      value={actionTools.join(', ')}
+                      disabled={props.disabled}
+                      placeholder='roll_dice, move'
+                      onChange={(event) =>
+                        updateToolProtocol({
+                          action: event.target.value
+                            .split(',')
+                            .map((name) => name.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                    />
+                    <FieldDescription>
+                      {t(
+                        'Comma-separated preset tools that ask the client to act. They stay as tool calls and are never turned into reply text.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-content-tools`}>
+                      {t('Content tools')}
+                    </FieldLabel>
+                    <Input
+                      id={`${id}-content-tools`}
+                      value={contentTools.join(', ')}
+                      disabled={props.disabled}
+                      placeholder='reply'
+                      onChange={(event) =>
+                        updateToolProtocol({
+                          content: event.target.value
+                            .split(',')
+                            .map((name) => name.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                    />
+                    <FieldDescription>
+                      {t(
+                        'Comma-separated preset tools that only carry the final text or JSON. They are never sent to the client as tool calls.'
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field data-disabled={props.disabled}>
+                    <FieldLabel htmlFor={`${id}-phase-policy`}>
+                      {t('Tool coordination phase')}
+                    </FieldLabel>
+                    <Select
+                      value={toolProtocolText('phase_policy') || 'request'}
+                      disabled={props.disabled}
+                      onValueChange={(value) => {
+                        if (typeof value === 'string') {
+                          updateToolProtocol({ phase_policy: value })
+                        }
+                      }}
+                    >
+                      <SelectTrigger
+                        id={`${id}-phase-policy`}
+                        className='w-full'
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectItem value='request'>
+                          {t('Follow the current request')}
+                        </SelectItem>
+                        <SelectItem value='always_auxiliary'>
+                          {t('Always send auxiliary tools first')}
+                        </SelectItem>
+                        <SelectItem value='always_final'>
+                          {t('Always send the final tool')}
+                        </SelectItem>
+                        <SelectItem value='disabled'>
+                          {t('Do not coordinate tool calls')}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      {t(
+                        'Use a fixed phase only when the client does not resend earlier tool results.'
                       )}
                     </FieldDescription>
                   </Field>
@@ -400,7 +493,7 @@ export function PresetScriptSettings(props: Props) {
                     />
                     <FieldDescription>
                       {t(
-                        'Optional argument path that contains the client JSON or text.'
+                        'Required for text and JSON replies. Argument path that holds the client JSON or text.'
                       )}
                     </FieldDescription>
                   </Field>

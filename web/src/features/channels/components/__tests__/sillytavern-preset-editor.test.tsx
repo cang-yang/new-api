@@ -179,11 +179,15 @@ test('advanced tool protocol can project a preset terminal argument into the cli
   await user.click(
     screen.getByRole('button', { name: 'Advanced tool protocol' })
   )
-  await user.type(
-    screen.getByLabelText('Preset final tool'),
-    'soliumbra_reply'
-  )
+  await user.type(screen.getByLabelText('Preset final tool'), 'soliumbra_reply')
   await user.type(screen.getByLabelText('Auxiliary tools'), 'context')
+  await user.type(screen.getByLabelText('Action tools'), 'roll')
+  await user.type(screen.getByLabelText('Content tools'), 'reply_body')
+  await chooseSelectOption(
+    user,
+    screen.getByRole('combobox', { name: 'Tool coordination phase' }),
+    'Always send the final tool'
+  )
   await chooseSelectOption(
     user,
     screen.getByRole('combobox', { name: 'Response target' }),
@@ -198,6 +202,9 @@ test('advanced tool protocol can project a preset terminal argument into the cli
     enabled: true,
     preset_final: 'soliumbra_reply',
     auxiliary: ['context'],
+    action: ['roll'],
+    content: ['reply_body'],
+    phase_policy: 'always_final',
     response_target: 'json',
     response_argument: 'extra',
   })

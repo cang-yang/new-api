@@ -498,13 +498,13 @@ func TestPresetProtocolFingerprintIncludesResponseTarget(t *testing.T) {
 	response := &PresetScriptResponse{ownedTools: map[string]bool{"answer": true}}
 	autoPlan, _, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{
 		ToolProtocol: &dto.SillyTavernToolProtocol{
-			Enabled: true, PresetFinal: "answer", ResponseTarget: "auto",
+			Enabled: true, PresetFinal: "answer", ResponseTarget: "auto", ResponseArgument: "answer",
 		},
 	}, response)
 	require.NoError(t, err)
 	jsonPlan, _, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{
 		ToolProtocol: &dto.SillyTavernToolProtocol{
-			Enabled: true, PresetFinal: "answer", ResponseTarget: "json",
+			Enabled: true, PresetFinal: "answer", ResponseTarget: "json", ResponseArgument: "answer",
 		},
 	}, response)
 	require.NoError(t, err)
@@ -560,6 +560,41 @@ func TestPresetProtocolPlanUsesExplicitConfiguration(t *testing.T) {
 	assert.Equal(t, 1, mode)
 	assert.Equal(t, "client_reply", plan.clientFinal)
 	assert.Equal(t, []string{"context"}, plan.auxiliary)
+}
+
+func TestPresetProtocolPhasePolicyOverridesRequestHistory(t *testing.T) {
+	original := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{{
+			Type: "function", Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}
+	compiled := &dto.GeneralOpenAIRequest{
+		Tools: []dto.ToolCallRequest{
+			{Type: "function", Function: dto.FunctionRequest{Name: "reply", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: dto.FunctionRequest{Name: "context", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+	}
+	plan, _, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{
+		ToolProtocol: &dto.SillyTavernToolProtocol{
+			Enabled: true, ClientFinal: "reply", Auxiliary: []string{"context"}, PhasePolicy: "always_final",
+		},
+	}, &PresetScriptResponse{ownedTools: map[string]bool{"context": true}})
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	assert.Equal(t, presetProtocolPhaseFinal, plan.phaseForMessages(original.Messages))
+	assert.Equal(t, "always_final", plan.phasePolicy)
+
+	disabled, mode, err := buildPresetProtocolPlan(original, compiled, &dto.SillyTavernPresetConfig{
+		ToolProtocol: &dto.SillyTavernToolProtocol{
+			Enabled: true, ClientFinal: "reply", Auxiliary: []string{"context"}, PhasePolicy: "disabled",
+		},
+	}, &PresetScriptResponse{ownedTools: map[string]bool{"context": true}})
+	require.NoError(t, err)
+	require.NotNil(t, disabled)
+	assert.False(t, disabled.audit.Activated)
+	assert.Equal(t, 0, mode)
+	assert.Contains(t, disabled.audit.Diagnostics, "tool_protocol_phase_disabled")
 }
 
 func TestPresetProtocolPlanRejectsPresetOwnedClientFinal(t *testing.T) {
@@ -779,7 +814,9 @@ func TestPresetProtocolRequestProjectionJSONContract(t *testing.T) {
 	config := &dto.SillyTavernPresetConfig{
 		ScriptRuntime: "spreset-v1",
 		Preset:        scriptPresetConfig(t, map[string]any{}).Preset,
-		ToolProtocol:  &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "answer", ResponseTarget: "json"},
+		ToolProtocol: &dto.SillyTavernToolProtocol{
+			Enabled: true, PresetFinal: "answer", ResponseTarget: "json", ResponseArgument: "payload",
+		},
 	}
 	config.Preset, _ = common.Marshal(map[string]any{
 		"prompts": []any{map[string]any{"identifier": "reply", "content": "Use the declared format."}, map[string]any{"identifier": "chatHistory", "marker": true}},
@@ -809,7 +846,7 @@ func TestPresetProtocolTextResponseProjection(t *testing.T) {
 	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
 		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{think_nya:{type:"string"},game_content:{type:"string"}},required:["think_nya","game_content"]}, action:async()=>{throw new Error("must not run")}};`},
 	}})
-	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "game_reply", ResponseTarget: "text"}
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "game_reply", ResponseTarget: "text", ResponseArgument: "game_content"}
 	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}, SillyTavernContext{})
 	require.NoError(t, err)
 	recorder := httptest.NewRecorder()
@@ -831,7 +868,7 @@ func TestPresetProtocolStreamResponseProjection(t *testing.T) {
 	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
 		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{think_nya:{type:"string"},game_content:{type:"string"}},required:["think_nya","game_content"]}, action:async()=>{throw new Error("must not run")}};`},
 	}})
-	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "game_reply", ResponseTarget: "text"}
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "game_reply", ResponseTarget: "text", ResponseArgument: "game_content"}
 	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}, SillyTavernContext{})
 	require.NoError(t, err)
 	recorder := httptest.NewRecorder()
@@ -858,7 +895,7 @@ func TestPresetProtocolJSONResponseProjection(t *testing.T) {
 	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
 		"reply": map[string]any{"enabled": true, "code": `return {name:"answer", parameters:{type:"object",properties:{answer:{type:"string"},score:{type:"number"}}}, action:async()=>{throw new Error("must not run")}};`},
 	}})
-	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "answer", ResponseTarget: "json"}
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "answer", ResponseTarget: "json", ResponseArgument: "payload"}
 	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
 		Model:          "m",
 		ResponseFormat: &dto.ResponseFormat{Type: "json_object"},
@@ -871,7 +908,7 @@ func TestPresetProtocolJSONResponseProjection(t *testing.T) {
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
 	require.NotNil(t, filter)
-	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"answer","arguments":"{\"answer\":\"ok\",\"score\":7}"}}]},"finish_reason":"tool_calls"}]}`)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"answer","arguments":"{\"payload\":{\"answer\":\"ok\",\"score\":7}}"}}]},"finish_reason":"tool_calls"}]}`)
 	require.NoError(t, err)
 	require.NoError(t, filter.Finish(context, true))
 	assert.Contains(t, recorder.Body.String(), `"content":"{\"answer\":\"ok\",\"score\":7}"`)
@@ -913,7 +950,7 @@ func TestPresetProtocolJSONResponseProjectionFromArgument(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
 }
 
-func TestPresetProtocolAutoProjectsClientJSONFromOwnedToolArgument(t *testing.T) {
+func TestPresetProtocolProjectsExplicitClientJSONFromOwnedToolArgument(t *testing.T) {
 	config := scriptPresetConfig(t, map[string]any{
 		"ToolBindings": map[string]any{
 			"reply": map[string]any{"enabled": true, "code": `return {name:"soliumbra_reply", parameters:{type:"object",properties:{extra:{type:"string"},think_nya:{type:"string"},game_content:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
@@ -928,7 +965,12 @@ func TestPresetProtocolAutoProjectsClientJSONFromOwnedToolArgument(t *testing.T)
 			},
 		},
 	})
-	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true}
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{
+		Enabled:          true,
+		PresetFinal:      "soliumbra_reply",
+		ResponseTarget:   "json",
+		ResponseArgument: "extra",
+	}
 	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
 		Model:    "m",
 		Messages: []dto.Message{{Role: "user", Content: "go"}},
@@ -937,7 +979,7 @@ func TestPresetProtocolAutoProjectsClientJSONFromOwnedToolArgument(t *testing.T)
 	require.NotNil(t, trace.Protocol)
 	assert.True(t, trace.Protocol.Enabled)
 	assert.True(t, trace.Protocol.Activated)
-	assert.Equal(t, presetProtocolContractText, trace.Protocol.Contract)
+	assert.Equal(t, presetProtocolContractJSON, trace.Protocol.Contract)
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
@@ -956,11 +998,9 @@ func TestPresetProtocolAutoProjectsClientJSONFromOwnedToolArgument(t *testing.T)
 }
 
 // A client that expresses its reply contract only in prompt text declares no
-// machine-readable tool, so the protocol plan stays inactive. When a preset
-// owns several terminal/auxiliary tools the response may still carry the
-// client's JSON payload inside one tool argument; the gateway must project it
-// generically instead of leaking the display text.
-func TestPresetProtocolAutoProjectsClientJSONWhenPlanIsInactive(t *testing.T) {
+// machine-readable tool. An explicit preset contract can still project one
+// named argument without relying on response shape guessing.
+func TestPresetProtocolProjectsExplicitJSONWithMultipleOwnedTools(t *testing.T) {
 	preset, err := common.Marshal(map[string]any{
 		"prompts": []any{
 			map[string]any{"identifier": "chatHistory", "marker": true},
@@ -992,7 +1032,14 @@ func TestPresetProtocolAutoProjectsClientJSONWhenPlanIsInactive(t *testing.T) {
 	config := &dto.SillyTavernPresetConfig{
 		Preset:        preset,
 		ScriptRuntime: "spreset-v1",
-		ToolProtocol:  &dto.SillyTavernToolProtocol{Enabled: true},
+		ToolProtocol: &dto.SillyTavernToolProtocol{
+			Enabled:          true,
+			PresetFinal:      "soliumbra_reply",
+			Auxiliary:        []string{"context"},
+			ResponseTarget:   "json",
+			ResponseArgument: "extra",
+			PhasePolicy:      "always_final",
+		},
 	}
 	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
 		Model:    "m",
@@ -1001,8 +1048,8 @@ func TestPresetProtocolAutoProjectsClientJSONWhenPlanIsInactive(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, trace.Protocol)
 	assert.True(t, trace.Protocol.Enabled)
-	assert.False(t, trace.Protocol.Activated)
-	assert.Equal(t, "no_client_tool_contract", trace.Protocol.Reason)
+	assert.True(t, trace.Protocol.Activated)
+	assert.Equal(t, "projection_planned", trace.Protocol.Reason)
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
@@ -1020,10 +1067,9 @@ func TestPresetProtocolAutoProjectsClientJSONWhenPlanIsInactive(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
 }
 
-// The model can split one client reply across two preset arguments: the
-// structured envelope in one, the tagged body in another. The gateway must
-// serve a single client JSON object, never body text plus a partial envelope.
-func TestPresetProtocolMergesEnvelopeAndTaggedBodyWhenPlanIsInactive(t *testing.T) {
+// Invalid JSON in an explicitly selected argument must fail instead of leaking
+// the internal tool envelope or returning a half-converted response.
+func TestPresetProtocolRejectsInvalidExplicitJSONArgument(t *testing.T) {
 	preset, err := common.Marshal(map[string]any{
 		"prompts": []any{
 			map[string]any{"identifier": "chatHistory", "marker": true},
@@ -1055,7 +1101,14 @@ func TestPresetProtocolMergesEnvelopeAndTaggedBodyWhenPlanIsInactive(t *testing.
 	config := &dto.SillyTavernPresetConfig{
 		Preset:        preset,
 		ScriptRuntime: "spreset-v1",
-		ToolProtocol:  &dto.SillyTavernToolProtocol{Enabled: true},
+		ToolProtocol: &dto.SillyTavernToolProtocol{
+			Enabled:          true,
+			PresetFinal:      "soliumbra_reply",
+			Auxiliary:        []string{"context"},
+			ResponseTarget:   "json",
+			ResponseArgument: "extra",
+			PhasePolicy:      "always_final",
+		},
 	}
 	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
 		Model:    "m",
@@ -1063,8 +1116,7 @@ func TestPresetProtocolMergesEnvelopeAndTaggedBodyWhenPlanIsInactive(t *testing.
 	}, SillyTavernContext{})
 	require.NoError(t, err)
 	require.NotNil(t, trace.Protocol)
-	assert.False(t, trace.Protocol.Activated)
-	assert.Equal(t, "no_client_tool_contract", trace.Protocol.Reason)
+	assert.True(t, trace.Protocol.Activated)
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
@@ -1072,89 +1124,10 @@ func TestPresetProtocolMergesEnvelopeAndTaggedBodyWhenPlanIsInactive(t *testing.
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
 	require.NotNil(t, filter)
-	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"extra\":\"{\\\"emotion\\\":\\\"smile\\\",\\\"opts\\\":[\\\"a\\\",\\\"b\\\"]}\",\"think_nya\":\"hidden\",\"game_content\":\"<game>正文内容</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"extra\":\"not-json\",\"think_nya\":\"hidden\",\"game_content\":\"<game>正文内容</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
 	require.NoError(t, err)
-	require.NoError(t, filter.Finish(context, true))
-
-	var payload struct {
-		Choices []struct {
-			FinishReason string `json:"finish_reason"`
-			Message      struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
-	require.Len(t, payload.Choices, 1)
-	assert.Equal(t, "stop", payload.Choices[0].FinishReason)
-	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
-	var client map[string]any
-	require.NoError(t, common.UnmarshalPreservingNumbers([]byte(payload.Choices[0].Message.Content), &client))
-	assert.Equal(t, "正文内容", client["content"])
-	assert.Equal(t, "smile", client["emotion"])
-	assert.NotNil(t, client["opts"])
-}
-
-func TestPresetProtocolAutoJSONArgumentHandlesTagWrappers(t *testing.T) {
-	inner := `{"content":"visible reply","emotion":"smile"}`
-	tests := []struct {
-		name        string
-		value       map[string]any
-		want        bool
-		wantContent string
-	}{
-		{
-			name:        "bare argument",
-			value:       map[string]any{"extra": inner, "think_nya": "hidden", "game_content": "<game>plain display text</game>"},
-			want:        true,
-			wantContent: "visible reply",
-		},
-		{
-			name:        "tag wrapped argument",
-			value:       map[string]any{"extra": "none", "think_nya": "hidden", "game_content": "<game>" + inner + "</game>"},
-			want:        true,
-			wantContent: "visible reply",
-		},
-		{
-			name:        "envelope without text merges tagged body",
-			value:       map[string]any{"extra": `{"emotion":"smile","control":"none","observe":{"topic_goal_met":false},"intent":{"give_gift":false},"opts":["a","b","c","d"]}`, "think_nya": "hidden", "game_content": "<game>\n正文第一行\n“台词”\n</game>"},
-			want:        true,
-			wantContent: "正文第一行\n“台词”",
-		},
-		{
-			name:  "envelope without text and without body",
-			value: map[string]any{"extra": `{"emotion":"smile","opts":["a"]}`, "think_nya": "hidden"},
-			want:  false,
-		},
-		{
-			name:  "ambiguous bare arguments",
-			value: map[string]any{"extra": inner, "game_content": inner},
-			want:  false,
-		},
-		{
-			name:        "bare wins over wrapped",
-			value:       map[string]any{"extra": inner, "game_content": "<game>" + inner + "</game>"},
-			want:        true,
-			wantContent: "visible reply",
-		},
-		{
-			name:  "prose is not a contract",
-			value: map[string]any{"extra": "none", "game_content": "<game>plain display text</game>"},
-			want:  false,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, ok := presetProtocolAutoJSONArgument(map[string]any(test.value))
-			assert.Equal(t, test.want, ok)
-			if !test.want {
-				return
-			}
-			object, ok := got.(map[string]any)
-			require.True(t, ok)
-			assert.Equal(t, test.wantContent, object["content"])
-		})
-	}
+	require.ErrorContains(t, filter.Finish(context, true), "must contain valid JSON")
+	assert.Empty(t, recorder.Body.String(), "failed projection must not leak a half-converted response")
 }
 
 func TestPresetProtocolAuxiliaryResponsePassthrough(t *testing.T) {
