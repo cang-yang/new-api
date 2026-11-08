@@ -1020,6 +1020,81 @@ func TestPresetProtocolAutoProjectsClientJSONWhenPlanIsInactive(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
 }
 
+// The model can split one client reply across two preset arguments: the
+// structured envelope in one, the tagged body in another. The gateway must
+// serve a single client JSON object, never body text plus a partial envelope.
+func TestPresetProtocolMergesEnvelopeAndTaggedBodyWhenPlanIsInactive(t *testing.T) {
+	preset, err := common.Marshal(map[string]any{
+		"prompts": []any{
+			map[string]any{"identifier": "chatHistory", "marker": true},
+			map[string]any{"identifier": "reply", "content": "Reply using the declared format."},
+			map[string]any{"identifier": "context", "content": "Use the context tool when synchronization is required."},
+		},
+		"prompt_order": []any{map[string]any{"order": []any{
+			map[string]any{"identifier": "reply", "enabled": true},
+			map[string]any{"identifier": "context", "enabled": true},
+			map[string]any{"identifier": "chatHistory", "enabled": true},
+		}}},
+		"extensions": map[string]any{"SPreset": map[string]any{
+			"ToolBindings": map[string]any{
+				"reply":   map[string]any{"enabled": true, "code": `return {name:"soliumbra_reply", parameters:{type:"object",properties:{extra:{type:"string"},think_nya:{type:"string"},game_content:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+				"context": map[string]any{"enabled": true, "code": `return {name:"context", parameters:{type:"object",properties:{query:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+			},
+			"OutputPreprocessing": map[string]any{
+				"enabled":          true,
+				"consumeToolCalls": true,
+				"script":           `({buffer}) => ({output:buffer,hold:"",state:{accepted:true}})`,
+				"toolCallFormatter": map[string]any{
+					"enabled": true,
+					"script":  `({defaultText}) => defaultText`,
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	config := &dto.SillyTavernPresetConfig{
+		Preset:        preset,
+		ScriptRuntime: "spreset-v1",
+		ToolProtocol:  &dto.SillyTavernToolProtocol{Enabled: true},
+	}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model:    "m",
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	assert.False(t, trace.Protocol.Activated)
+	assert.Equal(t, "no_client_tool_contract", trace.Protocol.Reason)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"reply-1","type":"function","function":{"name":"soliumbra_reply","arguments":"{\"extra\":\"{\\\"emotion\\\":\\\"smile\\\",\\\"opts\\\":[\\\"a\\\",\\\"b\\\"]}\",\"think_nya\":\"hidden\",\"game_content\":\"<game>正文内容</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+
+	var payload struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.Len(t, payload.Choices, 1)
+	assert.Equal(t, "stop", payload.Choices[0].FinishReason)
+	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
+	var client map[string]any
+	require.NoError(t, common.UnmarshalPreservingNumbers([]byte(payload.Choices[0].Message.Content), &client))
+	assert.Equal(t, "正文内容", client["content"])
+	assert.Equal(t, "smile", client["emotion"])
+	assert.NotNil(t, client["opts"])
+}
+
 func TestPresetProtocolAutoJSONArgumentHandlesTagWrappers(t *testing.T) {
 	inner := `{"content":"visible reply","emotion":"smile"}`
 	tests := []struct {
@@ -1039,6 +1114,17 @@ func TestPresetProtocolAutoJSONArgumentHandlesTagWrappers(t *testing.T) {
 			value:       map[string]any{"extra": "none", "think_nya": "hidden", "game_content": "<game>" + inner + "</game>"},
 			want:        true,
 			wantContent: "visible reply",
+		},
+		{
+			name:        "envelope without text merges tagged body",
+			value:       map[string]any{"extra": `{"emotion":"smile","control":"none","observe":{"topic_goal_met":false},"intent":{"give_gift":false},"opts":["a","b","c","d"]}`, "think_nya": "hidden", "game_content": "<game>\n正文第一行\n“台词”\n</game>"},
+			want:        true,
+			wantContent: "正文第一行\n“台词”",
+		},
+		{
+			name:  "envelope without text and without body",
+			value: map[string]any{"extra": `{"emotion":"smile","opts":["a"]}`, "think_nya": "hidden"},
+			want:  false,
 		},
 		{
 			name:  "ambiguous bare arguments",

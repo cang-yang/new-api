@@ -654,34 +654,64 @@ func presetProtocolAutoJSONArgument(value any) (any, bool) {
 	if !ok || len(object) == 0 {
 		return nil, false
 	}
-	var exact map[string]any
-	exactFound := 0
+	var bare map[string]any
+	bareFound := 0
 	var wrapped map[string]any
 	wrappedFound := 0
+	body := ""
+	bodyFound := 0
 	for _, raw := range object {
 		text, ok := raw.(string)
 		if !ok {
 			continue
 		}
 		if decoded, ok := presetProtocolClientJSONObject(text); ok {
-			exact = decoded
-			exactFound++
+			bare = decoded
+			bareFound++
 			continue
 		}
-		if decoded, ok := presetProtocolWrappedClientJSONObject(text); ok {
+		inner, wrappedOK := presetProtocolStripSingleTagWrapper(text)
+		if !wrappedOK {
+			continue
+		}
+		if decoded, ok := presetProtocolClientJSONObject(inner); ok {
 			wrapped = decoded
 			wrappedFound++
+			continue
+		}
+		// A tag such as <game>...</game> can hold the reply body on its own
+		// while the client envelope (emotion, options, ...) sits in another
+		// argument. Keep the inner text so it can be merged below.
+		if trimmed := strings.TrimSpace(inner); trimmed != "" {
+			body = trimmed
+			bodyFound++
 		}
 	}
-	if exactFound == 1 {
-		return exact, true
+	var candidate map[string]any
+	switch {
+	case bareFound == 1:
+		candidate = bare
+	case bareFound == 0 && wrappedFound == 1:
+		candidate = wrapped
+	default:
+		return nil, false
 	}
-	// A tag such as <game>...</game> around the payload must not hide it, but a
-	// bare JSON object always wins when both shapes are present.
-	if exactFound == 0 && wrappedFound == 1 {
-		return wrapped, true
+	textKey, hasText := presetProtocolResponseTextField(candidate)
+	if hasText {
+		return candidate, true
 	}
-	return nil, false
+	// The model split the reply: the envelope carries everything except the
+	// body, which arrived wrapped in a tag. Rebuild one client JSON object
+	// without hardcoding any preset, tool, or argument name.
+	if bodyFound != 1 {
+		return nil, false
+	}
+	merged := make(map[string]any, len(candidate)+1)
+	for key, item := range candidate {
+		merged[key] = item
+	}
+	merged[textKey] = body
+	return merged, true
 }
 
 func presetProtocolClientJSONObject(text string) (map[string]any, bool) {
@@ -697,14 +727,6 @@ func presetProtocolClientJSONObject(text string) (map[string]any, bool) {
 		return nil, false
 	}
 	return decoded, true
-}
-
-func presetProtocolWrappedClientJSONObject(text string) (map[string]any, bool) {
-	inner, ok := presetProtocolStripSingleTagWrapper(text)
-	if !ok {
-		return nil, false
-	}
-	return presetProtocolClientJSONObject(inner)
 }
 
 // presetProtocolStripSingleTagWrapper removes one surrounding XML-like tag
@@ -754,8 +776,42 @@ func presetProtocolAutoJSONProjection(calls []*presetToolTextCall) (string, bool
 	return text, true, nil
 }
 
+var presetProtocolTextFields = []string{"content", "message", "text", "output", "response", "reply"}
+
+// presetProtocolEnvelopeFields identify a client reply object that carries
+// structured metadata even when its text field is absent or empty, so the
+// adapter can merge a separately wrapped body back into it.
+var presetProtocolEnvelopeFields = []string{"emotion", "control", "observe", "intent", "opts", "options", "choices", "state", "mood"}
+
+// presetProtocolResponseTextField returns the effective text field name and
+// whether it already holds a non-empty string.
+func presetProtocolResponseTextField(value map[string]any) (string, bool) {
+	field := ""
+	for _, key := range presetProtocolTextFields {
+		raw, ok := value[key]
+		if !ok {
+			continue
+		}
+		if field == "" {
+			field = key
+		}
+		if text, ok := raw.(string); ok && strings.TrimSpace(text) != "" {
+			return key, true
+		}
+	}
+	if field == "" {
+		field = "content"
+	}
+	return field, false
+}
+
 func presetProtocolLooksLikeClientResponse(value map[string]any) bool {
-	for _, key := range []string{"content", "message", "text", "output", "response", "reply"} {
+	for _, key := range presetProtocolTextFields {
+		if _, ok := value[key]; ok {
+			return true
+		}
+	}
+	for _, key := range presetProtocolEnvelopeFields {
 		if _, ok := value[key]; ok {
 			return true
 		}
