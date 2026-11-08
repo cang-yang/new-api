@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,16 +23,23 @@ type PresetCapabilityEntry struct {
 	Detail     string `json:"detail,omitempty"`
 }
 
+type PresetCapabilityNotice struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Detail   string `json:"detail,omitempty"`
+}
+
 type PresetCapabilityReport struct {
-	Name             string                  `json:"name"`
-	Mode             string                  `json:"mode"`
-	Model            string                  `json:"model"`
-	HasScriptRuntime bool                    `json:"has_script_runtime"`
-	ScriptRuntime    string                  `json:"script_runtime,omitempty"`
-	ToolNames        []string                `json:"tool_names"`
-	Capabilities     []string                `json:"capabilities"`
-	Warnings         []string                `json:"warnings"`
-	Entries          []PresetCapabilityEntry `json:"entries"`
+	Name             string                   `json:"name"`
+	Mode             string                   `json:"mode"`
+	Model            string                   `json:"model"`
+	HasScriptRuntime bool                     `json:"has_script_runtime"`
+	ScriptRuntime    string                   `json:"script_runtime,omitempty"`
+	ToolNames        []string                 `json:"tool_names"`
+	Capabilities     []string                 `json:"capabilities"`
+	Warnings         []string                 `json:"warnings"`
+	Notices          []PresetCapabilityNotice `json:"notices"`
+	Entries          []PresetCapabilityEntry  `json:"entries"`
 }
 
 const (
@@ -83,6 +91,7 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 			Capabilities: []string{"passthrough"},
 			ToolNames:    []string{},
 			Warnings:     []string{},
+			Notices:      []PresetCapabilityNotice{},
 			Entries:      []PresetCapabilityEntry{},
 		}, nil
 	}
@@ -119,6 +128,7 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		ToolNames:        []string{},
 		Capabilities:     []string{},
 		Warnings:         append([]string(nil), trace.Warnings...),
+		Notices:          classifyPresetCapabilityNotices(trace.Warnings),
 		Entries:          []PresetCapabilityEntry{},
 	}
 	if report.Name == "" {
@@ -200,6 +210,43 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		})
 	}
 	return report, nil
+}
+
+func classifyPresetCapabilityNotices(warnings []string) []PresetCapabilityNotice {
+	notices := make([]PresetCapabilityNotice, 0, len(warnings))
+	seen := map[string]bool{}
+	for _, warning := range warnings {
+		code := "preset_warning"
+		switch {
+		case strings.Contains(warning, "Browser scripts"):
+			code = "browser_scripts_unavailable"
+		case strings.Contains(warning, "unsupported macro"), strings.Contains(warning, "not mapped"):
+			code = "unsupported_macro_or_parameter"
+		case strings.Contains(warning, "exact SillyTavern mode"):
+			code = "exact_mode_unresolved"
+		case strings.Contains(warning, "worldbook"), strings.Contains(warning, "worldInfo"):
+			code = "worldbook_slot_unavailable"
+		case strings.Contains(warning, "chatHistory"):
+			code = "chat_history_slot_missing"
+		case strings.Contains(warning, "incoming system"):
+			code = "incoming_system_history"
+		case strings.Contains(warning, "not applicable"):
+			code = "prompt_not_applicable"
+		case strings.Contains(warning, "regex"):
+			code = "receive_regex_compatibility"
+		}
+		key := code + "\x00" + warning
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		notices = append(notices, PresetCapabilityNotice{
+			Code:     code,
+			Severity: "warning",
+			Detail:   warning,
+		})
+	}
+	return notices
 }
 
 func presetCapabilityCacheKey(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest) (string, error) {

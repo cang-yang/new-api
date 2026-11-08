@@ -47,9 +47,9 @@ jobs:
           go mod tidy
           git diff -- go.mod go.sum
           git diff --exit-code -- go.mod go.sum
-          go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident|ChannelRegexPreview|Worldbook' -count=1
+          go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident|ChannelRegexPreview|Worldbook|AdaptationRetry|SelectedChannelResponseRegex' -count=1
           go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay|ErrorIncident' -count=1
-          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime|Worldbook' -count=1
+          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime|Worldbook|PresetCapability|Adaptation' -count=1
           go test ./relay/common -run 'TestApplyParamOverride|TestCompileParamOverride|TestSimulateParamOverride|TestStreamStatus' -count=1
           go test ./relay/helper -run 'TestStreamScannerHandler' -count=1
           go test ./relay/channel/openai -run 'Empty|OaiStreamHandler|OaiResponsesStreamHandler' -count=1
@@ -89,6 +89,7 @@ jobs:
           src/features/channels/lib/__tests__/sillytavern-configuration.test.ts
           src/features/channels/lib/__tests__/worldbook.test.ts
           src/features/channels/components/__tests__/worldbook-settings.test.tsx
+          src/features/usage-logs/components/__tests__/audit-diagnostics.test.tsx
 
       - name: Typecheck frontend
         working-directory: web

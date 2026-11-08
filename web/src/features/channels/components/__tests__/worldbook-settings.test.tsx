@@ -110,6 +110,13 @@ test('preview uses backend results and disappears when input changes', async () 
             name: 'City',
             status: 'included',
             reason: 'included',
+            order: 1,
+            placement: {
+              mode: 'system_prelude',
+              index: 2,
+              role: 'system',
+              fallback: true,
+            },
           },
         ],
         warnings: [],
@@ -130,6 +137,9 @@ test('preview uses backend results and disappears when input changes', async () 
   expect(await screen.findByText('Selected background')).toBeVisible()
   expect(screen.getByText('Insertion position')).toBeVisible()
   expect(screen.getByText('System prelude')).toBeVisible()
+  expect(screen.getByText(/Message position 3 \(System\)/)).toBeVisible()
+  expect(screen.getByText(/Fallback applied/)).toBeVisible()
+  expect(screen.getByText(/#1 City/)).toBeVisible()
   expect(screen.queryByText(/system_prelude/)).not.toBeInTheDocument()
   expect(post).toHaveBeenCalledWith('/api/channel/worldbook/preview', {
     config,
@@ -334,7 +344,7 @@ test('enabling an entry with unsupported behavior asks once and keeps the suppor
   expect(toggle).toHaveAttribute('aria-checked', 'false')
   await user.click(toggle)
   expect(screen.getByRole('alertdialog')).toBeVisible()
-  expect(screen.getByText(/cannot reproduce: sticky/)).toBeVisible()
+  expect(screen.getByText(/Sticky activation/)).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Confirm and enable' }))
   await user.click(screen.getByRole('button', { name: 'Apply changes' }))
   expect(

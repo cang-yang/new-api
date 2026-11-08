@@ -27,8 +27,18 @@ import { Textarea } from '@/components/ui/textarea'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { previewWorldbook } from '../api'
-import type { WorldbookConfig } from '../lib/worldbook'
+import {
+  worldbookWarningLabel,
+  type WorldbookConfig,
+} from '../lib/worldbook'
 import { worldbookPositionLabels } from '../lib/worldbook-placement'
+
+const placementRoleKeys: Record<string, string> = {
+  assistant: 'Assistant',
+  user: 'User',
+  tool: 'Tool',
+  system: 'System',
+}
 
 export function WorldbookPreview(props: {
   config: WorldbookConfig
@@ -132,7 +142,7 @@ export function WorldbookPreview(props: {
         <div className='space-y-4' aria-live='polite'>
           {[...new Set(result.warnings)].map((warning) => (
             <p key={warning} role='status' className='text-sm break-words'>
-              {warning}
+              {t(worldbookWarningLabel(warning))}
             </p>
           ))}
           {result.placement && (
@@ -162,7 +172,12 @@ export function WorldbookPreview(props: {
                         worldbookPositionLabels[entry.placement.mode] ||
                           'Insertion position'
                       )}
-                      {` · ${t('Message position {{index}}', { index: entry.placement.index + 1 })}`}
+                      {` · ${t('Message position {{index}} ({{role}})', {
+                        index: entry.placement.index + 1,
+                        role: t(
+                          placementRoleKeys[entry.placement.role] ?? 'System'
+                        ),
+                      })}`}
                       {entry.placement.fallback
                         ? ` · ${t('Fallback applied')}`
                         : ''}

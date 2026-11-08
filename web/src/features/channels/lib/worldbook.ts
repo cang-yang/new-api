@@ -118,6 +118,73 @@ export function worldbookConfirmEntry(entry: WorldbookEntry): WorldbookEntry {
     ),
   }
 }
+
+export function worldbookFieldLabel(field: string): string {
+  const extension = field.startsWith('extensions.')
+    ? field.slice('extensions.'.length)
+    : ''
+  switch (extension || field) {
+    case 'position':
+      return 'Tavern insertion position'
+    case 'depth':
+      return 'Tavern insertion depth'
+    case 'display_index':
+      return 'Tavern display order'
+    case 'probability':
+    case 'useProbability':
+      return 'Random trigger probability'
+    case 'characterFilter':
+      return 'Character or scenario filter'
+    case 'group':
+    case 'groupWeight':
+    case 'groupScoring':
+      return 'Entry grouping'
+    case 'sticky':
+      return 'Sticky activation'
+    case 'cooldown':
+      return 'Cooldown'
+    case 'delay':
+      return 'Activation delay'
+    case 'role':
+      return 'Tavern role override'
+    default:
+      return 'Advanced Tavern option'
+  }
+}
+
+export function worldbookActionLabel(action: string): string {
+  switch (action) {
+    case 'mapped':
+      return 'Mapped'
+    case 'risk':
+      return 'Not supported'
+    case 'ignored':
+    default:
+      return 'Ignored'
+  }
+}
+
+export function worldbookIssueLabel(issue: string): string {
+  switch (issue) {
+    case 'regex':
+      return 'Invalid regular expression'
+    case 'selectiveLogic':
+      return 'Invalid secondary-key logic'
+    default:
+      return 'Invalid entry data'
+  }
+}
+
+export function worldbookWarningLabel(warning: string): string {
+  switch (warning) {
+    case 'Worldbook scan text was limited to 256 KiB':
+      return 'The scan was limited to the most recent 256 KiB of conversation text.'
+    case 'Worldbook matching stopped after its work limit':
+      return 'Worldbook matching stopped at the safety limit.'
+    default:
+      return 'The worldbook reported a compatibility issue.'
+  }
+}
 export type WorldbookPlacement = {
   mode: 'inherit' | 'system_prelude' | 'before_last_user' | 'at_depth'
   index: number

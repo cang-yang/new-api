@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"sync"
 	"time"
 
@@ -68,6 +69,7 @@ type AdaptationBasePlan struct {
 	Contract           ContractClass
 	ClientFinal        string
 	ProfileFingerprint string
+	RequestFingerprint string
 	Fingerprint        string
 }
 
@@ -246,6 +248,11 @@ func BuildBasePlan(profile *AdaptationProfile, original, matched *dto.GeneralOpe
 	if err != nil {
 		return nil, err
 	}
+	requestProfile := adaptationRequestProfile(profile, originalCopy.Model)
+	requestFingerprint, err := adaptationProfileFingerprint(requestProfile)
+	if err != nil {
+		return nil, err
+	}
 	requestHash := hashRequest(originalCopy)
 	metadataKey := adaptationPlanMetadataCacheKey(profileFingerprint, requestHash)
 	if metadata, ok := adaptationPlanMetadataCache.get(metadataKey); ok {
@@ -269,9 +276,65 @@ func BuildBasePlan(profile *AdaptationProfile, original, matched *dto.GeneralOpe
 		Contract:           contract,
 		ClientFinal:        clientFinal,
 		ProfileFingerprint: profileFingerprint,
+		RequestFingerprint: requestFingerprint,
 	}
 	plan.Fingerprint = adaptationPlanFingerprint(plan)
 	return plan, nil
+}
+
+// AdaptationRequestFingerprint exposes the deterministic fingerprint used to
+// reject cross-channel retries. It intentionally ignores receive-only rules.
+func AdaptationRequestFingerprint(profile *AdaptationProfile, model string) (string, error) {
+	return adaptationProfileFingerprint(adaptationRequestProfile(profile, model))
+}
+
+func adaptationRequestProfile(profile *AdaptationProfile, model string) *AdaptationProfile {
+	if profile == nil {
+		return nil
+	}
+	normalized := *profile
+	normalized.ReceiveRules = nil
+	normalized.SendRules = adaptationRequestTextFilter(profile.SendRules, model)
+	if normalized.Preset != nil {
+		if len(normalized.Preset.Models) > 0 && !slices.Contains(normalized.Preset.Models, model) {
+			normalized.Preset = nil
+		} else {
+			preset := *normalized.Preset
+			preset.Models = nil
+			// Embedded regex scripts are receive-only. Send-side embedded rules
+			// are gated by EnableSendRegex and stay represented below.
+			preset.EnableEmbeddedRegex = false
+			if !preset.EnableSendRegex {
+				preset.RegexOverrides = nil
+				preset.RegexFailurePolicy = ""
+			}
+			normalized.Preset = &preset
+		}
+	}
+	if normalized.Preset == nil && normalized.Worldbook == nil && normalized.SendRules == nil {
+		return nil
+	}
+	return &normalized
+}
+
+func adaptationRequestTextFilter(config *dto.ResponseTextFilter, model string) *dto.ResponseTextFilter {
+	if config == nil || config.Mode != "rules" || !config.EnableSend ||
+		len(config.Models) > 0 && !slices.Contains(config.Models, model) {
+		return nil
+	}
+	copy := *config
+	copy.Rules = nil
+	for _, rule := range config.Rules {
+		if !rule.Disabled && rule.Stage == "send" {
+			copy.Rules = append(copy.Rules, rule)
+		}
+	}
+	if len(copy.Rules) == 0 {
+		return nil
+	}
+	copy.Pattern, copy.StartTag, copy.EndTag, copy.MissingMatch = "", "", "", ""
+	copy.TrimCapture = false
+	return &copy
 }
 
 func ResolveAdaptationPlan(base *AdaptationBasePlan, protocol *presetProtocolPlan) *AdaptationResolvedPlan {

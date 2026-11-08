@@ -42,6 +42,7 @@ const stageLabels: Record<string, string> = {
   regex: 'Receive regex',
   response_started: 'Client writeback',
   writeback: 'Client writeback',
+  cross_channel_retry: 'Cross-channel retry',
 }
 
 const statusVariants: Record<string, StatusVariant> = {
@@ -50,6 +51,63 @@ const statusVariants: Record<string, StatusVariant> = {
   skipped: 'grey',
   fallback: 'yellow',
   failed: 'red',
+}
+
+const stageSummaryKeys: Record<string, Record<string, string>> = {
+  preflight: {
+    completed: 'Request contract classified and frozen',
+  },
+  worldbook: {
+    completed: 'Worldbook matching and insertion positions were calculated',
+    skipped: 'Worldbook is not active for this request',
+  },
+  preset: {
+    completed: 'The preset was assembled before the upstream request',
+    skipped: 'No preset was selected for this request',
+  },
+  tool_resolution: {
+    completed: 'Tool roles and the final response target were resolved',
+    fallback: 'Tool coordination safely fell back',
+    skipped: 'Tool coordination is not active for this request',
+  },
+  plan: {
+    frozen: 'The request plan was frozen after tool resolution',
+  },
+  response_validation: {
+    completed: 'The upstream response passed the frozen request plan',
+    failed: 'The upstream response did not match the frozen request plan',
+  },
+  response_restore: {
+    completed: 'The response was restored according to the request plan',
+    fallback: 'The raw response was preserved by the safe fallback policy',
+    failed: 'The response could not be restored safely',
+  },
+  output_processing: {
+    completed: 'Preset output processing completed',
+    failed: 'Preset output processing failed',
+  },
+  regex: {
+    completed: 'Receive-side regex processing completed',
+    fallback: 'The receive-side regex failure policy was applied',
+    skipped: 'No receive-side regex rule is active',
+    failed: 'Receive-side regex processing failed',
+  },
+  response_started: {
+    completed: 'The final client response was written',
+    failed: 'Client response writing failed',
+  },
+  writeback: {
+    completed: 'The final client response was written',
+    failed: 'The request ended before a successful client response',
+  },
+  cross_channel_retry: {
+    failed: 'Cross-channel retry was rejected because the request plan changed',
+  },
+}
+
+function diagnosticSummary(stage: DiagnosticStage, t: (key: string) => string) {
+  const key = stageSummaryKeys[stage.stage]?.[stage.status]
+  return t(key ?? 'Stage completed')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -116,7 +174,9 @@ export function AuditDiagnostics(props: { value: unknown }) {
           />
           {typeof schemaVersion === 'number' && (
             <StatusBadge
-              label={`schema v${schemaVersion}`}
+              label={t('Schema version {{version}}', {
+                version: schemaVersion,
+              })}
               size='sm'
               variant='neutral'
               copyable={false}
@@ -145,11 +205,9 @@ export function AuditDiagnostics(props: { value: unknown }) {
                   variant={statusVariants[stage.status] ?? 'neutral'}
                   copyable={false}
                 />
-                {stage.summary && (
-                  <p className='text-muted-foreground text-xs leading-5 [overflow-wrap:anywhere]'>
-                    {stage.summary}
-                  </p>
-                )}
+                <p className='text-muted-foreground text-xs leading-5 [overflow-wrap:anywhere]'>
+                  {diagnosticSummary(stage, t)}
+                </p>
                 {stage.details != null && (
                   <details className='min-w-0'>
                     <summary className='text-muted-foreground cursor-pointer text-xs'>

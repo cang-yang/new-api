@@ -85,6 +85,12 @@ func AttachAdaptationDiagnostic(c *gin.Context, diagnostic *AdaptationDiagnostic
 	c.Set(adaptationDiagnosticContextKey, diagnostic)
 }
 
+// RecordAdaptationStage appends one request-local decision to the diagnostic
+// timeline. It is safe to call when adaptation was never initialized.
+func RecordAdaptationStage(c *gin.Context, stage, status, summary string, details map[string]any) {
+	adaptationDiagnosticFromContext(c).Record(stage, status, summary, details)
+}
+
 func adaptationDiagnosticFromContext(c *gin.Context) *AdaptationDiagnostic {
 	if c == nil {
 		return nil

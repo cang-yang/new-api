@@ -87,6 +87,12 @@ export type PresetCapabilityEntry = {
   detail?: string
 }
 
+export type PresetCapabilityNotice = {
+  code: string
+  severity: string
+  detail?: string
+}
+
 export type PresetCapabilityReport = {
   name: string
   mode: string
@@ -96,6 +102,7 @@ export type PresetCapabilityReport = {
   tool_names: string[]
   capabilities: string[]
   warnings: string[]
+  notices?: PresetCapabilityNotice[]
   entries: PresetCapabilityEntry[]
 }
 

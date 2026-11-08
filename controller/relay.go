@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -274,7 +273,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if channel.Id != initialChannelID {
 			selected := channel.GetOtherSettings()
-			if reason := adaptationRetryMismatch(initialOtherSettings, selected, relayInfo.OriginModelName, relayInfo.RelayMode == relayconstant.RelayModeChatCompletions, sendRegexApplied); reason != "" {
+			if reason := adaptationRetryMismatch(initialBasePlan, selected, relayInfo.OriginModelName, relayInfo.RelayMode == relayconstant.RelayModeChatCompletions); reason != "" {
+				initialPlanFingerprint := ""
+				if initialBasePlan != nil {
+					initialPlanFingerprint = initialBasePlan.RequestFingerprint
+				}
+				service.RecordAdaptationStage(c, "cross_channel_retry", "failed", reason, map[string]any{
+					"initial_plan_fingerprint": initialPlanFingerprint,
+				})
 				newAPIError = types.NewErrorWithStatusCode(fmt.Errorf("%s", reason), types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 				break
 			}
@@ -359,68 +365,32 @@ func beginSelectedResponseTextFilter(c *gin.Context, model string) *service.Resp
 	return service.BeginResponseTextFilterWithPreset(c, settings.ResponseTextFilter, settings.SillyTavernPreset, model)
 }
 
-// Receive-only settings do not change the already prepared outbound request.
-func sendRegexRetrySettings(config *kitdto.ResponseTextFilter) *kitdto.ResponseTextFilter {
-	if config == nil || config.Mode != "rules" || !config.EnableSend {
-		return nil
-	}
-	copy := *config
-	copy.Rules = nil
-	for _, rule := range config.Rules {
-		if !rule.Disabled && rule.Stage == "send" {
-			copy.Rules = append(copy.Rules, rule)
-		}
-	}
-	if len(copy.Rules) == 0 {
-		return nil
-	}
-	copy.Pattern, copy.StartTag, copy.EndTag, copy.MissingMatch = "", "", "", ""
-	copy.TrimCapture = false
-	return &copy
-}
-
 // adaptationRetryMismatch reports a cross-channel retry that would silently
-// change the frozen request plan. Receive-only text rules are intentionally
-// excluded: the response filter is rebuilt for the selected channel and never
-// changes the outbound request or the tool plan.
-func adaptationRetryMismatch(initial, selected kitdto.ChannelOtherSettings, model string, chat bool, sendRegexApplied bool) string {
-	if chat {
-		if !reflect.DeepEqual(presetRequestRetrySettings(initial.SillyTavernPreset, model), presetRequestRetrySettings(selected.SillyTavernPreset, model)) {
-			return "cannot retry a chat request across channels with different SillyTavern request processors"
-		}
-		if !reflect.DeepEqual(worldbookRequestRetrySettings(initial.Worldbook), worldbookRequestRetrySettings(selected.Worldbook)) {
-			return "cannot retry a chat request across channels with different worldbook request processors"
-		}
+// change the frozen outbound plan. Receive-only text rules remain eligible:
+// the response filter is rebuilt for the selected channel and never changes
+// the request or tool projection already sent upstream.
+func adaptationRetryMismatch(initial *service.AdaptationBasePlan, selected kitdto.ChannelOtherSettings, model string, chat bool) string {
+	if !chat {
+		return ""
 	}
-	if sendRegexApplied || selected.ResponseTextFilter != nil && selected.ResponseTextFilter.EnableSend || selected.SillyTavernPreset != nil && selected.SillyTavernPreset.EnableSendRegex {
-		if !reflect.DeepEqual(sendRegexRetrySettings(initial.ResponseTextFilter), sendRegexRetrySettings(selected.ResponseTextFilter)) ||
-			!reflect.DeepEqual(presetRequestRetrySettings(initial.SillyTavernPreset, model), presetRequestRetrySettings(selected.SillyTavernPreset, model)) {
-			return "cannot retry across channels with different send-side regex settings"
-		}
+	initialFingerprint := ""
+	if initial != nil {
+		initialFingerprint = initial.RequestFingerprint
 	}
-	return ""
-}
-
-func presetRequestRetrySettings(config *kitdto.SillyTavernPresetConfig, model string) *kitdto.SillyTavernPresetConfig {
-	if config == nil || len(config.Models) > 0 && !slices.Contains(config.Models, model) {
-		return nil
+	selectedProfile := service.NewAdaptationProfile(
+		selected.SillyTavernPreset,
+		selected.Worldbook,
+		selected.ResponseTextFilter,
+		selected.ResponseTextFilter,
+	)
+	selectedFingerprint, err := service.AdaptationRequestFingerprint(selectedProfile, model)
+	if err != nil {
+		return "cannot verify whether the selected channel preserves the frozen adaptation plan"
 	}
-	copy := *config
-	copy.Models = nil // Both applicable configs act on the same current model.
-	copy.EnableEmbeddedRegex = false
-	if !copy.EnableSendRegex {
-		copy.RegexOverrides = nil
-		copy.RegexFailurePolicy = ""
+	if initialFingerprint == selectedFingerprint {
+		return ""
 	}
-	return &copy
-}
-
-func worldbookRequestRetrySettings(config *kitdto.WorldbookConfig) *kitdto.WorldbookConfig {
-	if config == nil || !config.Enabled {
-		return nil
-	}
-	copy := *config
-	return &copy
+	return "cannot retry a chat request across channels with a different frozen adaptation plan"
 }
 
 func applySelectedRequestTextRegex(c *gin.Context, request kitdto.Request, modelName string) (kitdto.Request, error) {

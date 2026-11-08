@@ -54,6 +54,40 @@ function capabilityEntryLabel(
   return t('Will not run')
 }
 
+const capabilityKeys: Record<string, string> = {
+  'prompt assembly': 'Prompt assembly',
+  'script runtime': 'Script runtime',
+  'tool text transport': 'Tool text transport',
+  'tool protocol coordination': 'Tool protocol coordination',
+  'output preprocessing': 'Output preprocessing',
+  'tool call formatter': 'Tool call formatter',
+  passthrough: 'Passthrough',
+}
+
+const scriptRuntimeKeys: Record<string, string> = {
+  'spreset-v1': 'Preset settings runtime',
+  'tavern-v1': 'Bundled script runtime',
+}
+
+const noticeKeys: Record<string, string> = {
+  browser_scripts_unavailable: 'Browser scripts are preserved but not executed.',
+  unsupported_macro_or_parameter:
+    'Some preset macros or parameters have no equivalent mapping.',
+  exact_mode_unresolved:
+    'Exact mode cannot resolve every preset macro; the request may need a compatible mode.',
+  worldbook_slot_unavailable:
+    'The preset has no worldbook slot, so worldbook content will use the fallback position.',
+  chat_history_slot_missing:
+    'The preset has no chat-history slot; client history is appended for compatibility.',
+  incoming_system_history:
+    'Incoming system messages remain ordinary chat history.',
+  prompt_not_applicable:
+    'Some preset entries do not apply to normal generation.',
+  receive_regex_compatibility:
+    'Some receive-side regex rules are not compatible with the gateway.',
+  preset_warning: 'The preset reported a compatibility warning.',
+}
+
 // PresetAdapterOverview is the first layer from the spec: it answers whether
 // the adaptation actually runs and what the client will finally receive.
 export function PresetAdapterOverview(props: {
@@ -161,13 +195,17 @@ export function PresetCapabilityReportSettings(props: {
           <div className='flex flex-wrap items-center gap-2 text-sm'>
             <span className='font-medium'>{report.name}</span>
             {report.script_runtime ? (
-              <Badge variant='secondary'>{report.script_runtime}</Badge>
+              <Badge variant='secondary'>
+                {t(
+                  scriptRuntimeKeys[report.script_runtime] ?? 'Script runtime'
+                )}
+              </Badge>
             ) : (
               <Badge variant='outline'>{t('No script runtime')}</Badge>
             )}
             {report.capabilities.map((capability) => (
               <Badge key={capability} variant='outline'>
-                {capability}
+                {t(capabilityKeys[capability] ?? 'Other preset capability')}
               </Badge>
             ))}
           </div>
@@ -183,9 +221,29 @@ export function PresetCapabilityReportSettings(props: {
               <AlertTitle>{t('Needs attention')}</AlertTitle>
               <AlertDescription>
                 <ul className='list-disc space-y-1 pl-4'>
-                  {report.warnings.map((warning) => (
-                    <li key={warning} className='break-words'>
-                      {warning}
+                  {(report.notices?.length
+                    ? report.notices
+                    : report.warnings.map((warning) => ({
+                        code: 'preset_warning',
+                        severity: 'warning',
+                        detail: warning,
+                      }))
+                  ).map((notice) => (
+                    <li
+                      key={`${notice.code}:${notice.detail ?? ''}`}
+                      className='break-words'
+                    >
+                      {t(noticeKeys[notice.code] ?? 'preset_warning')}
+                      {notice.detail && (
+                        <details className='mt-1'>
+                          <summary className='cursor-pointer text-xs opacity-80'>
+                            {t('Technical details')}
+                          </summary>
+                          <code className='mt-1 block text-xs break-all'>
+                            {notice.detail}
+                          </code>
+                        </details>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -21,6 +21,8 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 
 import {
+  worldbookActionLabel,
+  worldbookFieldLabel,
   worldbookRiskFields,
   type Worldbook,
   type WorldbookEntry,
@@ -117,7 +119,11 @@ export function WorldbookEntryNotes(props: { entry: WorldbookEntry }) {
           <p className='text-amber-600 dark:text-amber-500'>
             {t(
               'This entry was imported disabled because it uses behavior the gateway cannot reproduce: {{fields}}.',
-              { fields: risky.map((rule) => rule.field).join(', ') }
+              {
+                fields: risky
+                  .map((rule) => t(worldbookFieldLabel(rule.field)))
+                  .join('、'),
+              }
             )}
           </p>
         )}
@@ -145,8 +151,8 @@ export function WorldbookEntryNotes(props: { entry: WorldbookEntry }) {
           <ul className='mt-2 space-y-1 break-words'>
             {rules.map((rule) => (
               <li key={`${rule.field}:${rule.action}:${rule.detail}`}>
-                {rule.field} · {rule.action}
-                {rule.detail ? ` · ${rule.detail}` : ''}
+                {t(worldbookFieldLabel(rule.field))} ·{' '}
+                {t(worldbookActionLabel(rule.action))}
               </li>
             ))}
           </ul>

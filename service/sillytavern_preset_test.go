@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestSillyTavernScriptRuntimeRequestHook(t *testing.T) {
@@ -648,6 +649,38 @@ func TestPresetProtocolContentToolsRestoreOnlyTheDeclaredTerminal(t *testing.T) 
 	assert.NotContains(t, string(restored), `game_reply`)
 }
 
+func TestPresetProtocolTerminalRestoresEachChoiceWithMetadata(t *testing.T) {
+	plan := &presetProtocolPlan{
+		audit:            PresetProtocolAudit{Activated: true},
+		phase:            presetProtocolPhaseFinal,
+		contract:         presetProtocolContractText,
+		finalTool:        "game_reply",
+		responseArgument: "game_content",
+	}
+	body := []byte(`{
+		"id":"chatcmpl-multi",
+		"choices":[
+			{"index":0,"message":{"reasoning_content":"keep-zero","tool_calls":[{"id":"zero","type":"function","function":{"name":"game_reply","arguments":"{\"game_content\":\"zero body\"}"}}]},"finish_reason":"tool_calls","logprobs":{"content":[]}},
+			{"index":1,"message":{"reasoning_content":"keep-one","tool_calls":[{"id":"one","type":"function","function":{"name":"game_reply","arguments":"{\"game_content\":\"one body\"}"}}]},"finish_reason":"tool_calls","unknown_choice":"retained"}
+		],
+		"usage":{"total_tokens":23},
+		"unknown_top":"retained"
+	}`)
+	restored, err := plan.restoreTerminal(&PresetScriptResponse{}, body, false, time.Now().Add(time.Second))
+	require.NoError(t, err)
+	assert.Equal(t, "zero body", gjson.GetBytes(restored, "choices.0.message.content").String())
+	assert.Equal(t, "one body", gjson.GetBytes(restored, "choices.1.message.content").String())
+	assert.Equal(t, "keep-zero", gjson.GetBytes(restored, "choices.0.message.reasoning_content").String())
+	assert.Equal(t, "keep-one", gjson.GetBytes(restored, "choices.1.message.reasoning_content").String())
+	assert.Equal(t, "stop", gjson.GetBytes(restored, "choices.0.finish_reason").String())
+	assert.Equal(t, "stop", gjson.GetBytes(restored, "choices.1.finish_reason").String())
+	assert.Equal(t, int64(23), gjson.GetBytes(restored, "usage.total_tokens").Int())
+	assert.Equal(t, "retained", gjson.GetBytes(restored, "unknown_top").String())
+	assert.Equal(t, "retained", gjson.GetBytes(restored, "choices.1.unknown_choice").String())
+	assert.False(t, gjson.GetBytes(restored, "choices.0.message.tool_calls").Exists())
+	assert.False(t, gjson.GetBytes(restored, "choices.1.message.tool_calls").Exists())
+}
+
 func toolNames(tools []dto.ToolCallRequest) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
@@ -1122,6 +1155,44 @@ func TestPresetProtocolJSONResponseProjectionFromArgument(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), `"tool_calls"`)
 	assert.NotContains(t, recorder.Body.String(), `plain display text`)
 	assert.Contains(t, recorder.Body.String(), `"total_tokens":7`)
+}
+
+func TestPresetProtocolProjectionRunsBeforeReceiveRegex(t *testing.T) {
+	config := scriptPresetConfig(t, map[string]any{"ToolBindings": map[string]any{
+		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{game_content:{type:"string"}}}, action:async()=>{throw new Error("must not run")}};`},
+	}})
+	config.ToolProtocol = &dto.SillyTavernToolProtocol{
+		Enabled:          true,
+		PresetFinal:      "game_reply",
+		ResponseTarget:   "text",
+		ResponseArgument: "game_content",
+	}
+	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+		Model:    "m",
+		Messages: []dto.Message{{Role: "user", Content: "go"}},
+	}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.Protocol)
+	require.True(t, trace.Protocol.Activated)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	AttachPresetScriptResponse(context, trace)
+	defer ClosePresetScriptResponse(context)
+	filter := BeginResponseTextFilterWithPreset(context, &dto.ResponseTextFilter{
+		Mode:     "tag_extract",
+		StartTag: "<game>",
+		EndTag:   "</game>",
+	}, config, "m")
+	require.NotNil(t, filter)
+	_, err = filter.WriteString(`{"choices":[{"index":0,"message":{"tool_calls":[{"id":"reply-1","type":"function","function":{"name":"game_reply","arguments":"{\"game_content\":\"<game>visible body</game>\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}`)
+	require.NoError(t, err)
+	require.NoError(t, filter.Finish(context, true))
+	assert.Equal(t, "visible body", gjson.Get(recorder.Body.String(), "choices.0.message.content").String())
+	assert.NotContains(t, recorder.Body.String(), "game_reply")
+	assert.NotContains(t, recorder.Body.String(), "<game>")
+	assert.Equal(t, "stop", gjson.Get(recorder.Body.String(), "choices.0.finish_reason").String())
+	assert.Equal(t, int64(7), gjson.Get(recorder.Body.String(), "usage.total_tokens").Int())
 }
 
 func TestPresetProtocolProjectsExplicitClientJSONFromOwnedToolArgument(t *testing.T) {

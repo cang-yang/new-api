@@ -30,7 +30,7 @@ func TestPresetScriptEndpointScope(t *testing.T) {
 	require.NoError(t, validatePresetScriptEndpoint(preset, "selected", relayconstant.RelayModeResponses))
 }
 
-func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
+func TestAdaptationRetryFingerprintIgnoresReceiveOnlyDifferences(t *testing.T) {
 	first := &dto.ResponseTextFilter{Mode: "rules", EnableSend: true, FailurePolicy: "passthrough", Rules: []dto.TextRegexRule{
 		{ID: "send", Stage: "send", Action: "replace", Pattern: "a", Replacement: "b"},
 		{ID: "receive", Stage: "receive", Action: "replace", Pattern: "x"},
@@ -38,25 +38,44 @@ func TestSendRegexRetryIgnoresReceiveOnlyDifferences(t *testing.T) {
 	second := *first
 	second.Rules = append([]dto.TextRegexRule(nil), first.Rules...)
 	second.Rules[1].Pattern = "other"
-	assert.Equal(t, sendRegexRetrySettings(first), sendRegexRetrySettings(&second))
+	firstFingerprint, err := service.AdaptationRequestFingerprint(service.NewAdaptationProfile(nil, nil, first, first), "m")
+	require.NoError(t, err)
+	secondFingerprint, err := service.AdaptationRequestFingerprint(service.NewAdaptationProfile(nil, nil, &second, &second), "m")
+	require.NoError(t, err)
+	assert.Equal(t, firstFingerprint, secondFingerprint)
 	second.Rules[0].Replacement = "different"
-	assert.NotEqual(t, sendRegexRetrySettings(first), sendRegexRetrySettings(&second))
+	secondFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(nil, nil, &second, &second), "m")
+	require.NoError(t, err)
+	assert.NotEqual(t, firstFingerprint, secondFingerprint)
 	assert.Equal(t, "b", first.Rules[0].Replacement)
+
 	preset := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[]}`), EnableEmbeddedRegex: true}
 	other := *preset
 	other.EnableEmbeddedRegex = false
 	other.RegexFailurePolicy = "passthrough"
-	assert.Equal(t, presetRequestRetrySettings(preset, "m"), presetRequestRetrySettings(&other, "m"))
+	firstFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(preset, nil, nil, nil), "m")
+	require.NoError(t, err)
+	secondFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(&other, nil, nil, nil), "m")
+	require.NoError(t, err)
+	assert.Equal(t, firstFingerprint, secondFingerprint)
 	assert.True(t, preset.EnableEmbeddedRegex)
 	other.User = "different"
-	assert.NotEqual(t, presetRequestRetrySettings(preset, "m"), presetRequestRetrySettings(&other, "m"))
+	secondFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(&other, nil, nil, nil), "m")
+	require.NoError(t, err)
+	assert.NotEqual(t, firstFingerprint, secondFingerprint)
 	other.Models = []string{"another-model"}
-	assert.Equal(t, presetRequestRetrySettings(nil, "m"), presetRequestRetrySettings(&other, "m"), "inactive presets must not interfere with ordinary failover")
+	secondFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(&other, nil, nil, nil), "m")
+	require.NoError(t, err)
+	assert.Empty(t, secondFingerprint, "inactive presets must not interfere with ordinary failover")
 	firstProtocol := *preset
 	firstProtocol.ToolProtocol = &dto.SillyTavernToolProtocol{ClientFinal: "reply"}
 	secondProtocol := firstProtocol
 	secondProtocol.ToolProtocol = &dto.SillyTavernToolProtocol{ClientFinal: "other_reply"}
-	assert.NotEqual(t, presetRequestRetrySettings(&firstProtocol, "m"), presetRequestRetrySettings(&secondProtocol, "m"))
+	firstFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(&firstProtocol, nil, nil, nil), "m")
+	require.NoError(t, err)
+	secondFingerprint, err = service.AdaptationRequestFingerprint(service.NewAdaptationProfile(&secondProtocol, nil, nil, nil), "m")
+	require.NoError(t, err)
+	assert.NotEqual(t, firstFingerprint, secondFingerprint)
 }
 
 func TestAdaptationRetryMismatchRejectsCrossChannelPlanChanges(t *testing.T) {
@@ -68,11 +87,15 @@ func TestAdaptationRetryMismatchRejectsCrossChannelPlanChanges(t *testing.T) {
 			},
 		},
 	}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	initialProfile := service.NewAdaptationProfile(base.SillyTavernPreset, base.Worldbook, base.ResponseTextFilter, base.ResponseTextFilter)
+	initialPlan, err := service.BuildBasePlan(initialProfile, request, request)
+	require.NoError(t, err)
 	receiveOnly := base
 	receiveOnly.ResponseTextFilter = &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
 		{ID: "receive", Stage: "receive", Action: "replace", Pattern: "x", Replacement: "y"},
 	}}
-	assert.Empty(t, adaptationRetryMismatch(base, receiveOnly, "m", true, false), "receive-only rules must not block failover")
+	assert.Empty(t, adaptationRetryMismatch(initialPlan, receiveOnly, "m", true), "receive-only rules must not block failover")
 
 	changedProtocol := base
 	changedProtocol.SillyTavernPreset = &dto.SillyTavernPresetConfig{
@@ -82,19 +105,19 @@ func TestAdaptationRetryMismatchRejectsCrossChannelPlanChanges(t *testing.T) {
 			ClientFinal: "reply",
 		},
 	}
-	assert.NotEmpty(t, adaptationRetryMismatch(base, changedProtocol, "m", true, false))
+	assert.NotEmpty(t, adaptationRetryMismatch(initialPlan, changedProtocol, "m", true))
 
 	changedWorldbook := base
 	changedWorldbook.SillyTavernPreset = nil
 	changedWorldbook.Worldbook = &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true}}}
-	assert.NotEmpty(t, adaptationRetryMismatch(base, changedWorldbook, "m", true, false))
+	assert.NotEmpty(t, adaptationRetryMismatch(initialPlan, changedWorldbook, "m", true))
 
 	changedSend := base
 	changedSend.SillyTavernPreset = nil
 	changedSend.ResponseTextFilter = &dto.ResponseTextFilter{Mode: "rules", EnableSend: true, Rules: []dto.TextRegexRule{
 		{ID: "send", Stage: "send", Action: "replace", Pattern: "a", Replacement: "b"},
 	}}
-	assert.NotEmpty(t, adaptationRetryMismatch(base, changedSend, "m", true, true))
+	assert.NotEmpty(t, adaptationRetryMismatch(initialPlan, changedSend, "m", true))
 }
 
 func TestSelectedChannelResponseRegexUsesContextSettings(t *testing.T) {

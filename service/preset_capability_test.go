@@ -78,3 +78,18 @@ func TestBuildPresetCapabilityReportCacheInvalidatesOnConfigChange(t *testing.T)
 	require.NotNil(t, second)
 	assert.Equal(t, "Changed", second.Entries[0].Name)
 }
+
+func TestClassifyPresetCapabilityNoticesUsesStableCodes(t *testing.T) {
+	notices := classifyPresetCapabilityNotices([]string{
+		"Browser scripts are not executed",
+		"worldbook marker is not available",
+		"embedded regex cannot be compiled",
+		"embedded regex cannot be compiled",
+	})
+
+	require.Len(t, notices, 3)
+	assert.Equal(t, "browser_scripts_unavailable", notices[0].Code)
+	assert.Equal(t, "worldbook_slot_unavailable", notices[1].Code)
+	assert.Equal(t, "receive_regex_compatibility", notices[2].Code)
+	assert.Equal(t, "embedded regex cannot be compiled", notices[2].Detail)
+}

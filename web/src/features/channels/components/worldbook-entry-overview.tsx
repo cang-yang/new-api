@@ -38,6 +38,8 @@ import { Switch } from '@/components/ui/switch'
 import {
   worldbookConfirmEntry,
   worldbookEntryBlocked,
+  worldbookFieldLabel,
+  worldbookIssueLabel,
   worldbookNeedsReview,
   worldbookRiskFields,
   type Worldbook,
@@ -250,7 +252,11 @@ export function WorldbookEntryOverview(props: {
         desc={t(
           'This entry uses options the gateway cannot reproduce: {{fields}}. Enabling it keeps only the supported parts and may widen when it triggers. The original import is kept.',
           {
-            fields: pending ? worldbookRiskFields(pending).join(', ') : '',
+            fields: pending
+              ? worldbookRiskFields(pending)
+                  .map((field) => t(worldbookFieldLabel(field)))
+                  .join('、')
+              : '',
           }
         )}
         confirmText={t('Confirm and enable')}
@@ -270,7 +276,10 @@ export function WorldbookEntryOverview(props: {
         desc={t(
           'This entry is missing required data, so it can never run: {{issues}}. Fix the entry before enabling it. It stays disabled and no trigger fields are discarded.',
           {
-            issues: blocked?.issues?.join(' · ') ?? '',
+            issues:
+              blocked?.issues
+                ?.map((issue) => t(worldbookIssueLabel(issue)))
+                .join(' · ') ?? '',
           }
         )}
         confirmText={t('Close')}
