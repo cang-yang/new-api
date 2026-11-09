@@ -29,6 +29,7 @@ import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -44,12 +45,14 @@ import {
   worldbookRiskFields,
   type Worldbook,
   type WorldbookEntry,
+  type WorldbookRiskContext,
 } from '../lib/worldbook'
 import { worldbookPositionLabels } from '../lib/worldbook-placement'
 import { WorldbookImportSummary } from './worldbook-import-summary'
 
 export function WorldbookEntryOverview(props: {
   book: Worldbook
+  context?: WorldbookRiskContext
   active: boolean
   disabled?: boolean
   onChange: (entry: WorldbookEntry) => void
@@ -62,11 +65,20 @@ export function WorldbookEntryOverview(props: {
   const [pending, setPending] = useState<WorldbookEntry | null>(null)
   const [blocked, setBlocked] = useState<WorldbookEntry | null>(null)
   const enabled = props.book.entries.filter((entry) => entry.enabled).length
-  const attention = props.book.entries.filter(worldbookNeedsReview).length
+  const usable = props.active
+    ? props.book.entries.filter(
+        (entry) => entry.enabled && !worldbookNeedsReview(entry, props.context)
+      ).length
+    : 0
+  const attention = props.book.entries.filter((entry) =>
+    worldbookNeedsReview(entry, props.context)
+  ).length
   const entries = props.book.entries.filter((entry) => {
     if (filter === 'enabled' && !entry.enabled) return false
     if (filter === 'disabled' && entry.enabled) return false
-    if (filter === 'attention' && !worldbookNeedsReview(entry)) return false
+    if (filter === 'attention' && !worldbookNeedsReview(entry, props.context)) {
+      return false
+    }
     const text = [entry.name, ...entry.keys].join('\n').toLowerCase()
     return text.includes(query.trim().toLowerCase())
   })
@@ -91,7 +103,7 @@ export function WorldbookEntryOverview(props: {
               {t('Needs attention')}
             </p>
           ) : (
-            worldbookRiskFields(entry).length > 0 && (
+            worldbookRiskFields(entry, props.context).length > 0 && (
               <p
                 className='text-xs text-amber-600 dark:text-amber-500'
                 data-table-text='secondary'
@@ -107,31 +119,44 @@ export function WorldbookEntryOverview(props: {
       id: 'status',
       header: t('Status'),
       className: 'w-32',
-      cell: (entry) => (
-        <div className='flex items-center gap-2'>
-          <Switch
-            aria-label={t('Enable {{name}}', { name: entry.name || entry.id })}
-            checked={entry.enabled}
-            disabled={props.disabled}
-            onCheckedChange={(value) => {
-              if (value) {
-                if (worldbookEntryBlocked(entry)) {
-                  setBlocked(entry)
-                  return
+      cell: (entry) => {
+        let status = t('Disabled')
+        if (entry.enabled) {
+          status = t('Book is off')
+          if (worldbookNeedsReview(entry, props.context)) {
+            status = t('Needs review')
+          } else if (props.active) {
+            status = t('Eligible for matching')
+          }
+        }
+        return (
+          <div className='flex items-center gap-2'>
+            <Switch
+              aria-label={t('Enable {{name}}', {
+                name: entry.name || entry.id,
+              })}
+              checked={entry.enabled}
+              disabled={props.disabled}
+              onCheckedChange={(value) => {
+                if (value) {
+                  if (worldbookEntryBlocked(entry)) {
+                    setBlocked(entry)
+                    return
+                  }
+                  if (worldbookRiskFields(entry, props.context).length) {
+                    setPending(entry)
+                    return
+                  }
                 }
-                if (worldbookRiskFields(entry).length) {
-                  setPending(entry)
-                  return
-                }
-              }
-              props.onChange({ ...entry, enabled: value })
-            }}
-          />
-          <span className='text-xs' data-table-text='secondary'>
-            {entry.enabled ? t('Enabled') : t('Disabled')}
-          </span>
-        </div>
-      ),
+                props.onChange({ ...entry, enabled: value })
+              }}
+            />
+            <span className='text-xs' data-table-text='secondary'>
+              {status}
+            </span>
+          </div>
+        )
+      },
     },
     {
       id: 'trigger',
@@ -167,6 +192,7 @@ export function WorldbookEntryOverview(props: {
     >
       <WorldbookImportSummary
         book={props.book}
+        context={props.context}
         onReview={() => setFilter('attention')}
         onEnableAll={
           props.onEnableAll
@@ -174,7 +200,7 @@ export function WorldbookEntryOverview(props: {
                 const review = props.book.entries.filter(
                   (entry) =>
                     !worldbookEntryBlocked(entry) &&
-                    worldbookRiskFields(entry).length > 0
+                    worldbookRiskFields(entry, props.context).length > 0
                 )
                 if (review.length) props.onEnableAll?.(review)
               }
@@ -189,7 +215,10 @@ export function WorldbookEntryOverview(props: {
           })}
         </p>
         <p className='text-muted-foreground text-xs'>
-          {t('Enabled entries still need to match their trigger conditions.')}
+          {t(
+            '{{count}} eligible for matching. Enabled entries still need to match their trigger conditions.',
+            { count: usable }
+          )}
         </p>
       </div>
       {!props.active && (
@@ -217,12 +246,14 @@ export function WorldbookEntryOverview(props: {
             <SelectValue />
           </SelectTrigger>
           <SelectContent alignItemWithTrigger={false}>
-            <SelectItem value='all'>{t('All entries')}</SelectItem>
-            <SelectItem value='enabled'>{t('Enabled')}</SelectItem>
-            <SelectItem value='disabled'>{t('Disabled')}</SelectItem>
-            <SelectItem value='attention'>
-              {t('Needs attention ({{count}})', { count: attention })}
-            </SelectItem>
+            <SelectGroup>
+              <SelectItem value='all'>{t('All entries')}</SelectItem>
+              <SelectItem value='enabled'>{t('Enabled')}</SelectItem>
+              <SelectItem value='disabled'>{t('Disabled')}</SelectItem>
+              <SelectItem value='attention'>
+                {t('Needs attention ({{count}})', { count: attention })}
+              </SelectItem>
+            </SelectGroup>
           </SelectContent>
         </Select>
       </div>
@@ -253,7 +284,7 @@ export function WorldbookEntryOverview(props: {
           'This entry uses options the gateway cannot reproduce: {{fields}}. Enabling it keeps only the supported parts and may widen when it triggers. The original import is kept.',
           {
             fields: pending
-              ? worldbookRiskFields(pending)
+              ? worldbookRiskFields(pending, props.context)
                   .map((field) => t(worldbookFieldLabel(field)))
                   .join('、')
               : '',
@@ -261,7 +292,9 @@ export function WorldbookEntryOverview(props: {
         )}
         confirmText={t('Confirm and enable')}
         handleConfirm={() => {
-          if (pending) props.onChange(worldbookConfirmEntry(pending))
+          if (pending) {
+            props.onChange(worldbookConfirmEntry(pending, props.context))
+          }
           setPending(null)
         }}
       />

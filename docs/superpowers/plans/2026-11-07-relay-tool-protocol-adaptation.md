@@ -1,5 +1,12 @@
 # Relay Tool Protocol Adaptation Implementation Plan
 
+> **Historical plan — do not execute (2026-11-09).**
+> Superseded by the review and proposed design in
+> `../specs/2026-11-08-relay-adaptation-final-spec.md` and
+> `../specs/2026-11-09-relay-adaptation-review.md`.
+> The tasks and agent instructions below are retained only as historical context.
+> The current authorization covers review and documentation, not implementation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a conditional, config-driven protocol adaptation layer that keeps one final reply protocol per model call and preserves the client's external text, JSON, or tool contract.

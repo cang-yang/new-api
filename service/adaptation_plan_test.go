@@ -42,7 +42,7 @@ func TestAdaptationBasePlanKeepsOriginalContractAndMatchedScanSource(t *testing.
 	require.NoError(t, err)
 	require.NotNil(t, plan)
 	assert.Equal(t, ContractTool, plan.Contract)
-	assert.Equal(t, "reply", plan.ClientFinal)
+	assert.Empty(t, plan.ClientFinal, "business-tool roles must not be inferred")
 	assert.NotSame(t, original, plan.Original)
 	assert.NotSame(t, matched, plan.Matched)
 	assert.NotEmpty(t, plan.Fingerprint)
@@ -59,10 +59,10 @@ func TestAdaptationFailurePolicyUsesStageDefaultsAndExplicitOverrides(t *testing
 		},
 	}
 	policy := profile.FailurePolicy()
-	assert.Equal(t, FailureSkip, policy.Mode(FailureStageWorldbook))
-	assert.Equal(t, FailureRequestPassthrough, policy.Mode(FailureStagePreflight))
-	assert.Equal(t, FailureToolProtocolPassthrough, policy.Mode(FailureStageToolResolution))
-	assert.Equal(t, FailureSafeRaw, policy.Mode(FailureStageResponseValidation))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageWorldbook))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStagePreflight))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageToolResolution))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageResponseValidation))
 
 	profile = &AdaptationProfile{
 		Enabled: true,
@@ -122,8 +122,7 @@ func TestAdaptationProfileFingerprintIsDeterministic(t *testing.T) {
 	assert.NotEqual(t, first, changed)
 }
 
-func TestAdaptationPlanMetadataCacheIsBoundedAndRequestScoped(t *testing.T) {
-	clearAdaptationPlanMetadataCache()
+func TestAdaptationPlansAreIsolatedWithoutSharedRequestState(t *testing.T) {
 	profile := &AdaptationProfile{Enabled: true, Preset: &dto.SillyTavernPresetConfig{
 		Preset: []byte(`{"prompts":[],"prompt_order":[]}`),
 	}}
@@ -140,11 +139,10 @@ func TestAdaptationPlanMetadataCacheIsBoundedAndRequestScoped(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, third)
 
-	adaptationPlanMetadataCache.Lock()
-	entries := len(adaptationPlanMetadataCache.entries)
-	adaptationPlanMetadataCache.Unlock()
-	assert.Equal(t, 2, entries)
 	assert.NotSame(t, first.Original, second.Original)
+	assert.NotSame(t, first.Profile.Preset, profile.Preset)
+	first.Profile.Preset.User = "changed"
+	assert.Empty(t, second.Profile.Preset.User)
 	assert.Equal(t, "one", first.Original.Messages[0].Content)
 	assert.Equal(t, "two", third.Original.Messages[0].Content)
 }

@@ -13,21 +13,24 @@ import (
 const MaxWorldbookBytes = 6 << 20
 
 const (
-	WorldbookInjectionFollowGlobal   = "follow_global"
-	WorldbookInjectionInherit        = "inherit"
-	WorldbookInjectionSystemPrelude  = "system_prelude"
-	WorldbookInjectionBeforeLastUser = "before_last_user"
-	WorldbookInjectionAtDepth        = "at_depth"
+	WorldbookInjectionBeforeDefinition = "before_definition"
+	WorldbookInjectionAfterDefinition  = "after_definition"
+	WorldbookInjectionFollowGlobal     = "follow_global"
+	WorldbookInjectionInherit          = "inherit"
+	WorldbookInjectionSystemPrelude    = "system_prelude"
+	WorldbookInjectionBeforeLastUser   = "before_last_user"
+	WorldbookInjectionAtDepth          = "at_depth"
 )
 
 type WorldbookConfig struct {
-	Enabled        bool        `json:"enabled"`
-	ScanDepth      int         `json:"scan_depth"`
-	MaxChars       int         `json:"max_chars"`
-	Recursive      bool        `json:"recursive"`
-	InjectionMode  string      `json:"injection_mode,omitempty"`
-	InjectionDepth int         `json:"injection_depth,omitempty"`
-	Books          []Worldbook `json:"books"`
+	SemanticsVersion int         `json:"semantics_version,omitempty"`
+	Enabled          bool        `json:"enabled"`
+	ScanDepth        int         `json:"scan_depth"`
+	MaxChars         int         `json:"max_chars"`
+	Recursive        bool        `json:"recursive"`
+	InjectionMode    string      `json:"injection_mode,omitempty"`
+	InjectionDepth   int         `json:"injection_depth,omitempty"`
+	Books            []Worldbook `json:"books"`
 }
 
 type Worldbook struct {
@@ -39,6 +42,7 @@ type Worldbook struct {
 }
 
 type WorldbookEntry struct {
+	AcceptedRisks    map[string]string         `json:"accepted_risks,omitempty"`
 	ID               string                    `json:"id"`
 	Name             string                    `json:"name"`
 	Content          string                    `json:"content"`
@@ -59,9 +63,10 @@ type WorldbookEntry struct {
 }
 
 type WorldbookNormalizedRule struct {
-	Field  string `json:"field"`
-	Action string `json:"action"`
-	Detail string `json:"detail,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Field       string `json:"field"`
+	Action      string `json:"action"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 type WorldbookPlacement struct {
@@ -87,12 +92,15 @@ func (c *WorldbookConfig) Validate() error {
 	if c == nil {
 		return nil
 	}
+	if c.SemanticsVersion < 0 || c.SemanticsVersion > 2 {
+		return fmt.Errorf("unsupported worldbook semantics version")
+	}
 	depth, budget := c.Limits()
 	if depth < 1 || depth > 50 || budget < 256 || budget > 64000 || len(c.Books) > 16 {
 		return fmt.Errorf("worldbook settings exceed supported limits")
 	}
 	switch c.InjectionMode {
-	case "", WorldbookInjectionInherit, WorldbookInjectionSystemPrelude, WorldbookInjectionBeforeLastUser, WorldbookInjectionAtDepth:
+	case "", WorldbookInjectionInherit, WorldbookInjectionSystemPrelude, WorldbookInjectionBeforeDefinition, WorldbookInjectionAfterDefinition, WorldbookInjectionBeforeLastUser, WorldbookInjectionAtDepth:
 	default:
 		return fmt.Errorf("invalid worldbook injection mode")
 	}
@@ -100,7 +108,13 @@ func (c *WorldbookConfig) Validate() error {
 		return fmt.Errorf("worldbook injection depth must be between 0 and 20")
 	}
 	count := 0
+	bookIDs := map[string]bool{}
 	for _, book := range c.Books {
+		if bookIDs[book.ID] {
+			return fmt.Errorf("worldbook book IDs must be unique")
+		}
+		bookIDs[book.ID] = true
+		entryIDs := map[string]bool{}
 		if book.ID == "" || utf8.RuneCountInString(book.ID) > 256 || utf8.RuneCountInString(book.Name) > 256 {
 			return fmt.Errorf("worldbook requires a book ID and names of at most 256 characters")
 		}
@@ -109,8 +123,20 @@ func (c *WorldbookConfig) Validate() error {
 			return fmt.Errorf("worldbook supports at most 1000 entries")
 		}
 		for _, entry := range book.Entries {
+			if len(entry.AcceptedRisks) > 64 {
+				return fmt.Errorf("worldbook supports at most 64 risk confirmations per entry")
+			}
+			for field, confirmation := range entry.AcceptedRisks {
+				if len(field) > 256 || len(confirmation) > 512 {
+					return fmt.Errorf("worldbook risk confirmation exceeds supported limits")
+				}
+			}
+			if entryIDs[entry.ID] {
+				return fmt.Errorf("worldbook entry IDs must be unique within a book")
+			}
+			entryIDs[entry.ID] = true
 			switch entry.InjectionMode {
-			case "", WorldbookInjectionFollowGlobal, WorldbookInjectionInherit, WorldbookInjectionSystemPrelude, WorldbookInjectionBeforeLastUser, WorldbookInjectionAtDepth:
+			case "", WorldbookInjectionFollowGlobal, WorldbookInjectionInherit, WorldbookInjectionSystemPrelude, WorldbookInjectionBeforeDefinition, WorldbookInjectionAfterDefinition, WorldbookInjectionBeforeLastUser, WorldbookInjectionAtDepth:
 			default:
 				return fmt.Errorf("invalid worldbook entry injection mode")
 			}

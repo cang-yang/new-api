@@ -9,14 +9,11 @@ import (
 )
 
 func (p *PresetScriptResponse) restoreTools(body []byte, stream bool, deadline time.Time) ([]byte, error) {
-	if p.tavern != nil {
-		return body, nil
-	}
 	if p.protocol != nil && p.protocol.audit.Activated {
-		if p.protocol.phase == presetProtocolPhaseAuxiliary || p.protocol.contract == presetProtocolContractTool {
-			return body, nil
-		}
 		return p.protocol.restoreTerminal(p, body, stream, deadline)
+	}
+	if p.tavern != nil || p.settings == nil {
+		return body, nil
 	}
 	settings := p.settings.OutputPreprocessing
 	if !settings.ConsumeToolCalls || len(p.ownedTools) == 0 {

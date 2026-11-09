@@ -291,7 +291,7 @@ test('new send rules use their individual switch without a global send control',
     JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
   ).toMatchObject({
     mode: 'rules',
-    failure_policy: 'passthrough',
+    failure_policy: 'error',
     enable_send: true,
     rules: [{ pattern: 'secret', replacement: '', stage: 'receive' }],
   })

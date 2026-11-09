@@ -146,6 +146,17 @@ func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, bat
 			}
 		}
 	}
+	for _, state := range mustResponseChoices(body, stream) {
+		targeted := 0
+		for _, call := range state.tools {
+			if owned[call.name.String()] {
+				targeted++
+			}
+		}
+		if targeted > 0 && (targeted != 1 || len(state.tools) != 1 || state.text.Len() > 0 || state.finish == "length" || state.refused) {
+			return nil, fmt.Errorf("reply transport requires one complete call without mixed content or client tools")
+		}
+	}
 	changed := false
 	// Decode all targeted calls before changing any payload. A malformed transport
 	// cannot leak half-transformed internal tool arguments to the client.

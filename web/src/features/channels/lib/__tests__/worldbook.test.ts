@@ -148,7 +148,7 @@ test('risky imports stay disabled until the supported subset is confirmed', () =
     whole_words: false,
     priority: 0,
     normalized_rules: [
-      { field: 'sticky', action: 'risk' },
+      { field: 'sticky', action: 'risk', fingerprint: 'source-revision' },
       { field: 'position', action: 'ignored' },
     ],
   }
@@ -157,9 +157,15 @@ test('risky imports stay disabled until the supported subset is confirmed', () =
   const confirmed = worldbookConfirmEntry(entry)
   expect(confirmed.enabled).toBe(true)
   expect(worldbookRiskFields(confirmed)).toEqual([])
-  expect(confirmed.normalized_rules).toEqual([
-    { field: 'position', action: 'ignored' },
-  ])
+  expect(confirmed.normalized_rules).toEqual(entry.normalized_rules)
+  expect(confirmed.accepted_risks).toEqual({ sticky: 'source-revision||0|2' })
+  expect(
+    worldbookNeedsReview({
+      ...confirmed,
+      injection_mode: 'at_depth',
+      injection_depth: 1,
+    })
+  ).toBe(true)
   expect(worldbookNeedsReview(confirmed)).toBe(false)
 })
 

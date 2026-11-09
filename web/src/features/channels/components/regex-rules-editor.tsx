@@ -31,7 +31,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Field, FieldLabel } from '@/components/ui/field'
+import { Field, FieldLabel, FieldDescription } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
@@ -92,7 +92,7 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
     config = {
       mode: 'rules',
       enable_send: true,
-      failure_policy: 'passthrough',
+      failure_policy: 'error',
       rules: [],
     }
   } else if (result.success) {
@@ -124,6 +124,31 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
       )}
       {config && (
         <>
+          <Field>
+            <FieldLabel htmlFor={`${id}-json-fields`}>
+              {t('Text fields inside JSON replies (optional)')}
+            </FieldLabel>
+            <Input
+              id={`${id}-json-fields`}
+              disabled={disabled}
+              value={(config.json_text_pointers ?? []).join(', ')}
+              placeholder='/message, /details/summary'
+              onChange={(event) =>
+                save({
+                  ...config,
+                  json_text_pointers: event.target.value
+                    .split(',')
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+            <FieldDescription>
+              {t(
+                'JSON replies normally bypass text processing. List existing string fields to apply receive rules only; output scripts do not run on these fields. Schema requests cannot use this option.'
+              )}
+            </FieldDescription>
+          </Field>
           <p className='text-muted-foreground text-xs'>
             {t(
               'Rules run from top to bottom. Send rules change outgoing message text and do not buffer responses.'

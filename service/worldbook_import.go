@@ -101,7 +101,7 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 			_ = common.Unmarshal(warnings, &book.Warnings)
 		}
 	} else {
-		book.Warnings = append(book.Warnings, "Imported placement is normalized to one background insertion; advanced SillyTavern behavior is not supported")
+		book.Warnings = append(book.Warnings, "Supported insertion positions are imported; unsupported behavior requires review")
 		for i, raw := range entries {
 			var fields map[string]json.RawMessage
 			if err := common.Unmarshal(raw, &fields); err != nil || fields == nil {
@@ -234,7 +234,24 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 				}
 			}
 		}
-		normalizedRules := worldbookImportedEntryNormalization(fields)
+		entry := &book.Entries[i]
+		sourceFields := fields
+		if canonical && len(entry.Source) > 0 {
+			if common.Unmarshal(entry.Source, &sourceFields) != nil || sourceFields == nil {
+				return book, fmt.Errorf("invalid canonical worldbook source")
+			}
+		} else if !canonical {
+			mapWorldbookImportedPlacement(fields, entry)
+		}
+		if len(entry.Source) == 0 {
+			entry.Source = entries[i]
+		}
+		normalizedRules := worldbookImportedEntryNormalization(sourceFields)
+		for index := range normalizedRules {
+			if normalizedRules[index].Action == "risk" {
+				normalizedRules[index].Fingerprint = worldbookRiskFingerprint(book.Entries[i], normalizedRules[index])
+			}
+		}
 		if canonical {
 			for _, alias := range []string{"key", "keysecondary", "disable", "caseSensitive", "matchWholeWords", "order", "insertion_order", "selective", "selectiveLogic"} {
 				if worldbookBehaviorActive(fields[alias]) {
@@ -242,7 +259,10 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 				}
 			}
 		}
-		book.Entries[i].NormalizedRules = append(book.Entries[i].NormalizedRules, normalizedRules...)
+		// Refresh from preserved source instead of retaining old, missing
+		// fingerprints or erased confirmation records. Edited supported fields
+		// and insertion choices are never overwritten by a review refresh.
+		book.Entries[i].NormalizedRules = normalizedRules
 		if len(normalizedRules) > 0 {
 			if len(book.Entries[i].Source) == 0 {
 				book.Entries[i].Source = entries[i]
@@ -318,8 +338,10 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 			}
 			for extension, setting := range extensions {
 				switch extension {
-				case "position", "depth", "display_index":
-					if worldbookBehaviorActive(setting) {
+				case "display_index":
+					continue
+				case "position", "depth":
+					if !worldbookSupportedPlacement(fields) {
 						rules = append(rules, worldbookRiskRule("extensions."+extension, "the original Tavern placement cannot be reproduced; choose an insertion position instead"))
 					}
 					continue
@@ -349,11 +371,13 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 				rules = append(rules, worldbookRiskRule(key, "activation timing cannot be reproduced; the entry would trigger on every keyword match"))
 			}
 		case "role":
-			if worldbookBehaviorActive(value) {
+			if worldbookBehaviorActive(value) && string(value) != `"system"` && string(value) != "0" {
 				rules = append(rules, worldbookRiskRule(key, "per-entry role override cannot be reproduced"))
 			}
-		case "position", "displayIndex", "depth":
-			if worldbookBehaviorActive(value) {
+		case "displayIndex":
+			continue
+		case "position", "depth":
+			if !worldbookSupportedPlacement(fields) {
 				rules = append(rules, worldbookRiskRule(key, "the original Tavern placement cannot be reproduced; choose an insertion position instead"))
 			}
 		case "addMemo", "memo":
@@ -375,6 +399,69 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 
 func worldbookIgnoredRule(field, detail string) dto.WorldbookNormalizedRule {
 	return dto.WorldbookNormalizedRule{Field: field, Action: "ignored", Detail: detail}
+}
+
+func mapWorldbookImportedPlacement(fields map[string]json.RawMessage, entry *dto.WorldbookEntry) {
+	var extensions map[string]json.RawMessage
+	_ = common.Unmarshal(fields["extensions"], &extensions)
+	position := fields["position"]
+	if position == nil {
+		position = extensions["position"]
+	}
+	var name string
+	if common.Unmarshal(position, &name) == nil {
+		switch name {
+		case "before_char":
+			entry.InjectionMode = dto.WorldbookInjectionBeforeDefinition
+		case "after_char":
+			entry.InjectionMode = dto.WorldbookInjectionAfterDefinition
+		}
+		return
+	}
+	var code int
+	if position == nil || common.Unmarshal(position, &code) != nil {
+		return
+	}
+	switch code {
+	case 0:
+		entry.InjectionMode = dto.WorldbookInjectionBeforeDefinition
+	case 1:
+		entry.InjectionMode = dto.WorldbookInjectionAfterDefinition
+	case 4:
+		entry.InjectionMode = dto.WorldbookInjectionAtDepth
+		depth := fields["depth"]
+		if depth == nil {
+			depth = extensions["depth"]
+		}
+		_ = common.Unmarshal(depth, &entry.InjectionDepth)
+	}
+}
+
+func worldbookSupportedPlacement(fields map[string]json.RawMessage) bool {
+	entry := dto.WorldbookEntry{}
+	mapWorldbookImportedPlacement(fields, &entry)
+	var extensions map[string]json.RawMessage
+	_ = common.Unmarshal(fields["extensions"], &extensions)
+	if entry.InjectionMode == "" {
+		return fields["position"] == nil && extensions["position"] == nil
+	}
+	if fields["position"] != nil && extensions["position"] != nil && !samePresetJSON(fields["position"], extensions["position"]) {
+		return false
+	}
+	if entry.InjectionMode == dto.WorldbookInjectionAtDepth && fields["depth"] != nil && extensions["depth"] != nil && !samePresetJSON(fields["depth"], extensions["depth"]) {
+		return false
+	}
+	if entry.InjectionMode != dto.WorldbookInjectionAtDepth {
+		return true
+	}
+	depth := fields["depth"]
+	if depth == nil {
+		depth = extensions["depth"]
+	}
+	if depth != nil && common.Unmarshal(depth, &entry.InjectionDepth) != nil {
+		return false
+	}
+	return entry.InjectionDepth >= 0 && entry.InjectionDepth <= 20
 }
 
 func worldbookRiskRule(field, detail string) dto.WorldbookNormalizedRule {

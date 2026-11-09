@@ -34,7 +34,7 @@ const stageLabels: Record<string, string> = {
   preflight: 'Preflight',
   worldbook: 'Worldbook',
   preset: 'Preset',
-  tool_resolution: 'Tool coordination',
+  tool_resolution: 'Reply source',
   plan: 'Request plan',
   response_validation: 'Response validation',
   response_restore: 'Response restore',
@@ -66,9 +66,9 @@ const stageSummaryKeys: Record<string, Record<string, string>> = {
     skipped: 'No preset was selected for this request',
   },
   tool_resolution: {
-    completed: 'Tool roles and the final response target were resolved',
-    fallback: 'Tool coordination safely fell back',
-    skipped: 'Tool coordination is not active for this request',
+    completed: 'Reply sources were validated against client requirements',
+    fallback: 'Reply source settings fell back safely',
+    skipped: 'No internal reply source is active',
   },
   plan: {
     frozen: 'The request plan was frozen after tool resolution',
@@ -107,7 +107,11 @@ const stageSummaryKeys: Record<string, Record<string, string>> = {
 
 function diagnosticSummary(stage: DiagnosticStage, t: (key: string) => string) {
   const key = stageSummaryKeys[stage.stage]?.[stage.status]
-  return t(key ?? 'Stage completed')
+  if (key) return t(key)
+  if (stage.status === 'failed') return t('Processing stopped at this step')
+  if (stage.status === 'skipped') return t('This step was not run')
+  if (stage.status === 'fallback') return t('A fallback was used at this step')
+  return t('See the recorded details for this step')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -129,7 +133,7 @@ function diagnosticStages(value: unknown): DiagnosticStage[] {
       {
         key: `${stage.stage}:${occurrence}`,
         stage: stage.stage,
-        status: typeof stage.status === 'string' ? stage.status : 'completed',
+        status: typeof stage.status === 'string' ? stage.status : 'unknown',
         summary: typeof stage.summary === 'string' ? stage.summary : undefined,
         details: stage.details,
       },
@@ -208,7 +212,7 @@ export function AuditDiagnostics(props: { value: unknown }) {
                 <p className='text-muted-foreground text-xs leading-5 [overflow-wrap:anywhere]'>
                   {diagnosticSummary(stage, t)}
                 </p>
-                {stage.details != null && (
+                {(stage.details != null || stage.summary) && (
                   <details className='min-w-0'>
                     <summary className='text-muted-foreground cursor-pointer text-xs'>
                       {t('Decision details')}
@@ -217,7 +221,11 @@ export function AuditDiagnostics(props: { value: unknown }) {
                       <TextBlock
                         code
                         compact
-                        text={JSON.stringify(stage.details, null, 2)}
+                        text={JSON.stringify(
+                          { summary: stage.summary, details: stage.details },
+                          null,
+                          2
+                        )}
                       />
                     </div>
                   </details>

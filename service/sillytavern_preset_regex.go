@@ -24,6 +24,7 @@ type presetResponseRegex struct {
 	trimStrings  []string
 	extract      bool
 	missingEmpty bool
+	missingError bool
 	trimCapture  bool
 	roles        []string
 	minDepth     *int
@@ -82,7 +83,7 @@ func compileEffectivePresetTextRegex(config *dto.SillyTavernPresetConfig, channe
 			stage = "send"
 		}
 		for _, rule := range channel.Rules {
-			if rule.Stage == stage && rule.SourceScriptID != "" {
+			if rule.Stage == stage && rule.SourceScriptID != "" && rule.SourcePresetID == config.SourcePresetID {
 				owned[rule.SourceScriptID] = true
 			}
 		}
@@ -162,7 +163,7 @@ func compileChannelTextRegex(config *dto.ResponseTextFilter, model, stage string
 		if len(roles) == 0 {
 			roles = []string{"user", "assistant"}
 		}
-		rules = append(rules, presetResponseRegex{id: rule.ID, name: rule.Name, pattern: re, global: global, replaceBy: presetRegexMatchMacro.ReplaceAllLiteralString(rule.Replacement, "$0"), extract: rule.Action == "extract", missingEmpty: rule.MissingMatch == "empty", trimCapture: rule.TrimCapture, trimStrings: rule.TrimStrings, roles: roles, minDepth: rule.MinDepth, maxDepth: rule.MaxDepth})
+		rules = append(rules, presetResponseRegex{id: rule.ID, name: rule.Name, pattern: re, global: global, replaceBy: presetRegexMatchMacro.ReplaceAllLiteralString(rule.Replacement, "$0"), extract: rule.Action == "extract", missingEmpty: rule.MissingMatch == "empty", missingError: rule.MissingMatch == "error", trimCapture: rule.TrimCapture, trimStrings: rule.TrimStrings, roles: roles, minDepth: rule.MinDepth, maxDepth: rule.MaxDepth})
 	}
 	return rules, nil
 }
@@ -178,6 +179,9 @@ func (r presetResponseRegex) replace(value string) (string, error) {
 	var result strings.Builder
 	previous := 0
 	match, err := r.pattern.FindStringMatch(value)
+	if err == nil && match == nil && r.missingError {
+		return "", errors.New("required text rule did not match")
+	}
 	if err == nil && match == nil && r.extract {
 		if r.missingEmpty {
 			return "", nil

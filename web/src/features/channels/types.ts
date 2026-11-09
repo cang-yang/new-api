@@ -95,6 +95,7 @@ export interface ChannelSettings {
 }
 
 export interface ChannelOtherSettings {
+  adaptation_scope?: 'plain_chat_only' | 'all_supported'
   azure_responses_version?: string
   vertex_key_type?: 'json' | 'api_key'
   vertex_project_id?: string

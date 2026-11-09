@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import { validReplyPointer } from './reply-adapter'
+
 const utf8Encoder = new TextEncoder()
 const byteLimitedString = (limit: number) =>
   z.string().refine((value) => utf8Encoder.encode(value).length <= limit)
@@ -28,6 +30,7 @@ export const regexRuleSchema = z
     source_script_id: byteLimitedString(128)
       .refine((value) => value.length > 0)
       .optional(),
+    source_preset_id: byteLimitedString(128).min(1).optional(),
     name: byteLimitedString(256).optional(),
     disabled: z.boolean().optional(),
     stage: z.enum(['receive', 'send']),
@@ -39,7 +42,7 @@ export const regexRuleSchema = z
       .optional(),
     min_depth: z.number().int().nonnegative().optional(),
     max_depth: z.number().int().nonnegative().optional(),
-    missing_match: z.enum(['passthrough', 'empty']).optional(),
+    missing_match: z.enum(['passthrough', 'empty', 'error']).optional(),
     trim_capture: z.boolean().optional(),
     trim_strings: z.array(byteLimitedString(16384)).max(100).optional(),
   })
@@ -47,6 +50,22 @@ export const regexRuleSchema = z
 export const editableRegexRulesSchema = z
   .object({
     mode: z.literal('rules'),
+    json_text_pointers: z
+      .array(z.string().min(1).refine(validReplyPointer))
+      .max(32)
+      .refine((paths) =>
+        paths.every((path, index) =>
+          paths
+            .slice(0, index)
+            .every(
+              (other) =>
+                path !== other &&
+                !path.startsWith(`${other}/`) &&
+                !other.startsWith(`${path}/`)
+            )
+        )
+      )
+      .optional(),
     failure_policy: z.enum(['passthrough', 'error']).optional(),
     enable_send: z.boolean().optional(),
     models: z.array(z.string()).optional(),
@@ -90,7 +109,10 @@ export function regexReplacementGeneratesHtml(value: string): boolean {
   )
 }
 
-export function importRegexScripts(value: unknown): {
+export function importRegexScripts(
+  value: unknown,
+  sourcePresetID?: string
+): {
   rules: RegexRule[]
   warnings: string[]
   originals: unknown[]
@@ -128,6 +150,7 @@ export function importRegexScripts(value: unknown): {
     if (unsupported) warnings.push(name)
     const base = {
       name,
+      ...(sourcePresetID ? { source_preset_id: sourcePresetID } : {}),
       ...(typeof script.id === 'string' &&
       script.id.length > 0 &&
       new TextEncoder().encode(script.id).length <= 128
@@ -185,7 +208,11 @@ export function mergeImportedRegexRules(
       rule.trim_capture === true,
     ])
   const sourceKey = (rule: RegexRule) =>
-    JSON.stringify([rule.stage, rule.source_script_id])
+    JSON.stringify([
+      rule.source_preset_id ?? '',
+      rule.source_script_id,
+      rule.stage,
+    ])
   const owned = new Set(
     current.filter((rule) => rule.source_script_id).map(sourceKey)
   )
@@ -197,7 +224,7 @@ export function mergeImportedRegexRules(
     ...incoming.filter((rule) => {
       if (
         (rule.source_script_id && owned.has(sourceKey(rule))) ||
-        unlinked.has(signature(rule))
+        (!rule.source_preset_id && unlinked.has(signature(rule)))
       ) {
         return false
       }
@@ -211,12 +238,13 @@ export function mergeImportedRegexRules(
 export function mergePresetRegexScripts(
   currentValue: string,
   scripts: unknown[],
-  stages: Array<'receive' | 'send'> = ['receive']
+  stages: Array<'receive' | 'send'> = ['receive'],
+  sourcePresetID?: string
 ): { value: string; added: number; warnings: string[] } {
   let current: RegexRulesConfig = {
     mode: 'rules',
     enable_send: false,
-    failure_policy: 'passthrough',
+    failure_policy: 'error',
     rules: [],
   }
   if (currentValue.trim()) {
@@ -227,7 +255,7 @@ export function mergePresetRegexScripts(
     current = parsed.data
   }
 
-  const imported = importRegexScripts(scripts)
+  const imported = importRegexScripts(scripts, sourcePresetID)
   const rules = mergeImportedRegexRules(
     current.rules,
     imported.rules.filter((rule) => stages.includes(rule.stage))

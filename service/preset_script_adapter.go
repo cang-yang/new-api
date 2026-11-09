@@ -61,7 +61,8 @@ func presetScriptFingerprint(config *dto.SillyTavernPresetConfig) [32]byte {
 		Entries      map[string]bool
 		Modules      map[string]string
 		ToolProtocol *dto.SillyTavernToolProtocol
-	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules, config.ToolProtocol})
+		ReplyAdapter *dto.ReplyAdapter
+	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules, config.ToolProtocol, config.ReplyAdapter})
 	return sha256.Sum256(data)
 }
 
@@ -232,10 +233,20 @@ func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIReque
 // provider-visible tools and tool_choice. Mode 1 still protects history,
 // functions, legacy function_call and every original tool definition.
 func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpenAIRequest, mode int) error {
+	if original.ResponseFormat != nil {
+		before, _ := common.Marshal(original.ResponseFormat)
+		after, _ := common.Marshal(compiled.ResponseFormat)
+		if !samePresetJSON(before, after) {
+			return fmt.Errorf("preset conflicts with the client response_format")
+		}
+	}
+	if !samePresetValue(original.ParallelTooCalls, compiled.ParallelTooCalls) {
+		return fmt.Errorf("preset conflicts with client parallel_tool_calls")
+	}
 	protected := len(original.Tools) > 0 || len(original.Functions) > 0 || original.ToolChoice != nil || len(original.FunctionCall) > 0
 	var history []dto.Message
 	for _, message := range original.Messages {
-		if len(message.ToolCalls) > 0 || message.ToolCallId != "" || message.Role == "tool" || message.Role == "function" || len(message.Tools) > 0 {
+		if len(message.ToolCalls) > 0 || len(message.FunctionCall) > 0 || message.ToolCallId != "" || message.Role == "tool" || message.Role == "function" || len(message.Tools) > 0 {
 			history = append(history, message)
 		}
 	}
@@ -249,7 +260,7 @@ func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpe
 	if afterChoice == nil {
 		afterChoice = "auto"
 	}
-	if mode == 0 {
+	{
 		before, _ := common.Marshal(beforeChoice)
 		after, _ := common.Marshal(afterChoice)
 		if !samePresetJSON(before, after) {
@@ -281,8 +292,7 @@ func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpe
 		}
 	}
 	if mode == 0 {
-		choice, _ := beforeChoice.(string)
-		if choice == "required" && len(owned) > 0 {
+		if protected && len(owned) > 0 {
 			return fmt.Errorf("preset conflicts with client tools: required tool selection was expanded")
 		}
 	}

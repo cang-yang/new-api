@@ -42,6 +42,7 @@ import {
 } from './advanced-custom'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
 import { regexRulesSchema } from './regex-rules'
+import { validReplyAdapter } from './reply-adapter'
 import { supportsResponsesWebSocket } from './responses-websocket'
 import { parseWorldbook } from './worldbook'
 
@@ -283,6 +284,7 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalJsonObject, ERROR_MESSAGES.INVALID_JSON),
+    adaptation_scope: z.enum(['plain_chat_only', 'all_supported']).optional(),
     response_text_filter: z
       .string()
       .optional()
@@ -327,6 +329,7 @@ export const channelFormSchema = z
           const config = JSON.parse(value) as Record<string, unknown>
           const preset = config.preset as Record<string, unknown> | undefined
           return (
+            validReplyAdapter(config) &&
             typeof preset === 'object' &&
             preset !== null &&
             Array.isArray(preset.prompts) &&
@@ -568,6 +571,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   param_override: '',
   header_override: '',
   settings: '{}',
+  adaptation_scope: 'plain_chat_only',
   response_text_filter: '',
   worldbook: '',
   sillytavern_preset: '',
@@ -694,6 +698,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let adaptationScope: 'plain_chat_only' | 'all_supported' = 'all_supported'
   let worldbook = ''
   let responseTextFilter = ''
   let sillytavernPreset = ''
@@ -750,6 +755,10 @@ export function transformChannelToFormDefaults(
           2
         )
       }
+      adaptationScope =
+        parsed.adaptation_scope === 'plain_chat_only'
+          ? 'plain_chat_only'
+          : 'all_supported'
       if (parsed.worldbook) {
         worldbook = JSON.stringify(parsed.worldbook)
       }
@@ -825,6 +834,7 @@ export function transformChannelToFormDefaults(
     param_override: channel.param_override || '',
     header_override: channel.header_override || '',
     settings: channel.settings || '{}',
+    adaptation_scope: adaptationScope,
     worldbook,
     response_text_filter: responseTextFilter,
     sillytavern_preset: sillytavernPreset,
@@ -927,6 +937,7 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   }
 
+  settingsObj.adaptation_scope = formData.adaptation_scope || 'all_supported'
   if (formData.response_text_filter?.trim()) {
     settingsObj.response_text_filter = normalizeResponseTextFilter(
       JSON.parse(formData.response_text_filter)

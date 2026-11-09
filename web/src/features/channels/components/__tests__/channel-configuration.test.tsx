@@ -34,6 +34,7 @@ import {
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
@@ -352,6 +353,31 @@ test('an unavailable default URL endpoint keeps the fallback placeholder and all
   })
   expect(api.get).toHaveBeenCalledWith('/api/channel/default_base_urls')
   expect(onInternalServerError).not.toHaveBeenCalled()
+})
+
+test('saving after another window changes the channel preserves the draft and refuses to overwrite', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const error = vi.spyOn(toast, 'error')
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  const address = screen.getByRole('textbox', { name: 'Base URL' })
+  await user.clear(address)
+  await user.type(address, 'https://draft.example')
+  editingChannel = {
+    ...editingChannel,
+    base_url: 'https://another-window.example',
+  }
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() =>
+    expect(error).toHaveBeenCalledWith(
+      'This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.'
+    )
+  )
+  expect(put).not.toHaveBeenCalled()
+  expect(address).toHaveValue('https://draft.example')
 })
 
 test('model mapping help opens on click, stays open after pointer exit, and closes without dismissing the channel', async () => {

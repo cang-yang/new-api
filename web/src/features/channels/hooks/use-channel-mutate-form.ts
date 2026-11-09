@@ -29,17 +29,19 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { createServerError } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { createChannel, updateChannel } from '../api'
+import { createChannel, getChannel, updateChannel } from '../api'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
   transformFormDataToCreatePayload,
   transformFormDataToUpdatePayload,
+  transformChannelToFormDefaults,
   type ChannelFormValues,
 } from '../lib'
 import type { Channel } from '../types'
 
 type UseChannelMutateFormParams = {
   currentRow?: Channel | null
+  baselineChannel?: Channel | null
   isEditing: boolean
   isMultiKeyChannel: boolean
   onSuccess: () => void
@@ -69,6 +71,26 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
   return useMutation({
     mutationFn: async (data: ChannelFormValues): Promise<string> => {
       if (props.isEditing && props.currentRow) {
+        // Re-read instead of trusting the cached channel list. Preserve the
+        // local draft if another editor saved since this form was loaded.
+        // This is an edit-time warning, not a database compare-and-swap.
+        if (props.baselineChannel) {
+          const latest = await getChannel(props.currentRow.id, {
+            disableDuplicate: true,
+          })
+          if (!latest.success || !latest.data) {
+            throw createServerError(latest, t(ERROR_MESSAGES.UPDATE_FAILED))
+          }
+          const saved = transformChannelToFormDefaults(props.baselineChannel)
+          const current = transformChannelToFormDefaults(latest.data)
+          if (JSON.stringify(saved) !== JSON.stringify(current)) {
+            throw new Error(
+              t(
+                'This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.'
+              )
+            )
+          }
+        }
         const payload = transformFormDataToUpdatePayload(
           data,
           props.currentRow.id

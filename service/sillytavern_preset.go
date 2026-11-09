@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"regexp"
@@ -27,6 +28,7 @@ import (
 type SillyTavernContext struct {
 	worldbookConfig  *dto.WorldbookConfig
 	worldbookPreview *WorldbookPreview
+	worldbookSource  *dto.GeneralOpenAIRequest
 	User             string            `json:"user,omitempty"`
 	Char             string            `json:"char,omitempty"`
 	LastUserMessage  string            `json:"last_user_message,omitempty"`
@@ -51,7 +53,8 @@ type PresetMessageSource struct {
 type PresetCompileTrace struct {
 	Worldbook      *WorldbookPreview       `json:"worldbook,omitempty"`
 	Protocol       *PresetProtocolAudit    `json:"protocol,omitempty"`
-	Plan           *AdaptationResolvedPlan `json:"plan,omitempty"`
+	Plan           *AdaptationResolvedPlan `json:"-"`
+	Summary        *AdaptationSummary      `json:"plan,omitempty"`
 	Diagnostics    *AdaptationDiagnostic   `json:"diagnostics,omitempty"`
 	Name           string                  `json:"name"`
 	Mode           string                  `json:"mode"`
@@ -60,10 +63,30 @@ type PresetCompileTrace struct {
 	ScriptResponse *PresetScriptResponse   `json:"-"`
 }
 
+// MarshalJSON keeps execution evidence separate from audited request bodies.
+// A preview may contain expanded worldbook text or the final request; neither
+// belongs in the immutable configuration/diagnostic snapshot.
+func (trace PresetCompileTrace) MarshalJSON() ([]byte, error) {
+	type auditTrace PresetCompileTrace
+	snapshot := auditTrace(trace)
+	snapshot.Messages = snapshot.Messages[:min(len(snapshot.Messages), 64)]
+	snapshot.Warnings = snapshot.Warnings[:min(len(snapshot.Warnings), 32)]
+	if trace.Worldbook != nil {
+		preview := *trace.Worldbook
+		preview.Text = ""
+		preview.FinalRequest = nil
+		preview.Entries = preview.Entries[:min(len(preview.Entries), 64)]
+		preview.Warnings = preview.Warnings[:min(len(preview.Warnings), 32)]
+		snapshot.Worldbook = &preview
+	}
+	return common.Marshal(snapshot)
+}
+
 type presetMessage struct {
-	message dto.Message
-	source  string
-	id      string
+	message   dto.Message
+	source    string
+	id        string
+	historyID string
 }
 
 type presetMacroContext struct {
@@ -106,7 +129,10 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	}
 	preset, err := config.ParseAndValidate()
 	if err != nil {
-		return nil, trace, err
+		return nil, trace, newResponseStageError(FailureStagePreflight, err)
+	}
+	if protocol := config.ToolProtocol; protocol != nil && protocol.Enabled && (protocol.ClientFinal != "" || len(protocol.Auxiliary) > 0 || len(protocol.Action) > 0 || protocol.PhasePolicy != "" && protocol.PhasePolicy != "disabled") {
+		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("legacy tool orchestration requires review; declare reply transports instead"))
 	}
 	compiled, err := common.DeepCopy(request)
 	if err != nil {
@@ -150,89 +176,9 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	if chat == nil {
 		chat = compiled.Messages
 	}
-	lastUserMessage := context.LastUserMessage
-	if lastUserMessage == "" {
-		for index := len(chat) - 1; index >= 0; index-- {
-			if chat[index].Role == "user" {
-				if content, ok := chat[index].Content.(string); ok {
-					lastUserMessage = content
-				}
-				break
-			}
-		}
-	}
-	now := context.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-	if config.TimeZone != "" {
-		location, _ := time.LoadLocation(config.TimeZone) // validated by ParseAndValidate
-		now = now.In(location)
-	}
-	lastMessage, lastCharMessage := "", ""
-	foundLastMessage, foundLastCharMessage := false, false
-	lastMessageID := ""
-	for index := len(chat) - 1; index >= 0; index-- {
-		content, ok := chat[index].Content.(string)
-		if !ok {
-			continue
-		}
-		if !foundLastMessage {
-			lastMessage = content
-			lastMessageID = strconv.Itoa(index)
-			foundLastMessage = true
-		}
-		if !foundLastCharMessage && chat[index].Role == "assistant" {
-			lastCharMessage = content
-			foundLastCharMessage = true
-		}
-		if foundLastMessage && foundLastCharMessage {
-			break
-		}
-	}
-	macro := presetMacroContext{
-		user: context.User, char: context.Char, model: request.Model, chatID: context.ChatID,
-		input: lastUserMessage, lastMessage: lastMessage, lastUserMessage: lastUserMessage,
-		lastCharMessage: lastCharMessage, chatCount: len(chat), markers: context.Markers,
-		rollsRemaining: 10_000,
-		vars:           make(map[string]string), globalVars: context.GlobalVariables,
-		values: make(map[string]string), warnings: make(map[string]bool), manual: config.MacroValues, now: now,
-	}
-	if context.Input != nil {
-		macro.input = *context.Input
-	}
-	macro.values["lastmessageid"] = lastMessageID
-	// These are request-local limits, not inferred provider capacities.
-	var limits struct {
-		Context *int64 `json:"openai_max_context"`
-	}
-	if err := common.Unmarshal(config.Preset, &limits); err != nil {
+	macro, err := newPresetMacroContext(config, preset, request, context, chat)
+	if err != nil {
 		return nil, trace, err
-	}
-	responseLimit := request.MaxTokens
-	if request.MaxCompletionTokens != nil {
-		responseLimit = request.MaxCompletionTokens
-	}
-	if preset.MaxTokens != nil && (config.ParameterPolicy != "client" || responseLimit == nil) {
-		responseLimit = preset.MaxTokens
-	}
-	if responseLimit != nil {
-		macro.values["maxresponse"] = strconv.FormatUint(uint64(*responseLimit), 10)
-		macro.values["maxresponsetokens"] = macro.values["maxresponse"]
-	}
-	if limits.Context != nil && *limits.Context > 0 {
-		macro.values["maxcontext"] = strconv.FormatInt(*limits.Context, 10)
-		macro.values["maxcontexttokens"] = macro.values["maxcontext"]
-		if responseLimit != nil && uint64(*responseLimit) <= uint64(*limits.Context) {
-			macro.values["maxprompt"] = strconv.FormatInt(*limits.Context-int64(*responseLimit), 10)
-			macro.values["maxprompttokens"] = macro.values["maxprompt"]
-		}
-	}
-	for key, value := range context.MacroValues {
-		macro.values[strings.ToLower(key)] = value
-	}
-	for key, value := range context.Variables {
-		macro.vars[key] = value
 	}
 	prompts := make(map[string]dto.SillyTavernPrompt, len(preset.Prompts))
 	for _, prompt := range preset.Prompts {
@@ -326,9 +272,9 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		content := prompt.Content
 		if prompt.Marker {
 			content = context.Markers[prompt.Identifier]
-			if worldbookMarker == "" && (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil {
+			if (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil && context.worldbookConfig.SemanticsVersion < 2 {
 				for _, group := range context.worldbookPreview.groups {
-					if group.mode == dto.WorldbookInjectionInherit {
+					if group.mode == dto.WorldbookInjectionInherit && worldbookMarker == "" {
 						content = strings.TrimSpace(content + "\n\n" + group.text)
 						worldbookMarker = prompt.Identifier
 					}
@@ -344,7 +290,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 					content = preset.PersonalityFormat
 				}
 			case "worldInfoBefore", "worldInfoAfter":
-				if content != "" && strings.TrimSpace(preset.WorldInfoFormat) != "" {
+				if content != "" && strings.TrimSpace(preset.WorldInfoFormat) != "" && (context.worldbookConfig == nil || context.worldbookConfig.SemanticsVersion < 2) {
 					content = strings.ReplaceAll(preset.WorldInfoFormat, "{0}", content)
 				}
 			}
@@ -366,7 +312,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		if compiledPresetTextBytes > maxCompiledPresetTextBytes {
 			return nil, trace, fmt.Errorf("sillytavern_preset compiled text exceeds 16 MiB")
 		}
-		if strings.TrimSpace(content) == "" {
+		if strings.TrimSpace(content) == "" && !(prompt.Marker && (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookConfig != nil && context.worldbookConfig.SemanticsVersion >= 2) {
 			continue
 		}
 		prompt.Content = content
@@ -437,7 +383,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 			lastRole = role
 		}
 		if boundary < len(chat) {
-			history = append(history, presetMessage{message: chat[boundary], source: "chat_history"})
+			history = append(history, presetMessage{message: chat[boundary], source: "chat_history", historyID: strconv.Itoa(boundary)})
 		}
 	}
 	if newChat := macro.expand(preset.NewChatPrompt, 0); strings.TrimSpace(newChat) != "" {
@@ -469,6 +415,34 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		final = append(final, history...)
 		trace.Warnings = append(trace.Warnings, "chatHistory marker absent; client history appended for compatibility")
 	}
+	if context.worldbookSource != nil {
+		checkpoint := macro
+		checkpoint.vars = maps.Clone(macro.vars)
+		checkpoint.globalVars = maps.Clone(macro.globalVars)
+		checkpoint.values = maps.Clone(macro.values)
+		checkpoint.warnings = maps.Clone(macro.warnings)
+		checkpoint.manual = maps.Clone(macro.manual)
+		preview, matchErr := matchWorldbookWith(context.worldbookConfig, context.worldbookSource, worldbookMatchOptions{
+			expand: func(text string) string { return macro.expand(text, 0) },
+			anchor: func(mode string, depth int) string {
+				placement, marker := worldbookGroupPlacement(context.worldbookConfig, mode, depth, final, -1)
+				return fmt.Sprintf("%d:%t", placement.Index, marker)
+			},
+		})
+		if matchErr == nil && macro.warnings["macro expansion limit reached"] {
+			matchErr = fmt.Errorf("worldbook macro expansion exceeded its limit")
+		}
+		if matchErr != nil {
+			if AdaptationFailureMode(config, FailureStageWorldbook) != FailureSkip {
+				return nil, trace, newResponseStageError(FailureStageWorldbook, matchErr)
+			}
+			trace.Warnings = append(trace.Warnings, "worldbook skipped by the configured failure policy")
+			macro = checkpoint
+		} else {
+			context.worldbookPreview = &preview
+			trace.Worldbook = &preview
+		}
+	}
 	if context.worldbookPreview != nil && context.worldbookPreview.Text != "" {
 		preview := context.worldbookPreview
 		markerIndex := slices.IndexFunc(final, func(item presetMessage) bool {
@@ -476,9 +450,27 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		})
 		final, err = injectWorldbookGroups(context.worldbookConfig, preview, final, markerIndex, &macro)
 		if err != nil {
-			return nil, trace, err
+			return nil, trace, newResponseStageError(FailureStageWorldbook, err)
 		}
 		trace.Worldbook = preview
+	}
+	if context.worldbookConfig != nil && context.worldbookConfig.SemanticsVersion >= 2 {
+		for index := range final {
+			item := &final[index]
+			if item.id != "worldInfoBefore" && item.id != "worldInfoAfter" {
+				continue
+			}
+			if content, ok := item.message.Content.(string); ok && strings.TrimSpace(content) != "" && strings.TrimSpace(preset.WorldInfoFormat) != "" {
+				// Expand the wrapper, not the already-expanded worldbook text.
+				wrapper := macro.expand(preset.WorldInfoFormat, 0)
+				count := strings.Count(wrapper, "{0}")
+				size := int64(len(wrapper)) + int64(count)*int64(len(content)-3)
+				if macro.warnings["macro expansion limit reached"] || size > maxSillyTavernExpansionBytes {
+					return nil, trace, newResponseStageError(FailureStageWorldbook, fmt.Errorf("worldbook format exceeded its limit"))
+				}
+				item.message.Content = strings.ReplaceAll(wrapper, "{0}", content)
+			}
+		}
 	}
 	if preset.SquashSystemMessages {
 		var squashed []presetMessage
@@ -541,7 +533,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	if config.ScriptRuntime != "" {
 		response, warnings, err := preparePresetScripts(config, preset, compiled, &macro)
 		if err != nil {
-			return nil, trace, err
+			return nil, trace, newResponseStageError(FailureStageScript, err)
 		}
 		trace.ScriptResponse = response
 		trace.Warnings = append(trace.Warnings, warnings...)
@@ -551,7 +543,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 	}
 	if config.ToolText != nil && config.ToolText.Enabled {
-		if compiled.ToolChoice != nil {
+		if clientDeclaresToolContract(request) {
 			return nil, trace, fmt.Errorf("preset tool_text cannot override an explicit client tool_choice")
 		}
 		for _, tool := range compiled.Tools {
@@ -589,17 +581,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 		plan, mode, err := buildPresetProtocolPlan(protocolRequest, compiled, config, trace.ScriptResponse)
 		if err != nil {
-			if AdaptationFailureMode(config, FailureStageToolResolution) == FailureToolProtocolPassthrough {
-				trace.Protocol = &PresetProtocolAudit{
-					Enabled:     true,
-					Eligible:    true,
-					Activated:   false,
-					Reason:      string(FailureToolProtocolPassthrough),
-					Diagnostics: []string{string(FailureToolProtocolPassthrough), err.Error()},
-				}
-			} else {
-				return nil, trace, err
-			}
+			return nil, trace, newResponseStageError(FailureStageToolResolution, err)
 		} else if plan != nil {
 			protocolPlan = plan
 			trace.Protocol = &plan.audit
@@ -1313,4 +1295,104 @@ func DecodeSillyTavernContext(reader io.Reader) (SillyTavernContext, error) {
 		}
 	}
 	return context, nil
+}
+func newPresetMacroContext(config *dto.SillyTavernPresetConfig, preset *dto.SillyTavernPreset, request *dto.GeneralOpenAIRequest, context SillyTavernContext, chat []dto.Message) (presetMacroContext, error) {
+	if config == nil {
+		config = &dto.SillyTavernPresetConfig{}
+	}
+	if preset == nil {
+		preset = &dto.SillyTavernPreset{}
+	}
+	if context.User == "" {
+		context.User = config.User
+	}
+	if context.Char == "" {
+		context.Char = config.Char
+	}
+	lastUserMessage := context.LastUserMessage
+	if lastUserMessage == "" {
+		for index := len(chat) - 1; index >= 0; index-- {
+			if chat[index].Role == "user" {
+				if content, ok := chat[index].Content.(string); ok {
+					lastUserMessage = content
+				}
+				break
+			}
+		}
+	}
+	now := context.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if config.TimeZone != "" {
+		location, _ := time.LoadLocation(config.TimeZone) // validated by ParseAndValidate
+		now = now.In(location)
+	}
+	lastMessage, lastCharMessage := "", ""
+	foundLastMessage, foundLastCharMessage := false, false
+	lastMessageID := ""
+	for index := len(chat) - 1; index >= 0; index-- {
+		content, ok := chat[index].Content.(string)
+		if !ok {
+			continue
+		}
+		if !foundLastMessage {
+			lastMessage = content
+			lastMessageID = strconv.Itoa(index)
+			foundLastMessage = true
+		}
+		if !foundLastCharMessage && chat[index].Role == "assistant" {
+			lastCharMessage = content
+			foundLastCharMessage = true
+		}
+		if foundLastMessage && foundLastCharMessage {
+			break
+		}
+	}
+	macro := presetMacroContext{
+		user: context.User, char: context.Char, model: request.Model, chatID: context.ChatID,
+		input: lastUserMessage, lastMessage: lastMessage, lastUserMessage: lastUserMessage,
+		lastCharMessage: lastCharMessage, chatCount: len(chat), markers: context.Markers,
+		rollsRemaining: 10_000,
+		vars:           make(map[string]string), globalVars: context.GlobalVariables,
+		values: make(map[string]string), warnings: make(map[string]bool), manual: config.MacroValues, now: now,
+	}
+	if context.Input != nil {
+		macro.input = *context.Input
+	}
+	macro.values["lastmessageid"] = lastMessageID
+	// These are request-local limits, not inferred provider capacities.
+	var limits struct {
+		Context *int64 `json:"openai_max_context"`
+	}
+	if err := common.Unmarshal(config.Preset, &limits); len(config.Preset) > 0 && err != nil {
+		return presetMacroContext{}, err
+	}
+	responseLimit := request.MaxTokens
+	if request.MaxCompletionTokens != nil {
+		responseLimit = request.MaxCompletionTokens
+	}
+	if preset.MaxTokens != nil && (config.ParameterPolicy != "client" || responseLimit == nil) {
+		responseLimit = preset.MaxTokens
+	}
+	if responseLimit != nil {
+		macro.values["maxresponse"] = strconv.FormatUint(uint64(*responseLimit), 10)
+		macro.values["maxresponsetokens"] = macro.values["maxresponse"]
+	}
+	if limits.Context != nil && *limits.Context > 0 {
+		macro.values["maxcontext"] = strconv.FormatInt(*limits.Context, 10)
+		macro.values["maxcontexttokens"] = macro.values["maxcontext"]
+		if responseLimit != nil && uint64(*responseLimit) <= uint64(*limits.Context) {
+			macro.values["maxprompt"] = strconv.FormatInt(*limits.Context-int64(*responseLimit), 10)
+			macro.values["maxprompttokens"] = macro.values["maxprompt"]
+		}
+	}
+	for key, value := range context.MacroValues {
+		macro.values[strings.ToLower(key)] = value
+	}
+	for key, value := range context.Variables {
+		macro.vars[key] = value
+	}
+
+	return macro, nil
 }

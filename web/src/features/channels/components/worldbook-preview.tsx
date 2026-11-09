@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
@@ -27,10 +27,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { previewWorldbook } from '../api'
-import {
-  worldbookWarningLabel,
-  type WorldbookConfig,
-} from '../lib/worldbook'
+import { worldbookWarningLabel, type WorldbookConfig } from '../lib/worldbook'
 import { worldbookPositionLabels } from '../lib/worldbook-placement'
 
 const placementRoleKeys: Record<string, string> = {
@@ -43,17 +40,24 @@ const placementRoleKeys: Record<string, string> = {
 export function WorldbookPreview(props: {
   config: WorldbookConfig
   presetValue?: string
+  sendRulesValue?: string
+  adaptationScope?: string
   disabled?: boolean
 }) {
   const { t } = useTranslation()
   const [input, setInput] = useState('')
-  const key = `${JSON.stringify(props.config)}\0${props.presetValue ?? ''}\0${input}`
+  const key = `${JSON.stringify(props.config)}\0${props.presetValue ?? ''}\0${props.sendRulesValue ?? ''}\0${props.adaptationScope ?? ''}\0${input}`
+  const revision = useMemo(() => ({ key, id: crypto.randomUUID() }), [key]).id
   const preview = useMutation({
     mutationFn: async (snapshot: {
       key: string
+      revision: string
       config: WorldbookConfig
       presetValue?: string
+      sendRulesValue?: string
       input: string
+      finalRequest?: boolean
+      adaptationScope?: string
     }) => {
       let request: unknown = {
         messages: [{ role: 'user', content: snapshot.input }],
@@ -84,18 +88,36 @@ export function WorldbookPreview(props: {
         result: await previewWorldbook(
           snapshot.config,
           request,
-          sillyTavernPreset
+          sillyTavernPreset,
+          {
+            sendRules: snapshot.sendRulesValue?.trim()
+              ? JSON.parse(snapshot.sendRulesValue)
+              : undefined,
+            context:
+              request &&
+              typeof request === 'object' &&
+              '_sillytavern_context' in request
+                ? request._sillytavern_context
+                : undefined,
+            draftRevision: snapshot.revision,
+            finalRequest: snapshot.finalRequest,
+            adaptationScope: snapshot.adaptationScope,
+          }
         ),
       }
     },
     onError: (error) => handleServerError(error),
     meta: { errorToast: false },
   })
-  const result = preview.data?.key === key ? preview.data.result : undefined
+  const result =
+    preview.data?.key === key && preview.data.result.draft_revision === revision
+      ? preview.data.result
+      : undefined
   const reasons: Record<string, string> = {
     included: t('Included'),
     disabled: t('Disabled'),
     invalid: t('Invalid data'),
+    needs_review: t('Needs confirmation'),
     no_match: t('No keyword match'),
     budget: t('Content limit reached'),
     duplicate: t('Duplicate content'),
@@ -110,7 +132,7 @@ export function WorldbookPreview(props: {
     <div className='space-y-4'>
       <p className='text-muted-foreground text-sm'>
         {t(
-          'Uses the same matching rules as live requests. No model request or charge is made.'
+          'Matching preview includes send rules and expanded entry text, before preset scripts. Final request preview also runs enabled local scripts. Neither preview contacts the model or downloads scripts.'
         )}
       </p>
       <div className='space-y-2'>
@@ -130,16 +152,56 @@ export function WorldbookPreview(props: {
         onClick={() =>
           preview.mutate({
             key,
+            revision,
             config: props.config,
             presetValue: props.presetValue,
+            sendRulesValue: props.sendRulesValue,
             input,
+            adaptationScope: props.adaptationScope,
           })
         }
       >
         {preview.isPending ? t('Testing...') : t('Run matching test')}
       </Button>
+      <Button
+        type='button'
+        variant='outline'
+        className='ml-2'
+        disabled={props.disabled || preview.isPending || !input.trim()}
+        onClick={() =>
+          preview.mutate({
+            key,
+            revision,
+            config: props.config,
+            presetValue: props.presetValue,
+            sendRulesValue: props.sendRulesValue,
+            input,
+            finalRequest: true,
+            adaptationScope: props.adaptationScope,
+          })
+        }
+      >
+        {t('Preview final request')}
+      </Button>
       {result && (
         <div className='space-y-4' aria-live='polite'>
+          {result.bypass_reason && (
+            <p role='status' className='rounded-lg border p-3 text-sm'>
+              {t(
+                'This request is outside the selected processing scope. Presets, worldbooks and regex rules do not run.'
+              )}
+            </p>
+          )}
+          {!!result.final_request && (
+            <div className='space-y-2'>
+              <p className='text-sm font-medium'>
+                {t('Final request preview (no model call)')}
+              </p>
+              <pre className='bg-muted/30 max-h-80 overflow-auto rounded-lg border p-3 text-xs [overflow-wrap:anywhere] whitespace-pre-wrap'>
+                {JSON.stringify(result.final_request, null, 2)}
+              </pre>
+            </div>
+          )}
           {[...new Set(result.warnings)].map((warning) => (
             <p key={warning} role='status' className='text-sm break-words'>
               {t(worldbookWarningLabel(warning))}

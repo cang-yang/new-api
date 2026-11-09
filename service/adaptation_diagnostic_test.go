@@ -4,10 +4,28 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPresetAuditDoesNotSerializePreviewOrRequestBodies(t *testing.T) {
+	trace := PresetCompileTrace{
+		Worldbook: &WorldbookPreview{
+			Text:         "SECRET_WORLDBOOK_BODY",
+			FinalRequest: &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "SECRET_FINAL_REQUEST"}}},
+			Entries:      []WorldbookDecision{{ID: "entry", Inserted: true}},
+		},
+		Plan: &AdaptationResolvedPlan{Base: &AdaptationBasePlan{Original: &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "SECRET_ORIGINAL"}}}}},
+	}
+	encoded, err := common.Marshal(trace)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "SECRET_")
+	assert.NotContains(t, string(encoded), "final_request")
+	assert.Contains(t, string(encoded), `"inserted":true`)
+	assert.Equal(t, "SECRET_WORLDBOOK_BODY", trace.Worldbook.Text, "audit serialization must not mutate a live preview")
+}
 
 func TestBuildAdaptationDiagnosticRecordsDecisionStagesWithoutBodies(t *testing.T) {
 	trace := &PresetCompileTrace{
@@ -69,12 +87,16 @@ func TestBuildAdaptationDiagnosticRecordsDecisionStagesWithoutBodies(t *testing.
 	require.True(t, ok)
 	require.Len(t, entries, 1)
 	assert.Equal(t, map[string]any{
-		"book_id": "book",
-		"id":      "entry",
-		"name":    "City",
-		"status":  "matched",
-		"reason":  "keyword",
-		"order":   0,
+		"book_id":   "book",
+		"id":        "entry",
+		"name":      "City",
+		"status":    "matched",
+		"reason":    "keyword",
+		"order":     0,
+		"eligible":  false,
+		"triggered": false,
+		"selected":  false,
+		"inserted":  false,
 		"placement": map[string]any{
 			"mode": "before_last_user", "index": 3, "role": "system", "fallback": false,
 		},

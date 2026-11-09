@@ -15,6 +15,7 @@ type TextRegexRule struct {
 	// SourceScriptID explicitly links an imported rule to the current preset's
 	// script in the same direction. The external copy owns its enable switch.
 	SourceScriptID string   `json:"source_script_id,omitempty"`
+	SourcePresetID string   `json:"source_preset_id,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	Disabled       bool     `json:"disabled,omitempty"`
 	Stage          string   `json:"stage"`
@@ -38,7 +39,7 @@ func (r TextRegexRule) Validate() error {
 			return fmt.Errorf("text regex trim string exceeds 16 KiB")
 		}
 	}
-	if r.ID == "" || len(r.ID) > 128 || len(r.Name) > 256 || len(r.SourceScriptID) > 128 {
+	if r.ID == "" || len(r.ID) > 128 || len(r.Name) > 256 || len(r.SourceScriptID) > 128 || len(r.SourcePresetID) > 128 {
 		return fmt.Errorf("text regex requires a bounded rule ID/name")
 	}
 	if r.Stage != "send" && r.Stage != "receive" {
@@ -53,8 +54,8 @@ func (r TextRegexRule) Validate() error {
 	if len(r.Pattern) > 16<<10 {
 		return fmt.Errorf("text regex pattern exceeds 16 KiB")
 	}
-	if r.MissingMatch != "" && r.MissingMatch != "passthrough" && r.MissingMatch != "empty" {
-		return fmt.Errorf("text regex missing_match must be passthrough or empty")
+	if r.MissingMatch != "" && r.MissingMatch != "passthrough" && r.MissingMatch != "empty" && r.MissingMatch != "error" {
+		return fmt.Errorf("text regex missing_match must be passthrough, empty or error")
 	}
 	for _, role := range r.Roles {
 		if !slices.Contains([]string{"user", "assistant", "system", "developer"}, role) {

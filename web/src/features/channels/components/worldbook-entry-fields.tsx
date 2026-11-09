@@ -25,6 +25,7 @@ import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -37,12 +38,14 @@ import {
   worldbookEntryBlocked,
   worldbookRiskFields,
   type WorldbookEntry,
+  type WorldbookRiskContext,
 } from '../lib/worldbook'
 import { WorldbookEntryNotes } from './worldbook-import-summary'
 import { WorldbookPlacementFields } from './worldbook-placement-fields'
 
 export function WorldbookEntryFields(props: {
   entry: WorldbookEntry
+  context?: WorldbookRiskContext
   onChange: (entry: WorldbookEntry) => void
   disabled?: boolean
 }) {
@@ -53,7 +56,7 @@ export function WorldbookEntryFields(props: {
     props.entry.secondary_keys.join('\n')
   )
   const invalid = worldbookEntryBlocked(props.entry)
-  const risk = worldbookRiskFields(props.entry)
+  const risk = worldbookRiskFields(props.entry, props.context)
   const update = (patch: Partial<WorldbookEntry>) =>
     props.onChange({ ...props.entry, ...patch })
   return (
@@ -69,17 +72,18 @@ export function WorldbookEntryFields(props: {
               { fields: risk.join(', ') }
             )}
           </p>
-          {!props.entry.enabled && (
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              disabled={props.disabled}
-              onClick={() => props.onChange(worldbookConfirmEntry(props.entry))}
-            >
-              {t('Confirm and enable')}
-            </Button>
-          )}
+
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            disabled={props.disabled}
+            onClick={() =>
+              props.onChange(worldbookConfirmEntry(props.entry, props.context))
+            }
+          >
+            {t('Confirm and enable')}
+          </Button>
         </div>
       )}
       {invalid && (
@@ -98,10 +102,10 @@ export function WorldbookEntryFields(props: {
         <Label htmlFor={`${id}-enabled`}>{t('Enable entry')}</Label>
         <Switch
           id={`${id}-enabled`}
-          checked={props.entry.enabled}
+          checked={props.entry.enabled && !invalid && risk.length === 0}
           disabled={props.disabled}
           onCheckedChange={(enabled) => {
-            if (enabled && invalid) return
+            if (enabled && (invalid || risk.length > 0)) return
             update({ enabled })
           }}
         />
@@ -126,10 +130,12 @@ export function WorldbookEntryFields(props: {
               <SelectValue />
             </SelectTrigger>
             <SelectContent alignItemWithTrigger={false}>
-              <SelectItem value='keywords'>
-                {t('When keywords match')}
-              </SelectItem>
-              <SelectItem value='always'>{t('Always include')}</SelectItem>
+              <SelectGroup>
+                <SelectItem value='keywords'>
+                  {t('When keywords match')}
+                </SelectItem>
+                <SelectItem value='always'>{t('Always include')}</SelectItem>
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>

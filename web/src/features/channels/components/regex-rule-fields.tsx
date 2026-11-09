@@ -30,6 +30,7 @@ import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -230,18 +231,27 @@ export function RegexRuleFields(props: {
                   items={[
                     { value: 'passthrough', label: t('Keep original text') },
                     { value: 'empty', label: t('Return empty text') },
+                    {
+                      value: 'error',
+                      label: t('Stop if this rule does not match'),
+                    },
                   ]}
                 >
                   <SelectTrigger id={`${id}-missing`} className='w-full'>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='passthrough'>
-                      {t('Keep original text')}
-                    </SelectItem>
-                    <SelectItem value='empty'>
-                      {t('Return empty text')}
-                    </SelectItem>
+                    <SelectGroup>
+                      <SelectItem value='passthrough'>
+                        {t('Keep original text')}
+                      </SelectItem>
+                      <SelectItem value='empty'>
+                        {t('Return empty text')}
+                      </SelectItem>
+                      <SelectItem value='error'>
+                        {t('Stop if this rule does not match')}
+                      </SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Field>

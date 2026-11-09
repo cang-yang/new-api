@@ -19,11 +19,21 @@ import (
 
 const maxFilteredResponseBytes = 8 << 20
 
+// Acquire capacity before calling a provider, not after buffering its reply.
+var responseProcessingSlots = make(chan struct{}, 16)
+
 // ResponseTextFilterWriter filters the client-facing JSON/SSE after the adaptor
 // has accounted for the original upstream response. A bounded buffer lets a
 // regex match span arbitrary SSE chunks and keeps protocol metadata intact.
 type ResponseTextFilterWriter struct {
 	gin.ResponseWriter
+	admitted       bool
+	requirements   *ClientRequirements
+	structured     bool
+	checkpoint     []byte
+	onlyOutput     bool
+	skipOutput     bool
+	skipChoices    map[string]bool
 	config         dto.ResponseTextFilter
 	pattern        *regexp.Regexp
 	regexes        []presetResponseRegex
@@ -35,7 +45,6 @@ type ResponseTextFilterWriter struct {
 	forceEmpty     bool
 	status         int
 	buffer         bytes.Buffer
-	tooLarge       bool
 	blocked        bool
 	warned         bool
 	transformErr   error
@@ -49,7 +58,12 @@ type responseStageError struct {
 	err   error
 }
 
-func (e *responseStageError) Error() string { return e.err.Error() }
+func (e *responseStageError) Error() string {
+	if e.stage == FailureStageScript || e.stage == FailureStageOutputProcessing {
+		return "preset script processing failed"
+	}
+	return e.err.Error()
+}
 func (e *responseStageError) Unwrap() error { return e.err }
 
 func newResponseStageError(stage FailureStage, err error) error {
@@ -65,6 +79,14 @@ func responseErrorStage(err error) FailureStage {
 		return staged.stage
 	}
 	return FailureStageResponseValidation
+}
+
+func AdaptationErrorStage(err error) FailureStage {
+	var staged *responseStageError
+	if errors.As(err, &staged) {
+		return staged.stage
+	}
+	return FailureStagePreset
 }
 
 func BeginResponseTextFilter(c *gin.Context, config *dto.ResponseTextFilter, model string) *ResponseTextFilterWriter {
@@ -119,10 +141,16 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 			setupErr = err
 		}
 	}
-	if !hasFilter && toolText == nil && scriptResponse == nil && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
+	requirements, _ := c.Get(ClientRequirementsKey)
+	client, _ := requirements.(*ClientRequirements)
+	protectClient := client != nil && client.request != nil && (clientDeclaresToolContract(client.request) || client.request.ResponseFormat != nil && client.request.ResponseFormat.Type != "" && client.request.ResponseFormat.Type != "text")
+	if !protectClient && !hasFilter && toolText == nil && scriptResponse == nil && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
 		return nil
 	}
 	w := &ResponseTextFilterWriter{ResponseWriter: c.Writer, regexes: regexes, hasFilter: hasFilter, toolText: toolText, scriptResponse: scriptResponse, status: c.Writer.Status()}
+	if value, exists := c.Get(ClientRequirementsKey); exists {
+		w.requirements, _ = value.(*ClientRequirements)
+	}
 	w.diagnostic = adaptationDiagnosticFromContext(c)
 	w.policy = responseFailurePolicy(preset, config, model, false)
 	if len(warnings) > 0 {
@@ -147,6 +175,12 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 // response stages so older channel rules keep failing safe.
 func responseFailurePolicy(preset *dto.SillyTavernPresetConfig, config *dto.ResponseTextFilter, model string, send bool) *AdaptationFailurePolicy {
 	policy := (&AdaptationProfile{Preset: preset}).FailurePolicy()
+	if config != nil && config.FailurePolicy == "passthrough" || preset != nil && preset.RegexFailurePolicy == "passthrough" {
+		policy.regex = FailurePreserve
+	}
+	if preset != nil && preset.FailurePolicy != nil && preset.FailurePolicy.Regex != "" {
+		policy.regex = FailureMode(preset.FailurePolicy.Regex)
+	}
 	// A preset that owns a response script or a declarative tool transport has
 	// a contracted response pipeline: the run must complete or the gateway
 	// cannot guarantee what the client receives. Unless the operator set an
@@ -184,16 +218,10 @@ func (w *ResponseTextFilterWriter) stageMode(stage FailureStage) FailureMode {
 	if w.policy != nil {
 		return w.policy.Mode(stage)
 	}
-	switch stage {
-	case FailureStageResponseValidation, FailureStageResponseRestore:
-		return FailureSafeRaw
-	case FailureStageOutputProcessing, FailureStageRegex:
-		return FailurePreserve
-	case FailureStageResponseStarted:
+	if stage == FailureStageResponseStarted {
 		return FailureStop
-	default:
-		return FailureSafeRaw
 	}
+	return FailureFail
 }
 
 // internalToolNames reports the gateway-internal tools whose presence in a raw
@@ -241,29 +269,15 @@ func (w *ResponseTextFilterWriter) Write(data []byte) (int, error) {
 	if w.blocked {
 		return len(data), nil
 	}
-	if w.tooLarge {
-		return w.ResponseWriter.Write(data)
-	}
 	if bytes.Equal(data, []byte(": PING\n\n")) {
-		return w.ResponseWriter.Write(data)
+		return len(data), nil
 	}
 	if w.buffer.Len()+len(data) > maxFilteredResponseBytes {
-		// A response we cannot finish buffering can only be released raw when
-		// doing so cannot leak a gateway-internal tool.
-		if w.stageMode(FailureStageResponseRestore) == FailureFail || !w.rawResponseSafeForFallback() {
-			w.blocked = true
-			w.buffer.Reset()
-			return len(data), nil
-		}
-		w.tooLarge = true
-		common.SysError("Response regex exceeded buffer limit; original response retained, text omitted")
-		w.ResponseWriter.WriteHeader(w.status)
-		if _, err := w.ResponseWriter.Write(w.buffer.Bytes()); err != nil {
-			return 0, err
-		}
+		w.blocked = true
 		w.buffer.Reset()
-		return w.ResponseWriter.Write(data)
+		return len(data), nil
 	}
+
 	return w.buffer.Write(data)
 }
 
@@ -272,9 +286,21 @@ func (w *ResponseTextFilterWriter) WriteString(data string) (int, error) {
 }
 
 // Flush must not release an incomplete SSE frame before extraction is known.
-func (w *ResponseTextFilterWriter) Flush() {
-	if w.tooLarge {
-		w.ResponseWriter.Flush()
+func (w *ResponseTextFilterWriter) Flush() {}
+
+func (w *ResponseTextFilterWriter) Admit(c *gin.Context) error {
+	if w.transformErr != nil {
+		return w.transformErr
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return c.Request.Context().Err()
+	}
+	select {
+	case responseProcessingSlots <- struct{}{}:
+		w.admitted = true
+		return nil
+	default:
+		return fmt.Errorf("reply processing is busy; retry later")
 	}
 }
 
@@ -282,8 +308,15 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 	if w == nil {
 		return nil
 	}
+	if w.admitted {
+		defer func() { <-responseProcessingSlots; w.admitted = false }()
+	}
 	c.Writer = w.ResponseWriter
-	if !success && !w.tooLarge {
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		w.buffer.Reset()
+		return c.Request.Context().Err()
+	}
+	if !success {
 		// The controller owns errors/retries. Never concatenate a buffered failed
 		// attempt with a later successful response or the controller's error JSON.
 		w.buffer.Reset()
@@ -293,11 +326,11 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		w.Header().Del("Content-Length")
 		return fmt.Errorf("response text filter exceeded %d bytes", maxFilteredResponseBytes)
 	}
-	if w.tooLarge {
-		return nil
-	}
 	body := w.buffer.Bytes()
 	if len(body) == 0 {
+		if w.requirements != nil {
+			return newResponseStageError(FailureStageResponseValidation, fmt.Errorf("provider returned an empty response"))
+		}
 		return nil
 	}
 	if success && w.status < 400 {
@@ -307,35 +340,11 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		if err != nil {
 			stage := responseErrorStage(err)
 			w.recordStage(stage, "failed", err)
-			switch w.stageMode(stage) {
-			case FailureFail:
-				w.Header().Del("Content-Length")
-				if w.scriptResponse != nil {
-					return fmt.Errorf("preset script response processing failed at stage %s: %w", stage, err)
-				}
-				return fmt.Errorf("response text filter could not safely process the response at stage %s: %w", stage, err)
-			case FailureEmpty:
-				w.recordStage(FailureStageRegex, "fallback", fmt.Errorf("response text emptied by failure policy"))
-				emptied, emptyErr := w.emptyResponse(body, stream)
-				if emptyErr != nil {
-					w.Header().Del("Content-Length")
-					return fmt.Errorf("response text filter could not empty an invalid response: %w", emptyErr)
-				}
-				body = emptied
-			case FailureSafeRaw:
-				if w.rawResponseSafeForFallback() {
-					w.recordStage(FailureStageResponseRestore, "fallback", fmt.Errorf("raw upstream response sent after safe fallback"))
-					logger.LogWarn(c, "Response text filter sent the raw upstream response after a safe fallback at stage "+string(stage))
-				} else {
-					w.Header().Del("Content-Length")
-					return fmt.Errorf("response text filter refused to leak a gateway-internal tool at stage %s: %w", stage, err)
-				}
-			default:
-				w.recordStage(stage, "fallback", fmt.Errorf("raw response preserved after recoverable failure"))
-				logger.LogWarn(c, "Response text filter preserved the raw response after a recoverable failure at stage "+string(stage))
-			}
+			w.Header().Del("Content-Length")
+			return fmt.Errorf("reply processing failed at %s: %w", stage, err)
 		} else {
 			body = filtered
+			w.recordStage(FailureStageResponseValidation, "completed", nil)
 		}
 	}
 	w.Header().Del("Content-Length")
@@ -357,10 +366,9 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 		w.recordStage(FailureStageResponseValidation, "failed", w.transformErr)
 		return nil, w.transformErr
 	}
-	w.recordStage(FailureStageResponseValidation, "completed", nil, map[string]any{
-		"body_bytes": len(body),
-		"stream":     stream,
-	})
+	if _, err := responseChoices(body, stream); err != nil {
+		return nil, newResponseStageError(FailureStageResponseValidation, err)
+	}
 	prepared, err := restorePresetToolText(body, stream, w.toolText, w.deadline)
 	if err != nil {
 		w.recordStage(FailureStageResponseRestore, "failed", err)
@@ -370,31 +378,112 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 		prepared, err = w.scriptResponse.restoreTools(prepared, stream, w.deadline)
 		if err != nil {
 			w.recordStage(FailureStageResponseRestore, "failed", err)
+			if w.stageMode(FailureStageResponseRestore) == FailureSafeRaw && w.rawResponseSafeForFallback() && !w.mandatoryRegex() && w.validateDelivery(body, stream) == nil {
+				w.recordStage(FailureStageResponseRestore, "fallback", nil)
+				return body, nil
+			}
 			return nil, newResponseStageError(FailureStageResponseRestore, err)
 		}
+	}
+	if err := w.validateDelivery(prepared, stream); err != nil {
+		return nil, newResponseStageError(FailureStageResponseRestore, err)
 	}
 	w.recordStage(FailureStageResponseRestore, "completed", nil, map[string]any{
 		"changed":    !bytes.Equal(body, prepared),
 		"body_bytes": len(prepared),
 	})
-	var filtered []byte
-	if stream {
-		filtered, err = w.filterSSE(prepared)
-	} else {
-		filtered, err = w.filterJSON(prepared)
-	}
+	w.checkpoint = prepared
+	states, err := responseChoices(prepared, stream)
 	if err != nil {
-		stage := responseErrorStage(err)
-		w.recordStage(stage, "failed", err)
-		return nil, err
+		return nil, newResponseStageError(FailureStageResponseValidation, err)
 	}
-	w.recordStage(FailureStageOutputProcessing, "completed", nil, nil)
-	w.recordStage(FailureStageRegex, regexDiagnosticStatus(w), nil, map[string]any{
-		"has_text_rule": w.hasFilter,
-		"regex_count":   len(w.regexes),
-		"changed":       !bytes.Equal(prepared, filtered),
-	})
+	w.skipChoices = map[string]bool{}
+	for key, state := range states {
+		if len(state.tools) > 0 || state.refused || state.finish == "length" || state.finish == "content_filter" {
+			w.skipChoices["choice:"+key] = true
+		}
+	}
+	run := w.filterJSON
+	if stream {
+		run = w.filterSSE
+	}
+	structured := w.requirements != nil && w.requirements.request.ResponseFormat != nil && w.requirements.request.ResponseFormat.Type != "" && w.requirements.request.ResponseFormat.Type != "text"
+	if w.scriptResponse != nil && w.scriptResponse.protocol != nil && w.scriptResponse.protocol.contract == presetProtocolContractJSON {
+		structured = true
+	}
+	w.structured = structured
+	if structured && len(w.config.JSONTextPointers) == 0 {
+		w.recordStage(FailureStageOutputProcessing, "skipped", nil)
+		w.recordStage(FailureStageRegex, "skipped", nil)
+		return prepared, nil
+	}
+	// Stateful output scripts run once per complete text choice. JSON path
+	// transforms are regex-only and cannot re-run an output event per field.
+	processed := prepared
+	if !structured {
+		w.onlyOutput = true
+		processed, err = run(prepared)
+		w.onlyOutput = false
+		if err != nil {
+			if w.stageMode(FailureStageOutputProcessing) != FailurePreserve || w.mandatoryRegex() {
+				return nil, err
+			}
+			w.transformErr = nil
+			w.recordStage(FailureStageOutputProcessing, "fallback", nil)
+			if err := w.validateDelivery(prepared, stream); err != nil {
+				return nil, newResponseStageError(FailureStageResponseValidation, err)
+			}
+			return prepared, nil
+		} else {
+			status := "skipped"
+			if w.scriptResponse != nil && (w.scriptResponse.tavern != nil || w.scriptResponse.settings != nil && w.scriptResponse.settings.OutputPreprocessing.Enabled) {
+				status = "completed"
+			}
+			w.recordStage(FailureStageOutputProcessing, status, nil)
+		}
+	} else {
+		w.recordStage(FailureStageOutputProcessing, "skipped", nil)
+	}
+	w.checkpoint = processed
+	w.skipOutput = true
+	filtered, err := run(processed)
+	w.skipOutput = false
+	if err != nil {
+		mode := w.stageMode(FailureStageRegex)
+		if w.mandatoryRegex() || mode != FailurePreserve && mode != FailureEmpty {
+			return nil, err
+		}
+		w.transformErr = nil
+		filtered = processed
+		if mode == FailureEmpty {
+			if structured {
+				return nil, newResponseStageError(FailureStageRegex, fmt.Errorf("empty text fallback cannot satisfy JSON output"))
+			}
+			filtered, err = w.emptyResponse(processed, stream)
+			if err != nil {
+				return nil, err
+			}
+		}
+		w.recordStage(FailureStageRegex, "fallback", nil)
+	} else {
+		w.recordStage(FailureStageRegex, regexDiagnosticStatus(w), nil)
+	}
+	if err := w.validateDelivery(filtered, stream); err != nil {
+		return nil, newResponseStageError(FailureStageResponseValidation, err)
+	}
 	return filtered, nil
+}
+
+func (w *ResponseTextFilterWriter) mandatoryRegex() bool {
+	if w.hasFilter && w.config.MissingMatch == "error" {
+		return true
+	}
+	for _, rule := range w.config.Rules {
+		if !rule.Disabled && rule.Stage == "receive" && rule.MissingMatch == "error" {
+			return true
+		}
+	}
+	return (w.hasFilter || len(w.regexes) > 0) && w.stageMode(FailureStageRegex) == FailureFail
 }
 
 func (w *ResponseTextFilterWriter) recordStage(stage FailureStage, status string, err error, details ...map[string]any) {
@@ -442,13 +531,16 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 	if w.forceEmpty {
 		return "", text != ""
 	}
-	if w.scriptResponse != nil {
+	if !w.skipOutput && w.scriptResponse != nil {
 		var err error
 		text, err = w.scriptResponse.processText(text, w.deadline)
 		if err != nil {
 			w.transformErr = newResponseStageError(FailureStageOutputProcessing, err)
 			return original, false
 		}
+	}
+	if w.onlyOutput {
+		return text, text != original
 	}
 	matched := false
 	if w.hasFilter {
@@ -460,6 +552,10 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 				text = strings.TrimSpace(text)
 			}
 		}
+	}
+	if !matched && w.hasFilter && w.config.MissingMatch == "error" {
+		w.transformErr = newResponseStageError(FailureStageRegex, fmt.Errorf("required reply extraction did not match"))
+		return original, false
 	}
 	if !matched && w.hasFilter && w.config.MissingMatch == "empty" {
 		text = ""
@@ -619,16 +715,19 @@ func (w *ResponseTextFilterWriter) filterJSON(body []byte) ([]byte, error) {
 	for _, slot := range slots {
 		groups[slot.group] = append(groups[slot.group], slot)
 	}
-	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 {
+	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 && len(w.skipChoices) == 0 {
 		return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("Tavern runtime requires exactly one final text response choice"))
 	}
 	changed := false
-	for _, group := range groups {
+	for key, group := range groups {
+		if w.skipChoices[key] {
+			continue
+		}
 		var original strings.Builder
 		for _, slot := range group {
 			original.WriteString(slot.parent[slot.field].(string))
 		}
-		if extracted, changedText := w.transform(original.String()); changedText {
+		if extracted, changedText := w.transformContent(original.String()); changedText {
 			group[0].parent[group[0].field] = extracted
 			for _, slot := range group[1:] {
 				slot.parent[slot.field] = ""
@@ -691,16 +790,19 @@ func (w *ResponseTextFilterWriter) filterSSE(body []byte) ([]byte, error) {
 		}
 		frames = append(frames, item)
 	}
-	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 {
+	if w.scriptResponse != nil && w.scriptResponse.tavern != nil && len(groups) != 1 && len(w.skipChoices) == 0 {
 		return nil, newResponseStageError(FailureStageResponseValidation, fmt.Errorf("Tavern runtime requires exactly one final text response choice"))
 	}
 	changed := false
-	for _, group := range groups {
+	for key, group := range groups {
+		if w.skipChoices[key] {
+			continue
+		}
 		var original strings.Builder
 		for _, slot := range group {
 			original.WriteString(slot.parent[slot.field].(string))
 		}
-		if extracted, changedText := w.transform(original.String()); changedText {
+		if extracted, changedText := w.transformContent(original.String()); changedText {
 			group[0].parent[group[0].field] = extracted
 			for _, slot := range group[1:] {
 				slot.parent[slot.field] = ""

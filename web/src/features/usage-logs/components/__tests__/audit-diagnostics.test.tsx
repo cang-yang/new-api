@@ -59,9 +59,29 @@ test('renders the adaptation timeline with decision metadata', () => {
 
   expect(screen.getByText('Adaptation diagnostics')).toBeVisible()
   expect(screen.getByText('Worldbook')).toBeVisible()
-  expect(screen.getByText('Tool coordination')).toBeVisible()
+  expect(screen.getByText('Reply source')).toBeVisible()
   expect(screen.getByText('2 stages')).toBeVisible()
-  expect(screen.getByText('Decision details')).toBeVisible()
+  expect(screen.getAllByText('Decision details')).toHaveLength(2)
+})
+
+test('an unknown failed stage never appears as completed', () => {
+  render(
+    <I18nextProvider i18n={i18n}>
+      <AuditDiagnostics
+        value={{
+          stages: [
+            {
+              stage: 'new-stage',
+              status: 'failed',
+              summary: 'safe failure code',
+            },
+          ],
+        }}
+      />
+    </I18nextProvider>
+  )
+  expect(screen.getByText('Processing stopped at this step')).toBeVisible()
+  expect(screen.queryByText('Stage completed')).toBeNull()
 })
 
 test('renders an explicit empty state for legacy attempts', () => {

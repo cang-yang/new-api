@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
-	"sync"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -63,9 +61,9 @@ type AdaptationProfile struct {
 }
 
 type AdaptationBasePlan struct {
-	Profile            *AdaptationProfile
-	Original           *dto.GeneralOpenAIRequest
-	Matched            *dto.GeneralOpenAIRequest
+	Profile            *AdaptationProfile        `json:"-"`
+	Original           *dto.GeneralOpenAIRequest `json:"-"`
+	Matched            *dto.GeneralOpenAIRequest `json:"-"`
 	Contract           ContractClass
 	ClientFinal        string
 	ProfileFingerprint string
@@ -74,7 +72,7 @@ type AdaptationBasePlan struct {
 }
 
 type AdaptationResolvedPlan struct {
-	Base                *AdaptationBasePlan
+	Base                *AdaptationBasePlan `json:"-"`
 	ProtocolFingerprint string
 	Phase               string
 	FinalTool           string
@@ -84,28 +82,6 @@ type AdaptationResolvedPlan struct {
 type AdaptationRequestPlan struct {
 	Base     *AdaptationBasePlan
 	Resolved *AdaptationResolvedPlan
-}
-
-const (
-	adaptationPlanMetadataCacheLimit = 256
-	adaptationPlanMetadataCacheTTL   = 10 * time.Minute
-)
-
-type adaptationPlanMetadata struct {
-	profileFingerprint string
-	contract           ContractClass
-	clientFinal        string
-	expiresAt          time.Time
-}
-
-type adaptationPlanMetadataCacheStore struct {
-	sync.Mutex
-	entries map[string]adaptationPlanMetadata
-	order   []string
-}
-
-var adaptationPlanMetadataCache = adaptationPlanMetadataCacheStore{
-	entries: make(map[string]adaptationPlanMetadata),
 }
 
 func NewAdaptationProfile(preset *dto.SillyTavernPresetConfig, worldbook *dto.WorldbookConfig, sendRules, receiveRules *dto.ResponseTextFilter) *AdaptationProfile {
@@ -170,16 +146,16 @@ func (p AdaptationFailurePolicy) Mode(stage FailureStage) FailureMode {
 
 func (p *AdaptationProfile) FailurePolicy() AdaptationFailurePolicy {
 	policy := AdaptationFailurePolicy{
-		preflight:          FailureRequestPassthrough,
-		worldbook:          FailureSkip,
-		precompile:         FailureRequestPassthrough,
-		preset:             FailureRequestPassthrough,
-		script:             FailureRequestPassthrough,
-		toolResolution:     FailureToolProtocolPassthrough,
-		responseValidation: FailureSafeRaw,
-		responseRestore:    FailureSafeRaw,
-		outputProcessing:   FailurePreserve,
-		regex:              FailurePreserve,
+		preflight:          FailureFail,
+		worldbook:          FailureFail,
+		precompile:         FailureFail,
+		preset:             FailureFail,
+		script:             FailureFail,
+		toolResolution:     FailureFail,
+		responseValidation: FailureFail,
+		responseRestore:    FailureFail,
+		outputProcessing:   FailureFail,
+		regex:              FailureFail,
 		crossChannelRetry:  FailureReject,
 		responseStarted:    FailureStop,
 	}
@@ -214,6 +190,33 @@ func AdaptationFailureMode(config *dto.SillyTavernPresetConfig, stage FailureSta
 	return (&AdaptationProfile{Preset: config}).FailurePolicy().Mode(stage)
 }
 
+// Request fallback is an explicit all-or-nothing cancellation. Required reply
+// cleanup cannot be bypassed just because request preparation failed first.
+func (p *AdaptationProfile) CanCancelBeforeProvider(model string) bool {
+	if p == nil {
+		return true
+	}
+	if p.Preset != nil && (p.Preset.ReplyAdapter != nil && len(p.Preset.ReplyAdapter.Containers) > 0 ||
+		p.Preset.ToolText != nil && p.Preset.ToolText.Enabled ||
+		p.Preset.ScriptRuntime != "" && p.FailurePolicy().Mode(FailureStageOutputProcessing) == FailureFail) {
+		return false
+	}
+	if textRegexRequiresStrictFailure(p.ReceiveRules, p.Preset, model, false) {
+		return false
+	}
+	if p.ReceiveRules != nil {
+		if p.ReceiveRules.MissingMatch == "error" {
+			return false
+		}
+		for _, rule := range p.ReceiveRules.Rules {
+			if !rule.Disabled && rule.Stage == "receive" && rule.MissingMatch == "error" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // AdaptationProfileFingerprint exposes the deterministic channel-policy
 // fingerprint. The relay uses it to reject cross-channel retries that would
 // silently change the frozen request plan.
@@ -242,6 +245,11 @@ func BuildBasePlan(profile *AdaptationProfile, original, matched *dto.GeneralOpe
 	if err != nil {
 		return nil, err
 	}
+	frozenProfile, err := common.DeepCopy(profile)
+	if err != nil {
+		return nil, err
+	}
+	profile = frozenProfile
 	contract := ClassifyContract(originalCopy)
 	clientFinal := ""
 	profileFingerprint, err := adaptationProfileFingerprint(profile)
@@ -253,22 +261,7 @@ func BuildBasePlan(profile *AdaptationProfile, original, matched *dto.GeneralOpe
 	if err != nil {
 		return nil, err
 	}
-	requestHash := hashRequest(originalCopy)
-	metadataKey := adaptationPlanMetadataCacheKey(profileFingerprint, requestHash)
-	if metadata, ok := adaptationPlanMetadataCache.get(metadataKey); ok {
-		contract = metadata.contract
-		clientFinal = metadata.clientFinal
-	} else {
-		if originalCopy != nil {
-			clientFinal = inferClientFinalTool(originalCopy, originalCopy, nil)
-		}
-		adaptationPlanMetadataCache.put(metadataKey, adaptationPlanMetadata{
-			profileFingerprint: profileFingerprint,
-			contract:           contract,
-			clientFinal:        clientFinal,
-			expiresAt:          time.Now().Add(adaptationPlanMetadataCacheTTL),
-		})
-	}
+
 	plan := &AdaptationBasePlan{
 		Profile:            profile,
 		Original:           originalCopy,
@@ -368,6 +361,7 @@ func AttachAdaptationPlan(trace *PresetCompileTrace, base *AdaptationBasePlan) *
 	}
 	resolved := ResolveAdaptationPlan(base, protocol)
 	trace.Plan = resolved
+	trace.Summary = &AdaptationSummary{Version: 2, Contract: string(base.Contract), ProfileFingerprint: base.ProfileFingerprint, Fingerprint: resolved.Fingerprint}
 	if trace.ScriptResponse != nil {
 		trace.ScriptResponse.resolvedPlan = resolved
 	}
@@ -429,6 +423,52 @@ func adaptationProfileFingerprint(profile *AdaptationProfile) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Hash parsed configuration, not JSON indentation or display-only labels.
+	// Script-readable names remain significant while a runtime is enabled.
+	var semantic map[string]any
+	if err := common.UnmarshalPreservingNumbers(encoded, &semantic); err != nil {
+		return "", err
+	}
+	if worldbook, ok := semantic["Worldbook"].(map[string]any); ok {
+		books, _ := worldbook["books"].([]any)
+		for _, value := range books {
+			book, _ := value.(map[string]any)
+			delete(book, "id")
+			delete(book, "name")
+			delete(book, "warnings")
+			entries, _ := book["entries"].([]any)
+			for _, value := range entries {
+				entry, _ := value.(map[string]any)
+				delete(entry, "id")
+				delete(entry, "name")
+			}
+		}
+	}
+	preset, _ := semantic["Preset"].(map[string]any)
+	if preset["script_runtime"] == nil || preset["script_runtime"] == "" {
+		if document, ok := preset["preset"].(map[string]any); ok {
+			delete(document, "name")
+			prompts, _ := document["prompts"].([]any)
+			for _, value := range prompts {
+				prompt, _ := value.(map[string]any)
+				delete(prompt, "name")
+			}
+		}
+	}
+	for _, field := range []string{"SendRules", "ReceiveRules"} {
+		if filter, ok := semantic[field].(map[string]any); ok {
+			rules, _ := filter["rules"].([]any)
+			for _, value := range rules {
+				rule, _ := value.(map[string]any)
+				delete(rule, "id")
+				delete(rule, "name")
+			}
+		}
+	}
+	encoded, err = common.Marshal(semantic)
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:]), nil
 }
@@ -450,46 +490,6 @@ func adaptationPlanFingerprint(plan *AdaptationBasePlan) string {
 	encoded, _ := common.Marshal(payload)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
-}
-
-func adaptationPlanMetadataCacheKey(profileFingerprint, requestHash string) string {
-	sum := sha256.Sum256([]byte(profileFingerprint + "\x00" + requestHash))
-	return hex.EncodeToString(sum[:])
-}
-
-func (c *adaptationPlanMetadataCacheStore) get(key string) (adaptationPlanMetadata, bool) {
-	c.Lock()
-	defer c.Unlock()
-	entry, ok := c.entries[key]
-	if !ok {
-		return adaptationPlanMetadata{}, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		delete(c.entries, key)
-		return adaptationPlanMetadata{}, false
-	}
-	return entry, true
-}
-
-func (c *adaptationPlanMetadataCacheStore) put(key string, metadata adaptationPlanMetadata) {
-	c.Lock()
-	defer c.Unlock()
-	if _, exists := c.entries[key]; !exists {
-		c.order = append(c.order, key)
-	}
-	c.entries[key] = metadata
-	for len(c.order) > adaptationPlanMetadataCacheLimit {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		delete(c.entries, oldest)
-	}
-}
-
-func clearAdaptationPlanMetadataCache() {
-	adaptationPlanMetadataCache.Lock()
-	defer adaptationPlanMetadataCache.Unlock()
-	adaptationPlanMetadataCache.entries = make(map[string]adaptationPlanMetadata)
-	adaptationPlanMetadataCache.order = nil
 }
 
 func adaptationResolvedFingerprint(plan *AdaptationResolvedPlan) string {

@@ -241,6 +241,7 @@ import {
   type ModelMappingDraftRequest,
 } from '../model-mapping-editor'
 import { ModelRedirectPanel } from '../model-redirect-panel'
+import { AdaptationScopeCheck } from '../preset-capability-report'
 import { RegexSettings } from '../regex-settings'
 import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { SillyTavernPresetEditor } from '../sillytavern-preset-editor'
@@ -547,9 +548,11 @@ export function ChannelMutateDrawer({
     }
     previousProviderPicker.current = showProviderPicker
   }, [open, showProviderPicker])
-  const loadedForm = useRef<{ channelId: number; snapshot: string } | null>(
-    null
-  )
+  const loadedForm = useRef<{
+    channelId: number
+    snapshot: string
+    channel: Channel
+  } | null>(null)
 
   const { data: defaultBaseURLs } = useQuery({
     queryKey: channelsQueryKeys.defaultBaseURLs(),
@@ -646,6 +649,16 @@ export function ChannelMutateDrawer({
       }
       let config: Record<string, unknown> = {
         preset,
+        source_preset_id: [
+          ...new Uint8Array(
+            await crypto.subtle.digest(
+              'SHA-256',
+              new TextEncoder().encode(JSON.stringify(preset))
+            )
+          ),
+        ]
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join(''),
         parameter_policy: 'preset',
         source_file_name: file.name,
         enable_embedded_regex: false,
@@ -1189,6 +1202,7 @@ export function ChannelMutateDrawer({
       loadedForm.current = {
         channelId: channelData.data.id,
         snapshot: JSON.stringify(form.getValues()),
+        channel: structuredClone(channelData.data),
       }
       setProviderTarget(
         defaults.type === CHANNEL_TYPE_TASK_PLUGIN
@@ -1733,6 +1747,7 @@ export function ChannelMutateDrawer({
 
   const channelMutation = useChannelMutateForm({
     currentRow,
+    baselineChannel: loadedForm.current?.channel,
     isEditing,
     isMultiKeyChannel,
     onSuccess: handleSuccess,
@@ -2929,6 +2944,55 @@ export function ChannelMutateDrawer({
 
         <FormField
           control={form.control}
+          name='adaptation_scope'
+          render={({ field }) => (
+            <FormItem className='space-y-3 border-t pt-4'>
+              <FormLabel>{t('When to use presets and reply rules')}</FormLabel>
+              <Select
+                value={field.value ?? 'all_supported'}
+                onValueChange={field.onChange}
+                disabled={sensitiveLocked || isSubmitting}
+              >
+                <FormControl>
+                  <SelectTrigger className='w-full'>
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value='plain_chat_only'>
+                      {t('Plain text chats only (recommended)')}
+                    </SelectItem>
+                    <SelectItem value='all_supported'>
+                      {t('All supported chat requests')}
+                    </SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FormDescription>
+                {field.value === 'plain_chat_only'
+                  ? t(
+                      'Presets, worldbooks and send/receive rules apply only to plain text chats. Requests with tools, JSON requirements or media pass through unchanged. No client-specific setup is needed.'
+                    )
+                  : t(
+                      'Presets, worldbooks and rules also process tool and JSON requests. Client format requirements stay protected; incompatible preset tools stop the request with a clear error.'
+                    )}
+              </FormDescription>
+              <FormMessage />
+              <AdaptationScopeCheck
+                scope={field.value}
+                defaultModel={formValues.models?.split(',')[0]?.trim()}
+                presetValue={formValues.sillytavern_preset}
+                worldbookValue={formValues.worldbook}
+                filterValue={formValues.response_text_filter}
+                disabled={sensitiveLocked || isSubmitting}
+              />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
           name='response_text_filter'
           render={({ field }) => (
             <FormItem className='space-y-3 border-t pt-4'>
@@ -2964,6 +3028,8 @@ export function ChannelMutateDrawer({
                 scopeKey={channelId ?? 'new'}
                 value={field.value || ''}
                 presetValue={formValues.sillytavern_preset}
+                sendRulesValue={formValues.response_text_filter}
+                adaptationScope={formValues.adaptation_scope}
                 onChange={field.onChange}
                 disabled={sensitiveLocked || isSubmitting}
               />
@@ -5749,7 +5815,9 @@ export function ChannelMutateDrawer({
               const merged = mergePresetRegexScripts(
                 form.getValues('response_text_filter') || '',
                 pendingPresetRegex.scripts,
-                stages
+                stages,
+                parsePresetEditor(pendingPresetRegex.presetValue)?.config
+                  .source_preset_id as string | undefined
               )
               form.setValue('response_text_filter', merged.value, {
                 shouldDirty: true,

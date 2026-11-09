@@ -24,6 +24,7 @@ import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -61,11 +62,13 @@ export function WorldbookPlacementFields(props: {
             <SelectValue />
           </SelectTrigger>
           <SelectContent alignItemWithTrigger={false}>
-            {Object.entries(worldbookPositionLabels).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                {t(label)}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              {Object.entries(worldbookPositionLabels).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {t(label)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
         <p className='text-muted-foreground text-xs'>

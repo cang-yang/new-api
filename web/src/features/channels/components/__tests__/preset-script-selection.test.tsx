@@ -22,11 +22,54 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
+import { AdaptationScopeCheck } from '../preset-capability-report'
 import { PresetScriptSettings } from '../preset-script-settings'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('request-type checks are local previews and become stale when processing scope changes', async () => {
+  const user = userEvent.setup()
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        fingerprint: 'version',
+        model: 'example',
+        buffered: false,
+        scenarios: [
+          {
+            kind: 'text',
+            status: 'adapted_unverified',
+            reason: 'model_output_not_checked',
+          },
+          { kind: 'tools', status: 'native', reason: 'client_tools' },
+        ],
+      },
+    },
+  })
+  const view = render(
+    <AdaptationScopeCheck scope='plain_chat_only' defaultModel='example' />
+  )
+  await user.click(screen.getByRole('button', { name: 'Check request types' }))
+  expect(
+    await screen.findByText('Uses processing; model not verified')
+  ).toBeVisible()
+  expect(screen.getByText('No preset processing')).toBeVisible()
+  expect(post).toHaveBeenCalledWith(
+    '/api/channel/sillytavern/inspect',
+    expect.objectContaining({
+      check_scope: true,
+      adaptation_scope: 'plain_chat_only',
+      model: 'example',
+    })
+  )
+  view.rerender(
+    <AdaptationScopeCheck scope='all_supported' defaultModel='example' />
+  )
+  expect(screen.queryByText('No preset processing')).toBeNull()
 })
 const config = {
   preset: {
@@ -63,51 +106,51 @@ test('opening preserves the selected draft and exposes exactly one choice group'
   expect(onChange).not.toHaveBeenCalled()
 })
 
-test('tool coordination follows the preset and stays off by default', async () => {
+test('reply sources are explicit and never enable business-tool coordination', async () => {
   const user = userEvent.setup()
   const onChange = vi.fn()
   const view = render(
     <PresetScriptSettings config={config} onChange={onChange} />
   )
-  const toggle = screen.getByRole('switch', {
-    name: 'Coordinate client and preset tool calls',
-  })
-  expect(toggle).toHaveAttribute('aria-checked', 'false')
-  expect(screen.getByText('Current draft: tool coordination off')).toBeVisible()
-  await user.click(toggle)
-  expect(onChange).toHaveBeenLastCalledWith({
+  expect(
+    screen.queryByRole('switch', {
+      name: 'Coordinate client and preset tool calls',
+    })
+  ).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Add reply source' }))
+  const next = {
     ...config,
-    tool_protocol: { enabled: true },
-  })
-  view.rerender(
+    reply_adapter: {
+      version: 2,
+      containers: [
+        { name: '', argument_pointer: '/content', output_kind: 'text' },
+      ],
+    },
+  }
+  expect(onChange).toHaveBeenLastCalledWith(next)
+  view.rerender(<PresetScriptSettings config={next} onChange={onChange} />)
+  expect(screen.getByRole('textbox', { name: 'Reply tool name' })).toBeVisible()
+  expect(screen.getByRole('alert')).toHaveTextContent('Check reply sources')
+})
+
+test('old business-tool coordination clearly requires review without mutating the draft', () => {
+  const onChange = vi.fn()
+  render(
     <PresetScriptSettings
-      config={{ ...config, tool_protocol: { enabled: true } }}
+      config={{
+        ...config,
+        tool_protocol: { enabled: true, auxiliary: ['lookup'] },
+      }}
       onChange={onChange}
     />
   )
   expect(
-    screen.getByRole('switch', {
-      name: 'Coordinate client and preset tool calls',
-    })
-  ).toHaveAttribute('aria-checked', 'true')
-  expect(screen.getByText('Current draft: tool coordination on')).toBeVisible()
-})
-
-test('tool coordination is unavailable until a preset script runtime is selected', () => {
-  render(
-    <PresetScriptSettings
-      config={{ ...config, script_runtime: '' }}
-      onChange={vi.fn()}
-    />
-  )
+    screen.getAllByText('Old tool settings need review').length
+  ).toBeGreaterThan(0)
   expect(
-    screen.getByRole('switch', {
-      name: 'Coordinate client and preset tool calls',
-    })
-  ).toHaveAttribute('aria-disabled', 'true')
-  expect(
-    screen.getByText('Enable a server-side preset script first.')
+    screen.getByRole('button', { name: 'Remove old coordination' })
   ).toBeVisible()
+  expect(onChange).not.toHaveBeenCalled()
 })
 
 test('switching choices and turning off preserves the preset and downloaded files', async () => {

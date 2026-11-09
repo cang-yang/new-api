@@ -502,6 +502,7 @@ type Message struct {
 	// Native protocol converters remain responsible for their own wire format.
 	ThoughtSignature json.RawMessage `json:"thoughtSignature,omitempty"`
 	ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
+	FunctionCall     json.RawMessage `json:"function_call,omitempty"`
 	ToolCallId       string          `json:"tool_call_id,omitempty"`
 	// Tools carries Kimi K3 dynamic tool loading declarations on a system message.
 	// Same shape as the top-level tools array; passthrough-only for OpenAI-compatible upstreams.

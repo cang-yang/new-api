@@ -26,8 +26,8 @@ func TestSillyTavernNativeToolTextJSONAndStream(t *testing.T) {
 		name, body string
 		stream     bool
 	}{
-		{"json", `{"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"keep","tool_calls":[{"id":"transport","type":"function","function":{"name":"newapi_text","arguments":"{\"display_stream\":\"正文\\n😀\"}"}},{"id":"client","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":42}}`, false},
-		{"stream", "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"keep\",\"tool_calls\":[{\"index\":0,\"id\":\"transport\",\"function\":{\"name\":\"newapi_text\",\"arguments\":\"{\\\"display_stream\\\":\\\"正文\\\\n\"}},{\"index\":1,\"id\":\"client\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		{"json", `{"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"keep","tool_calls":[{"id":"transport","type":"function","function":{"name":"newapi_text","arguments":"{\"display_stream\":\"正文\\n😀\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":42}}`, false},
+		{"stream", "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"keep\",\"tool_calls\":[{\"index\":0,\"id\":\"transport\",\"function\":{\"name\":\"newapi_text\",\"arguments\":\"{\\\"display_stream\\\":\\\"正文\\\\n\"}}]}}]}\n\n" +
 			"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"😀\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"total_tokens\":42}}\n\n" +
 			"data: [DONE]\n\n", true},
 	}
@@ -47,8 +47,8 @@ func TestSillyTavernNativeToolTextJSONAndStream(t *testing.T) {
 			assert.Contains(t, output, `"content":"正文\n😀"`)
 			assert.Contains(t, output, `"reasoning_content":"keep"`)
 			assert.Contains(t, output, `"total_tokens":42`)
-			assert.Contains(t, output, `"name":"lookup"`)
-			assert.Contains(t, output, `"finish_reason":"tool_calls"`)
+			assert.NotContains(t, output, `"tool_calls"`)
+			assert.Contains(t, output, `"finish_reason":"stop"`)
 			assert.NotContains(t, output, `"name":"newapi_text"`)
 			if tc.stream {
 				assert.True(t, strings.HasSuffix(output, "data: [DONE]\n\n"))
@@ -64,11 +64,8 @@ func TestSillyTavernNativeToolTextIsolationAndValidation(t *testing.T) {
 		{"index":1,"message":{"tool_calls":[{"function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}
 	],"usage":{"total_tokens":9007199254740993}}`)
 	restored, err := restorePresetToolText(body, false, tool, time.Time{})
-	require.NoError(t, err)
-	assert.Equal(t, "prefixfirstsecond", gjson.GetBytes(restored, "choices.0.message.content").String())
-	assert.Equal(t, "stop", gjson.GetBytes(restored, "choices.0.finish_reason").String())
-	assert.Equal(t, "tool_calls", gjson.GetBytes(restored, "choices.1.finish_reason").String())
-	assert.Equal(t, "9007199254740993", gjson.GetBytes(restored, "usage.total_tokens").Raw)
+	require.Error(t, err)
+	assert.Empty(t, restored, "ambiguous transport conversion must be atomic")
 	for _, arguments := range []string{`{"display_stream":null}`, `{}`, `{"display_stream":42}`, `{"display_stream":"unfinished`} {
 		encoded, err := common.Marshal(arguments)
 		require.NoError(t, err)
@@ -124,14 +121,14 @@ func TestSillyTavernNativeToolTextFailureDoesNotLeakArguments(t *testing.T) {
 func TestSillyTavernNativeToolTextRepeatedStreamNameAndSSEMetadata(t *testing.T) {
 	config := &dto.SillyTavernToolText{Enabled: true, Name: "text", Argument: "body"}
 	body := []byte("event: chunk\nid: 7\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"text\",\"arguments\":\"{\\\"body\\\":\\\"hi\"}}]}}]}\n\n" +
-		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"prefix\",\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"text\",\"arguments\":\"\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\nretry: 100\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"text\",\"arguments\":\"\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\nretry: 100\n\n" +
 		"data: [DONE]\n\n")
 	output, err := restorePresetToolText(body, true, config, time.Time{})
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "event: chunk\n")
 	assert.Contains(t, string(output), "id: 7\n")
 	assert.Contains(t, string(output), "retry: 100\n")
-	assert.Contains(t, string(output), `"content":"prefixhi"`)
+	assert.Contains(t, string(output), `"content":"hi"`)
 	assert.Contains(t, string(output), `"finish_reason":"stop"`)
 	assert.NotContains(t, string(output), "tool_calls")
 	assert.True(t, strings.HasSuffix(string(output), "data: [DONE]\n\n"))
@@ -190,7 +187,7 @@ func TestResponseTextFilterSSEAcrossChunks(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.NoError(t, writer.Finish(context, true))
-	assert.True(t, strings.HasPrefix(recorder.Body.String(), ": PING\n\n"))
+	assert.NotContains(t, recorder.Body.String(), ": PING", "buffered replies must not commit headers before validation")
 	assert.Contains(t, recorder.Body.String(), `"content":"hello"`)
 	assert.Contains(t, recorder.Body.String(), `"reasoning":"keep"`)
 	assert.NotContains(t, recorder.Body.String(), "skip")
@@ -423,10 +420,10 @@ func TestResponseTextFilterNoApplicableRulesPreservesImmediateStreaming(t *testi
 func TestResponseFailurePolicyVariesByStageAndContract(t *testing.T) {
 	base := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[]}`)}
 	policy := responseFailurePolicy(base, nil, "m", false)
-	assert.Equal(t, FailureSafeRaw, policy.Mode(FailureStageResponseValidation))
-	assert.Equal(t, FailureSafeRaw, policy.Mode(FailureStageResponseRestore))
-	assert.Equal(t, FailurePreserve, policy.Mode(FailureStageOutputProcessing))
-	assert.Equal(t, FailurePreserve, policy.Mode(FailureStageRegex))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageResponseValidation))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageResponseRestore))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageOutputProcessing))
+	assert.Equal(t, FailureFail, policy.Mode(FailureStageRegex))
 	assert.Equal(t, FailureReject, policy.Mode(FailureStageCrossChannelRetry))
 	assert.Equal(t, FailureStop, policy.Mode(FailureStageResponseStarted))
 
@@ -459,8 +456,8 @@ func TestResponseFailurePolicyVariesByStageAndContract(t *testing.T) {
 
 func TestResponseWriterStageModeFallsBackToDocumentedDefaults(t *testing.T) {
 	empty := &ResponseTextFilterWriter{}
-	assert.Equal(t, FailureSafeRaw, empty.stageMode(FailureStageResponseRestore))
-	assert.Equal(t, FailurePreserve, empty.stageMode(FailureStageOutputProcessing))
+	assert.Equal(t, FailureFail, empty.stageMode(FailureStageResponseRestore))
+	assert.Equal(t, FailureFail, empty.stageMode(FailureStageOutputProcessing))
 	assert.Equal(t, FailureStop, empty.stageMode(FailureStageResponseStarted))
 
 	policy := AdaptationFailurePolicy{responseRestore: FailureFail, regex: FailureEmpty}

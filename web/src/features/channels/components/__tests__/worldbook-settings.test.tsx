@@ -98,37 +98,41 @@ test('worldbook edits apply only on confirmation and preserve other entries', as
 
 test('preview uses backend results and disappears when input changes', async () => {
   const user = userEvent.setup()
-  const post = vi.spyOn(api, 'post').mockResolvedValue({
-    data: {
-      success: true,
+  const post = vi
+    .spyOn(api, 'post')
+    .mockImplementation(async (_url, payload) => ({
       data: {
-        text: 'Selected background',
-        entries: [
-          {
-            book_id: 'book',
-            id: 'city',
-            name: 'City',
-            status: 'included',
-            reason: 'included',
-            order: 1,
-            placement: {
-              mode: 'system_prelude',
-              index: 2,
-              role: 'system',
-              fallback: true,
+        success: true,
+        data: {
+          draft_revision: (payload as { draft_revision: string })
+            .draft_revision,
+          text: 'Selected background',
+          entries: [
+            {
+              book_id: 'book',
+              id: 'city',
+              name: 'City',
+              status: 'included',
+              reason: 'included',
+              order: 1,
+              placement: {
+                mode: 'system_prelude',
+                index: 2,
+                role: 'system',
+                fallback: true,
+              },
             },
+          ],
+          warnings: [],
+          placement: {
+            mode: 'system_prelude',
+            index: 0,
+            role: 'system',
+            fallback: false,
           },
-        ],
-        warnings: [],
-        placement: {
-          mode: 'system_prelude',
-          index: 0,
-          role: 'system',
-          fallback: false,
         },
       },
-    },
-  })
+    }))
   mount()
   await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
   await user.click(screen.getByRole('tab', { name: 'Test matching' }))
@@ -141,10 +145,14 @@ test('preview uses backend results and disappears when input changes', async () 
   expect(screen.getByText(/Fallback applied/)).toBeVisible()
   expect(screen.getByText(/#1 City/)).toBeVisible()
   expect(screen.queryByText(/system_prelude/)).not.toBeInTheDocument()
-  expect(post).toHaveBeenCalledWith('/api/channel/worldbook/preview', {
-    config,
-    request: { messages: [{ role: 'user', content: 'city' }] },
-  })
+  expect(post).toHaveBeenCalledWith(
+    '/api/channel/worldbook/preview',
+    expect.objectContaining({
+      config,
+      request: { messages: [{ role: 'user', content: 'city' }] },
+      draft_revision: expect.any(String),
+    })
+  )
   await user.type(
     screen.getByLabelText('Conversation or request JSON'),
     ' changed'
@@ -335,6 +343,7 @@ test('enabling an entry with unsupported behavior asks once and keeps the suppor
       field: 'sticky',
       action: 'risk',
       detail: 'activation timing cannot be reproduced',
+      fingerprint: 'source-revision',
     },
   ]
   const onChange = mount(JSON.stringify(risky))
@@ -349,7 +358,11 @@ test('enabling an entry with unsupported behavior asks once and keeps the suppor
   await user.click(screen.getByRole('button', { name: 'Apply changes' }))
   expect(
     JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0]
-  ).toMatchObject({ enabled: true, normalized_rules: [] })
+  ).toMatchObject({
+    enabled: true,
+    normalized_rules: entry.normalized_rules,
+    accepted_risks: { sticky: 'source-revision|inherit|0|1' },
+  })
 })
 
 test('import summary confirms every risky entry at once', async () => {
@@ -362,6 +375,7 @@ test('import summary confirms every risky entry at once', async () => {
       field: 'probability',
       action: 'risk',
       detail: 'random activation cannot be reproduced',
+      fingerprint: 'source-revision',
     },
   ]
   const onChange = mount(JSON.stringify(risky))
@@ -372,7 +386,11 @@ test('import summary confirms every risky entry at once', async () => {
   await user.click(screen.getByRole('button', { name: 'Apply changes' }))
   expect(
     JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0]
-  ).toMatchObject({ enabled: true, normalized_rules: [] })
+  ).toMatchObject({
+    enabled: true,
+    normalized_rules: entry.normalized_rules,
+    accepted_risks: { probability: 'source-revision|inherit|0|1' },
+  })
 })
 
 test('overview clearly reports when the book cannot run', async () => {

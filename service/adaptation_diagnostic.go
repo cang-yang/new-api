@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -45,6 +46,13 @@ func (d *AdaptationDiagnostic) Record(stage, status, summary string, details map
 	if d.SchemaVersion == 0 {
 		d.SchemaVersion = adaptationDiagnosticSchemaVersion
 	}
+	if len(d.Stages) >= 64 {
+		return
+	}
+	summary = strings.ToValidUTF8(summary, "")
+	if len([]rune(summary)) > 512 {
+		summary = string([]rune(summary)[:512])
+	}
 	d.Stages = append(d.Stages, AdaptationDiagnosticStage{
 		Stage:   stage,
 		Status:  status,
@@ -71,7 +79,34 @@ func cloneDiagnosticDetails(details map[string]any) map[string]any {
 	}
 	result := make(map[string]any, len(details))
 	for key, value := range details {
-		result[key] = value
+		switch item := value.(type) {
+		case map[string]any:
+			result[key] = cloneDiagnosticDetails(item)
+		case []map[string]any:
+			bounded := make([]map[string]any, 0, min(len(item), 64))
+			for _, entry := range item[:min(len(item), 64)] {
+				bounded = append(bounded, cloneDiagnosticDetails(entry))
+			}
+			result[key] = bounded
+		case bool, int, int64, float64:
+			result[key] = item
+		case string:
+			if len(item) > 256 {
+				item = item[:256]
+			}
+			result[key] = item
+		case []string:
+			if len(item) <= 32 {
+				bounded := make([]string, len(item))
+				for i, text := range item {
+					if len(text) > 256 {
+						text = text[:256]
+					}
+					bounded[i] = text
+				}
+				result[key] = bounded
+			}
+		}
 	}
 	return result
 }
@@ -171,23 +206,24 @@ func worldbookDiagnosticDetails(preview *WorldbookPreview) map[string]any {
 	matched, skipped, disabled, invalid := 0, 0, 0, 0
 	entries := make([]map[string]any, 0, len(preview.Entries))
 	for _, entry := range preview.Entries {
-		switch entry.Status {
-		case "matched":
+		switch entry.Reason {
+		case "matched", "included":
 			matched++
 		case "disabled":
 			disabled++
-		case "invalid":
+		case "invalid", "needs_review":
 			invalid++
 		default:
 			skipped++
 		}
 		item := map[string]any{
-			"book_id": entry.BookID,
-			"id":      entry.ID,
-			"name":    entry.Name,
-			"status":  entry.Status,
-			"reason":  entry.Reason,
-			"order":   entry.Order,
+			"book_id":  entry.BookID,
+			"id":       entry.ID,
+			"name":     entry.Name,
+			"status":   entry.Status,
+			"reason":   entry.Reason,
+			"order":    entry.Order,
+			"eligible": entry.Eligible, "triggered": entry.Triggered, "selected": entry.Selected, "inserted": entry.Inserted,
 		}
 		if entry.Placement != nil {
 			item["placement"] = map[string]any{

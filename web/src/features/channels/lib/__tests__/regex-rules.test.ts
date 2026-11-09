@@ -83,6 +83,33 @@ test('import preserves explicit script ownership in each direction and reimport 
   })
 })
 
+test('different presets sharing a script ID keep independent imported rules', () => {
+  const script = {
+    id: 'shared',
+    placement: [2],
+    markdownOnly: true,
+    findRegex: '/x/g',
+    replaceString: '',
+  }
+  const first = mergePresetRegexScripts('', [script], ['receive'], 'preset-a')
+  const second = mergePresetRegexScripts(
+    first.value,
+    [script],
+    ['receive'],
+    'preset-b'
+  )
+  expect(second.added).toBe(1)
+  expect(
+    JSON.parse(second.value).rules.map(
+      (rule: { source_preset_id: string }) => rule.source_preset_id
+    )
+  ).toEqual(['preset-a', 'preset-b'])
+  expect(
+    mergePresetRegexScripts(second.value, [script], ['receive'], 'preset-b')
+      .added
+  ).toBe(0)
+})
+
 test('reimporting a legacy identical rule neither duplicates nor guesses its ownership', () => {
   const old = {
     id: 'legacy',

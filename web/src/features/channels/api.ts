@@ -68,12 +68,24 @@ export async function importWorldbook(name: string, book: unknown) {
 export async function previewWorldbook(
   config: WorldbookConfig,
   request: unknown,
-  sillyTavernPreset?: unknown
+  sillyTavernPreset?: unknown,
+  options?: {
+    sendRules?: unknown
+    context?: unknown
+    draftRevision?: string
+    finalRequest?: boolean
+    adaptationScope?: string
+  }
 ): Promise<WorldbookPreviewResult> {
   const response = await api.post('/api/channel/worldbook/preview', {
     config,
     request,
     sillytavern_preset: sillyTavernPreset,
+    send_rules: options?.sendRules,
+    context: options?.context,
+    draft_revision: options?.draftRevision,
+    final_request: options?.finalRequest,
+    adaptation_scope: options?.adaptationScope,
   })
   return requireServerSuccess(response.data).data
 }
@@ -115,6 +127,27 @@ export async function inspectPresetCapability(
   const response = await api.post('/api/channel/sillytavern/inspect', {
     sillytavern_preset: sillyTavernPreset,
     request,
+  })
+  return requireServerSuccess(response.data).data
+}
+
+export type AdaptationScopeReport = {
+  fingerprint: string
+  model: string
+  buffered: boolean
+  scenarios: { kind: string; status: string; reason: string }[]
+}
+
+export async function inspectAdaptationScope(input: {
+  adaptation_scope: string
+  model: string
+  sillytavern_preset?: unknown
+  worldbook?: unknown
+  response_text_filter?: unknown
+}): Promise<AdaptationScopeReport> {
+  const response = await api.post('/api/channel/sillytavern/inspect', {
+    ...input,
+    check_scope: true,
   })
   return requireServerSuccess(response.data).data
 }
@@ -235,8 +268,13 @@ export async function searchChannels(
 /**
  * Get single channel by ID
  */
-export async function getChannel(id: number): Promise<GetChannelResponse> {
-  const res = await api.get(`/api/channel/${id}`)
+export async function getChannel(
+  id: number,
+  config?: ApiRequestConfig
+): Promise<GetChannelResponse> {
+  const res = config
+    ? await api.get(`/api/channel/${id}`, config)
+    : await api.get(`/api/channel/${id}`)
   return res.data
 }
 

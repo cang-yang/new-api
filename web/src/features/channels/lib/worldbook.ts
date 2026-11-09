@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { z } from 'zod'
 
 export const worldbookNormalizedRuleSchema = z.object({
+  fingerprint: z.string().optional(),
   field: z.string(),
   action: z.enum(['mapped', 'ignored', 'risk']),
   detail: z.string().optional(),
@@ -26,6 +27,7 @@ export const worldbookNormalizedRuleSchema = z.object({
 
 export const worldbookEntrySchema = z
   .object({
+    accepted_risks: z.record(z.string(), z.string()).optional(),
     id: z.string().min(1),
     name: z.string(),
     content: z.string().max(64000),
@@ -42,6 +44,8 @@ export const worldbookEntrySchema = z
       .enum([
         'follow_global',
         'inherit',
+        'before_definition',
+        'after_definition',
         'system_prelude',
         'before_last_user',
         'at_depth',
@@ -66,12 +70,20 @@ export const worldbookBookSchema = z
 
 export const worldbookSchema = z
   .object({
+    semantics_version: z.number().int().min(1).max(2).optional(),
     enabled: z.boolean(),
     scan_depth: z.number().int().min(1).max(50),
     max_chars: z.number().int().min(256).max(64000),
     recursive: z.boolean(),
     injection_mode: z
-      .enum(['inherit', 'system_prelude', 'before_last_user', 'at_depth'])
+      .enum([
+        'inherit',
+        'before_definition',
+        'after_definition',
+        'system_prelude',
+        'before_last_user',
+        'at_depth',
+      ])
       .default('inherit'),
     injection_depth: z.number().int().min(0).max(20).default(0),
     books: z.array(worldbookBookSchema).max(16),
@@ -89,14 +101,47 @@ export type WorldbookEntry = z.infer<typeof worldbookEntrySchema>
 // Imported behavior the gateway cannot reproduce is marked "risk" and the
 // entry arrives disabled. The user reviews it once, then confirms the
 // supported subset.
-export function worldbookRiskFields(entry: WorldbookEntry): string[] {
+export type WorldbookRiskContext = Pick<
+  WorldbookConfig,
+  'semantics_version' | 'injection_mode' | 'injection_depth'
+>
+
+function worldbookRiskKey(
+  entry: WorldbookEntry,
+  fingerprint: string,
+  context?: WorldbookRiskContext
+) {
+  let mode = entry.injection_mode ?? ''
+  let depth = entry.injection_depth ?? 0
+  if (context && (!mode || mode === 'follow_global')) {
+    mode = context.injection_mode
+    depth = context.injection_depth
+  }
+  if (mode !== 'at_depth') depth = 0
+  return `${fingerprint}|${mode}|${depth}|${context ? (context.semantics_version ?? 1) : 2}`
+}
+
+export function worldbookRiskFields(
+  entry: WorldbookEntry,
+  context?: WorldbookRiskContext
+): string[] {
   return (entry.normalized_rules ?? [])
-    .filter((rule) => rule.action === 'risk')
+    .filter(
+      (rule) =>
+        rule.action === 'risk' &&
+        entry.accepted_risks?.[rule.field] !==
+          worldbookRiskKey(entry, rule.fingerprint ?? '', context)
+    )
     .map((rule) => rule.field)
 }
 
-export function worldbookNeedsReview(entry: WorldbookEntry): boolean {
-  return !!entry.issues?.length || worldbookRiskFields(entry).length > 0
+export function worldbookNeedsReview(
+  entry: WorldbookEntry,
+  context?: WorldbookRiskContext
+): boolean {
+  return (
+    !!entry.issues?.length || worldbookRiskFields(entry, context).length > 0
+  )
 }
 
 // An entry with unresolved validation issues can never run. It must not be
@@ -106,15 +151,23 @@ export function worldbookEntryBlocked(entry: WorldbookEntry): boolean {
   return !!entry.issues?.length
 }
 
-export function worldbookConfirmEntry(entry: WorldbookEntry): WorldbookEntry {
+export function worldbookConfirmEntry(
+  entry: WorldbookEntry,
+  context?: WorldbookRiskContext
+): WorldbookEntry {
   if (worldbookEntryBlocked(entry)) {
     return entry
   }
   return {
     ...entry,
     enabled: true,
-    normalized_rules: (entry.normalized_rules ?? []).filter(
-      (rule) => rule.action !== 'risk'
+    accepted_risks: Object.fromEntries(
+      (entry.normalized_rules ?? [])
+        .filter((rule) => rule.action === 'risk' && !!rule.fingerprint)
+        .map((rule) => [
+          rule.field,
+          worldbookRiskKey(entry, rule.fingerprint ?? '', context),
+        ])
     ),
   }
 }
@@ -186,17 +239,32 @@ export function worldbookWarningLabel(warning: string): string {
   }
 }
 export type WorldbookPlacement = {
-  mode: 'inherit' | 'system_prelude' | 'before_last_user' | 'at_depth'
+  mode:
+    | 'inherit'
+    | 'before_definition'
+    | 'after_definition'
+    | 'system_prelude'
+    | 'before_last_user'
+    | 'at_depth'
   index: number
   role: string
   fallback: boolean
 }
 export type WorldbookPreviewResult = {
+  fingerprint?: string
+  draft_revision?: string
+  phase?: string
+  bypass_reason?: string
+  final_request?: unknown
   text: string
   entries: {
     book_id: string
     id: string
     name: string
+    eligible?: boolean
+    triggered?: boolean
+    selected?: boolean
+    inserted?: boolean
     status: 'included' | 'skipped'
     reason: string
     order?: number
@@ -208,11 +276,12 @@ export type WorldbookPreviewResult = {
 
 export function createWorldbookConfig(): WorldbookConfig {
   return {
+    semantics_version: 2,
     enabled: false,
     scan_depth: 4,
     max_chars: 12000,
     recursive: false,
-    injection_mode: 'inherit',
+    injection_mode: 'system_prelude',
     injection_depth: 0,
     books: [],
   }

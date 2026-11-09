@@ -40,6 +40,111 @@ type PresetCapabilityReport struct {
 	Warnings         []string                 `json:"warnings"`
 	Notices          []PresetCapabilityNotice `json:"notices"`
 	Entries          []PresetCapabilityEntry  `json:"entries"`
+	ProbeStatus      string                   `json:"probe_status"`
+}
+
+type AdaptationScenario struct {
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+type AdaptationScopeReport struct {
+	Fingerprint string               `json:"fingerprint"`
+	Model       string               `json:"model"`
+	Scenarios   []AdaptationScenario `json:"scenarios"`
+	Buffered    bool                 `json:"buffered"`
+}
+
+// InspectAdaptationScope uses the relay's protocol classifier, not a model or
+// script probe. "adapted_unverified" deliberately does not certify model output.
+func InspectAdaptationScope(scope, model string, preset *dto.SillyTavernPresetConfig, worldbook *dto.WorldbookConfig, filter *dto.ResponseTextFilter) (*AdaptationScopeReport, error) {
+	if scope != "" && scope != "plain_chat_only" && scope != "all_supported" {
+		return nil, fmt.Errorf("invalid adaptation scope")
+	}
+	if preset != nil {
+		if _, err := preset.ParseAndValidate(); err != nil {
+			return nil, err
+		}
+	}
+	if err := worldbook.Validate(); err != nil {
+		return nil, err
+	}
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	profile := NewAdaptationProfile(preset, worldbook, filter, filter)
+	fingerprint, err := AdaptationProfileFingerprint(profile)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(scope + "\000" + model + "\000" + fingerprint))
+	report := &AdaptationScopeReport{Model: model, Fingerprint: hex.EncodeToString(sum[:])}
+	activePreset := preset
+	if preset != nil && len(preset.Models) > 0 && !slices.Contains(preset.Models, model) {
+		activePreset = nil
+	}
+	internal := activePreset != nil && (activePreset.ToolText != nil && activePreset.ToolText.Enabled ||
+		activePreset.ReplyAdapter != nil && len(activePreset.ReplyAdapter.Containers) > 0)
+	receiveRules, err := compileChannelTextRegex(filter, model, "receive")
+	if err != nil {
+		return nil, err
+	}
+	embedded, warnings := compileEffectivePresetTextRegex(activePreset, filter, model, false)
+	tool := dto.ToolCallRequest{Type: "function", Function: dto.FunctionRequest{Name: "example", Parameters: []byte(`{"type":"object"}`)}}
+	for _, kind := range []string{"text", "tools", "tool_history", "json", "schema", "stream", "other_protocol"} {
+		request := &dto.GeneralOpenAIRequest{Model: model, Messages: []dto.Message{{Role: "user", Content: "Example"}}}
+		switch kind {
+		case "tools":
+			request.Tools = []dto.ToolCallRequest{tool}
+			request.ToolChoice = "auto"
+		case "tool_history":
+			request.Messages = append(request.Messages,
+				dto.Message{Role: "assistant", ToolCalls: []byte(`[{"id":"example_call","type":"function","function":{"name":"example","arguments":"{}"}}]`)},
+				dto.Message{Role: "tool", ToolCallId: "example_call", Content: "Example result"})
+		case "json":
+			request.ResponseFormat = &dto.ResponseFormat{Type: "json_object"}
+		case "schema":
+			request.ResponseFormat = &dto.ResponseFormat{Type: "json_schema"}
+		case "stream":
+			request.Stream = common.GetPointer(true)
+		}
+		var input dto.Request = request
+		if kind == "other_protocol" {
+			input = nil
+		}
+		applies, reason := AdaptationApplies(scope, input)
+		scenario := AdaptationScenario{Kind: kind, Status: "native", Reason: reason}
+		active := activePreset != nil || worldbook != nil && worldbook.Enabled || filter != nil && (len(filter.Models) == 0 || slices.Contains(filter.Models, model))
+		if applies && active {
+			scenario.Status, scenario.Reason = "adapted_unverified", "model_output_not_checked"
+			switch {
+			case kind == "other_protocol":
+				scenario.Status, scenario.Reason = "conflict", "chat_completions_only"
+			case internal && (kind == "tools" || kind == "tool_history"):
+				scenario.Status, scenario.Reason = "conflict", "internal_transport_with_client_tools"
+			case kind == "schema" && (internal || filter != nil && len(filter.JSONTextPointers) > 0):
+				scenario.Status, scenario.Reason = "conflict", "schema_transformation"
+			case kind == "json" && internal:
+				scenario.Status, scenario.Reason = "conflict", "text_transport_with_json"
+				if activePreset.ReplyAdapter != nil {
+					scenario.Status, scenario.Reason = "adapted_unverified", "model_output_not_checked"
+					for _, container := range activePreset.ReplyAdapter.Containers {
+						if container.OutputKind != "json_object" {
+							scenario.Status, scenario.Reason = "conflict", "text_transport_with_json"
+						}
+					}
+				}
+			}
+			if kind == "stream" {
+				report.Buffered = activePreset != nil && activePreset.ScriptRuntime != "" ||
+					internal || len(receiveRules) > 0 || len(embedded) > 0 || len(warnings) > 0 ||
+					filter != nil && filter.Mode != "rules" && (len(filter.Models) == 0 || slices.Contains(filter.Models, model))
+			}
+		}
+		report.Scenarios = append(report.Scenarios, scenario)
+	}
+	return report, nil
 }
 
 const (
@@ -103,8 +208,12 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		return nil, fmt.Errorf("preset is empty")
 	}
 	if request == nil {
+		model := "capability-probe"
+		if len(config.Models) > 0 {
+			model = config.Models[0]
+		}
 		request = &dto.GeneralOpenAIRequest{
-			Model:    "capability-probe",
+			Model:    model,
 			Messages: []dto.Message{{Role: "user", Content: "capability probe"}},
 		}
 	}
@@ -130,19 +239,27 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		Warnings:         append([]string(nil), trace.Warnings...),
 		Notices:          classifyPresetCapabilityNotices(trace.Warnings),
 		Entries:          []PresetCapabilityEntry{},
+		ProbeStatus:      "completed",
 	}
 	if report.Name == "" {
 		report.Name = "SillyTavern preset"
 	}
-	report.Capabilities = append(report.Capabilities, "prompt assembly")
-	if report.HasScriptRuntime {
+	applicable := len(config.Models) == 0 || slices.Contains(config.Models, probe.Model)
+	if !applicable {
+		report.ProbeStatus = "skipped_model"
+		report.Warnings = append(report.Warnings, "Sample model is outside the preset model scope; scripts were not run")
+		report.Notices = append(report.Notices, PresetCapabilityNotice{Code: "model_scope_skipped", Severity: "warning"})
+	} else {
+		report.Capabilities = append(report.Capabilities, "prompt assembly")
+	}
+	if applicable && report.HasScriptRuntime {
 		report.Capabilities = append(report.Capabilities, "script runtime")
 	}
-	if config.ToolText != nil && config.ToolText.Enabled {
+	if applicable && config.ToolText != nil && config.ToolText.Enabled {
 		report.Capabilities = append(report.Capabilities, "tool text transport")
 	}
-	if config.ToolProtocol != nil && config.ToolProtocol.Enabled {
-		report.Capabilities = append(report.Capabilities, "tool protocol coordination")
+	if applicable && config.ReplyAdapter != nil && len(config.ReplyAdapter.Containers) > 0 {
+		report.Capabilities = append(report.Capabilities, "reply transport")
 	}
 	if trace.ScriptResponse != nil {
 		for name := range trace.ScriptResponse.ownedTools {
@@ -193,6 +310,9 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		status := "disabled"
 		if enabled[prompt.Identifier] {
 			status = "enabled"
+			if !applicable {
+				status = "not_probed"
+			}
 		}
 		kind := "prompt"
 		detail := ""

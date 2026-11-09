@@ -95,7 +95,7 @@ func TestAdaptationRetryMismatchRejectsCrossChannelPlanChanges(t *testing.T) {
 	receiveOnly.ResponseTextFilter = &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
 		{ID: "receive", Stage: "receive", Action: "replace", Pattern: "x", Replacement: "y"},
 	}}
-	assert.Empty(t, adaptationRetryMismatch(initialPlan, receiveOnly, "m", true), "receive-only rules must not block failover")
+	assert.NotEmpty(t, adaptationRetryMismatch(initialPlan, receiveOnly, "m", true), "retry must preserve the complete frozen delivery plan")
 
 	changedProtocol := base
 	changedProtocol.SillyTavernPreset = &dto.SillyTavernPresetConfig{
@@ -210,9 +210,9 @@ func TestWorldbookCompilationDoesNotMutateClientRequest(t *testing.T) {
 	assert.Len(t, source.Messages, 1)
 }
 
-func TestWorldbookKeywordsUsePrePresetScanRequest(t *testing.T) {
+func TestWorldbookKeywordsUseEffectiveHistoryBeforePreset(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("opaque body"))
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	config := &dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{
 		ID: "e", Enabled: true, Keys: []string{"moon"}, Content: "lore",
 	}}}}}
@@ -223,8 +223,10 @@ func TestWorldbookKeywordsUsePrePresetScanRequest(t *testing.T) {
 	compiled, trace, err := compileSelectedSillyTavernPreset(c, compiledRequest, clientScanRequest)
 	require.NoError(t, err)
 	require.NotNil(t, trace.Worldbook)
-	assert.Equal(t, "included", trace.Worldbook.Entries[0].Reason)
-	assert.Equal(t, "lore", compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content)
+	assert.Equal(t, "no_match", trace.Worldbook.Entries[0].Reason)
+	assert.Equal(t, "transformed text", compiled.(*dto.GeneralOpenAIRequest).Messages[0].Content)
+	assert.Len(t, compiled.(*dto.GeneralOpenAIRequest).Messages, 1)
+	assert.Equal(t, "moon", clientScanRequest.Messages[0].Content)
 }
 
 func TestWorldbookFailureHonorsSkipPolicy(t *testing.T) {
@@ -251,7 +253,7 @@ func TestWorldbookFailureHonorsSkipPolicy(t *testing.T) {
 	assert.NotEmpty(t, trace.Warnings)
 }
 
-func TestPresetFailureHonorsRequestPassthroughPolicy(t *testing.T) {
+func TestInvalidPresetCannotBeBypassedByRequestPassthroughPolicy(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{
@@ -264,10 +266,10 @@ func TestPresetFailureHonorsRequestPassthroughPolicy(t *testing.T) {
 	})
 	request := &dto.GeneralOpenAIRequest{Model: "model", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
 
-	compiled, trace, err := compileSelectedSillyTavernPreset(c, request, request)
-	require.NoError(t, err)
-	assert.Equal(t, request, compiled)
-	assert.NotEmpty(t, trace.Warnings)
+	_, _, err := compileSelectedSillyTavernPreset(c, request, request)
+	require.ErrorContains(t, err, "invalid sillytavern_preset")
+	assert.Equal(t, service.FailureStagePreflight, service.AdaptationErrorStage(err))
+	assert.Equal(t, "hello", request.Messages[0].Content)
 }
 
 func TestWorldbookAPIContract(t *testing.T) {

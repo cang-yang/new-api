@@ -26,10 +26,12 @@ import {
   worldbookRiskFields,
   type Worldbook,
   type WorldbookEntry,
+  type WorldbookRiskContext,
 } from '../lib/worldbook'
 
 export function WorldbookImportSummary(props: {
   book: Worldbook
+  context?: WorldbookRiskContext
   onReview?: () => void
   onEnableAll?: () => void
 }) {
@@ -38,7 +40,7 @@ export function WorldbookImportSummary(props: {
     (entry) => !!entry.issues?.length
   ).length
   const review = props.book.entries.filter(
-    (entry) => worldbookRiskFields(entry).length > 0
+    (entry) => worldbookRiskFields(entry, props.context).length > 0
   ).length
   const normalized = props.book.entries.filter(
     (entry) => !!entry.normalized_rules?.length

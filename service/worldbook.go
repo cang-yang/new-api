@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -14,22 +16,33 @@ import (
 )
 
 type WorldbookDecision struct {
-	BookID string `json:"book_id"`
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Reason string `json:"reason"`
-	Order  int    `json:"order,omitempty"`
+	Eligible  bool   `json:"eligible"`
+	Triggered bool   `json:"triggered"`
+	Selected  bool   `json:"selected"`
+	Inserted  bool   `json:"inserted"`
+	BookID    string `json:"book_id"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason"`
+	Order     int    `json:"order,omitempty"`
 	// Placement describes the assembled insertion, before preset postprocessing
 	// and scripts may merge, move, or replace messages.
 	Placement *dto.WorldbookPlacement `json:"placement,omitempty"`
 }
 
 type WorldbookPreview struct {
+	Fingerprint   string                    `json:"fingerprint,omitempty"`
+	DraftRevision string                    `json:"draft_revision,omitempty"`
+	Phase         string                    `json:"phase,omitempty"`
+	BypassReason  string                    `json:"bypass_reason,omitempty"`
+	FinalRequest  *dto.GeneralOpenAIRequest `json:"final_request,omitempty"`
+
 	Text      string                  `json:"text"`
 	Entries   []WorldbookDecision     `json:"entries"`
 	Warnings  []string                `json:"warnings"`
 	Placement *dto.WorldbookPlacement `json:"placement,omitempty"`
+	expanded  bool
 	groups    []worldbookInjectionGroup
 }
 
@@ -57,12 +70,25 @@ func MatchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 	return matchWorldbook(config, request)
 }
 
-func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIRequest) (WorldbookPreview, error) {
+func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIRequest, expand ...func(string) string) (WorldbookPreview, error) {
+	options := worldbookMatchOptions{}
+	if len(expand) > 0 {
+		options.expand = expand[0]
+	}
+	return matchWorldbookWith(config, request, options)
+}
+
+type worldbookMatchOptions struct {
+	expand func(string) string
+	anchor func(string, int) string
+}
+
+func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIRequest, options worldbookMatchOptions) (WorldbookPreview, error) {
 	result := WorldbookPreview{Entries: []WorldbookDecision{}, Warnings: []string{}}
 	if err := config.Validate(); err != nil {
 		return result, err
 	}
-	if config == nil {
+	if config == nil || request == nil {
 		return result, nil
 	}
 	depth, budget := config.Limits()
@@ -98,7 +124,10 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 				decision.Reason = "disabled"
 			} else if len(entry.Issues) > 0 {
 				decision.Reason = "invalid"
+			} else if !worldbookRisksAccepted(entry, config) {
+				decision.Reason = "needs_review"
 			}
+			decision.Eligible = decision.Reason == "no_match"
 			index := len(result.Entries)
 			result.Entries = append(result.Entries, decision)
 			if decision.Reason == "no_match" {
@@ -110,6 +139,7 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 	seenIDs, seenContent := map[string]bool{}, map[string]bool{}
 	work := worldbookMatchBudget{remaining: 32 << 20}
 	var included []string
+	budgetBlocks := map[string]bool{}
 	used := 0
 	passes := 1
 	if config.Recursive {
@@ -117,7 +147,8 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 	}
 	for range passes {
 		var association []string
-		for _, candidate := range candidates {
+		for candidateIndex := range candidates {
+			candidate := &candidates[candidateIndex]
 			decision := &result.Entries[candidate.index]
 			if decision.Reason != "no_match" {
 				continue
@@ -126,12 +157,34 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 			if !worldbookEntryMatches(entry, scan, &work) {
 				continue
 			}
-			if seenIDs[entry.ID] || seenContent[entry.Content] {
+			decision.Triggered = true
+			if config.SemanticsVersion >= 2 && options.expand != nil {
+				entry.Content = options.expand(entry.Content)
+				candidate.entry.Content = entry.Content
+				result.expanded = true
+			}
+			identity := decision.BookID + "\x00" + entry.ID
+			if seenIDs[identity] || config.SemanticsVersion < 2 && seenContent[entry.Content] {
 				decision.Reason = "duplicate"
 				continue
 			}
 			cost := utf8.RuneCountInString(entry.Content)
-			if len(included) > 0 {
+			if cost == 0 {
+				decision.Reason = "empty"
+				continue
+			}
+			mode, entryDepth := entry.InjectionMode, entry.InjectionDepth
+			if mode == "" || mode == dto.WorldbookInjectionFollowGlobal {
+				mode, entryDepth = config.InjectionMode, config.InjectionDepth
+			}
+			block := mode
+			if mode == dto.WorldbookInjectionAtDepth {
+				block += strconv.Itoa(entryDepth)
+			}
+			if options.anchor != nil {
+				block = options.anchor(mode, entryDepth)
+			}
+			if config.SemanticsVersion < 2 && len(included) > 0 || config.SemanticsVersion >= 2 && budgetBlocks[block] {
 				cost += 2
 			}
 			if cost == 0 || used+cost > budget {
@@ -140,9 +193,11 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 			}
 			decision.Status = "included"
 			decision.Reason = "included"
-			seenIDs[entry.ID] = true
+			seenIDs[identity] = true
+			decision.Selected = true
 			seenContent[entry.Content] = true
 			used += cost
+			budgetBlocks[block] = true
 			included = append(included, entry.Content)
 			if !entry.PreventRecursion {
 				association = append(association, entry.Content)
@@ -408,21 +463,74 @@ func CompileWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPreset
 	return CompileWorldbookFrom(config, preset, request, request, context)
 }
 
-// CompileWorldbookFrom separates the raw client scan source from the request
-// that is later compiled by the preset. This keeps keyword matching on the
-// client's original input while still inserting lore before preset scripts run.
+// CompileWorldbookFrom receives effective history after send rules, separate
+// from preset instructions. Matching and placement share the compiler's macro
+// context and run before any preset request scripts.
 func CompileWorldbookFrom(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, source, base *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
+	if source == nil || base == nil {
+		return nil, PresetCompileTrace{}, newResponseStageError(FailureStagePreflight, fmt.Errorf("worldbook requires a request"))
+	}
 	if context.ChatHistory != nil {
 		historySource := *source
 		historySource.Messages = context.ChatHistory
 		source = &historySource
 	}
 	if preset == nil || len(preset.Models) > 0 && !slices.Contains(preset.Models, base.Model) {
+		if config != nil && config.SemanticsVersion >= 2 {
+			macro, err := newPresetMacroContext(nil, nil, source, context, source.Messages)
+			if err != nil {
+				return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
+			}
+			final := make([]presetMessage, len(base.Messages))
+			for index, message := range base.Messages {
+				final[index] = presetMessage{message: message, source: "chat_history", historyID: strconv.Itoa(index)}
+			}
+			preview, err := matchWorldbookWith(config, source, worldbookMatchOptions{
+				expand: func(text string) string { return macro.expand(text, 0) },
+				anchor: func(mode string, depth int) string {
+					placement, marker := worldbookGroupPlacement(config, mode, depth, final, -1)
+					return fmt.Sprintf("%d:%t", placement.Index, marker)
+				},
+			})
+			if err != nil {
+				return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
+			}
+			if macro.warnings["macro expansion limit reached"] {
+				return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, fmt.Errorf("worldbook macro expansion exceeded its limit"))
+			}
+			return applyWorldbookPreview(config, preview, base, PresetCompileTrace{})
+		}
 		return ApplyWorldbook(config, source, base, PresetCompileTrace{})
 	}
-	preview, err := MatchWorldbook(config, source)
+	if context.Now.IsZero() {
+		context.Now = time.Now()
+	}
+	parsed, err := preset.ParseAndValidate()
 	if err != nil {
-		return nil, PresetCompileTrace{}, err
+		return nil, PresetCompileTrace{}, newResponseStageError(FailureStagePreflight, err)
+	}
+	if config != nil && config.SemanticsVersion >= 2 {
+		// Matching uses effective history, but placement needs the assembled
+		// anchors. Both run inside one compiler/macro context, before scripts.
+		context.worldbookConfig = config
+		context.worldbookSource = source
+		return CompileSillyTavernPreset(preset, base, context)
+	}
+	macro, err := newPresetMacroContext(preset, parsed, source, context, source.Messages)
+	if err != nil {
+		return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
+	}
+	preview, err := matchWorldbook(config, source, func(text string) string { return macro.expand(text, 0) })
+	if err != nil {
+		if AdaptationFailureMode(preset, FailureStageWorldbook) == FailureSkip {
+			compiled, trace, compileErr := CompileSillyTavernPreset(preset, base, context)
+			trace.Warnings = append(trace.Warnings, "worldbook skipped by the configured failure policy")
+			return compiled, trace, compileErr
+		}
+		return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
+	}
+	if macro.warnings["macro expansion limit reached"] {
+		return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, fmt.Errorf("worldbook macro expansion exceeded its limit"))
 	}
 	context.worldbookConfig, context.worldbookPreview = config, &preview
 	compiled, trace, err := CompileSillyTavernPreset(preset, base, context)
@@ -435,10 +543,69 @@ func CompileWorldbookFrom(config *dto.WorldbookConfig, preset *dto.SillyTavernPr
 // PreviewWorldbook executes the same worldbook-before-preset pipeline used by
 // live requests while returning only the matching/audit data for the channel UI.
 func PreviewWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest) (WorldbookPreview, error) {
+	return PreviewWorldbookDraft(config, preset, nil, request, SillyTavernContext{}, "", false)
+}
+
+func PreviewWorldbookDraft(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig, sendRules *dto.ResponseTextFilter, request *dto.GeneralOpenAIRequest, context SillyTavernContext, revision string, finalRequest bool, scopes ...string) (WorldbookPreview, error) {
 	if config == nil {
 		return WorldbookPreview{Entries: []WorldbookDecision{}, Warnings: []string{}}, nil
 	}
-	_, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
+	profile := NewAdaptationProfile(preset, config, sendRules, sendRules)
+	fingerprint, err := AdaptationProfileFingerprint(profile)
+	if err != nil {
+		return WorldbookPreview{}, err
+	}
+	effective, err := cloneGeneralRequest(request)
+	if err != nil {
+		return WorldbookPreview{}, err
+	}
+	if effective == nil {
+		return WorldbookPreview{}, fmt.Errorf("preview requires a request")
+	}
+	if len(scopes) > 0 {
+		if scopes[0] != "" && scopes[0] != "all_supported" && scopes[0] != "plain_chat_only" {
+			return WorldbookPreview{}, fmt.Errorf("invalid adaptation scope")
+		}
+		if applies, reason := AdaptationApplies(scopes[0], effective); !applies {
+			preview := WorldbookPreview{DraftRevision: revision, Fingerprint: fingerprint, Phase: "scope_bypass", BypassReason: reason, Entries: []WorldbookDecision{}, Warnings: []string{}}
+			if finalRequest {
+				preview.FinalRequest = effective
+			}
+			return preview, nil
+		}
+	}
+	if context.ChatHistory != nil {
+		effective.Messages = context.ChatHistory
+	}
+	transformed, err := ApplyRequestTextRegex(sendRules, preset, effective, effective.Model)
+	if err != nil {
+		return WorldbookPreview{}, err
+	}
+	effective = transformed.(*dto.GeneralOpenAIRequest)
+	if context.ChatHistory != nil {
+		context.ChatHistory = effective.Messages
+	}
+	originalPreset := preset
+	if preset != nil {
+		copied, err := common.DeepCopy(preset)
+		if err != nil {
+			return WorldbookPreview{}, err
+		}
+		if !finalRequest {
+			copied.ScriptRuntime = ""
+		}
+		if !finalRequest {
+			copied.ToolProtocol = nil
+		}
+		if !finalRequest {
+			copied.ReplyAdapter = nil
+		}
+		if !finalRequest {
+			copied.ToolText = nil
+		}
+		preset = copied
+	}
+	compiled, trace, err := CompileWorldbook(config, preset, effective, context)
 	if trace.ScriptResponse != nil && trace.ScriptResponse.tavern != nil {
 		defer trace.ScriptResponse.tavern.Close()
 	}
@@ -446,7 +613,23 @@ func PreviewWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPreset
 		return WorldbookPreview{}, err
 	}
 	if trace.Worldbook != nil {
-		return *trace.Worldbook, nil
+		preview := *trace.Worldbook
+		preview.Fingerprint = fingerprint
+		preview.DraftRevision = revision
+		preview.Phase = "before_scripts"
+		if finalRequest {
+			if requirements, err := SnapshotClientRequirements(request); err != nil {
+				return WorldbookPreview{}, err
+			} else if err := SealClientRequirements(requirements, compiled, sendRules); err != nil {
+				return WorldbookPreview{}, err
+			}
+			preview.FinalRequest = compiled
+			preview.Phase = "final_request"
+		}
+		if !finalRequest && originalPreset != nil && originalPreset.ScriptRuntime != "" {
+			preview.Warnings = append(preview.Warnings, "Positions shown before preset scripts; scripts were not executed")
+		}
+		return preview, nil
 	}
 	return MatchWorldbook(config, request)
 }
@@ -456,8 +639,12 @@ func PreviewWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPreset
 func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAIRequest, trace PresetCompileTrace) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
 	preview, err := MatchWorldbook(config, source)
 	if err != nil {
-		return nil, trace, err
+		return nil, trace, newResponseStageError(FailureStageWorldbook, err)
 	}
+	return applyWorldbookPreview(config, preview, base, trace)
+}
+
+func applyWorldbookPreview(config *dto.WorldbookConfig, preview WorldbookPreview, base *dto.GeneralOpenAIRequest, trace PresetCompileTrace) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
 	if preview.Text != "" {
 		compiled, err := common.DeepCopy(base)
 		if err != nil {
@@ -465,7 +652,7 @@ func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAI
 		}
 		messages := make([]presetMessage, len(compiled.Messages))
 		for index, message := range compiled.Messages {
-			messages[index] = presetMessage{message: message}
+			messages[index] = presetMessage{message: message, source: "chat_history", historyID: strconv.Itoa(index)}
 		}
 		messages, err = injectWorldbookGroups(config, &preview, messages, -1, nil)
 		if err != nil {
@@ -505,15 +692,15 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 	}
 	insertions := make([]insertion, 0, len(preview.groups))
 	for _, group := range preview.groups {
-		placement := resolveWorldbookPlacement(&dto.WorldbookConfig{InjectionMode: group.mode, InjectionDepth: group.depth}, messages)
-		marker := group.mode == dto.WorldbookInjectionInherit && markerIndex >= 0
+		placement, marker := worldbookGroupPlacement(config, group.mode, group.depth, final, markerIndex)
 		if marker {
-			placement = dto.WorldbookPlacement{Mode: dto.WorldbookInjectionInherit, Index: markerIndex, Role: messages[markerIndex].Role}
-		} else {
-			placement.Fallback = placement.Fallback || group.mode == dto.WorldbookInjectionInherit
-		}
-		if marker {
-			insertions = append(insertions, insertion{placement: placement, group: group, marker: true})
+			if config.SemanticsVersion >= 2 {
+				for index, decision := range group.decisions {
+					insertions = append(insertions, insertion{placement: placement, marker: true, group: worldbookInjectionGroup{text: group.contents[index], decisions: []int{decision}}})
+				}
+			} else {
+				insertions = append(insertions, insertion{placement: placement, group: group, marker: true})
+			}
 		} else {
 			for index, decision := range group.decisions {
 				insertions = append(insertions, insertion{placement: placement, group: worldbookInjectionGroup{text: group.contents[index], decisions: []int{decision}}})
@@ -539,14 +726,22 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 		placement := item.placement
 		placement.Index += offset
 		end := start + 1
-		if !item.marker {
+		if item.marker && config.SemanticsVersion >= 2 {
+			texts := []string{item.group.text}
+			for end < len(insertions) && insertions[end].marker && insertions[end].placement.Index == item.placement.Index {
+				texts = append(texts, insertions[end].group.text)
+				end++
+			}
+			previous, _ := final[placement.Index].message.Content.(string)
+			final[placement.Index].message.Content = strings.TrimSpace(previous + "\n\n" + strings.Join(texts, "\n\n"))
+		} else if !item.marker {
 			texts := []string{item.group.text}
 			for end < len(insertions) && !insertions[end].marker && insertions[end].placement.Index == item.placement.Index {
 				texts = append(texts, insertions[end].group.text)
 				end++
 			}
 			text := strings.Join(texts, "\n\n")
-			if macro != nil {
+			if macro != nil && !preview.expanded {
 				text = macro.expand(text, 0)
 				if macro.warnings["macro expansion limit reached"] || len(text) > 16<<20 {
 					return nil, fmt.Errorf("worldbook macro expansion exceeded its limit")
@@ -563,6 +758,7 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 				actual := grouped.placement
 				actual.Index = placement.Index
 				preview.Entries[index].Placement = &actual
+				preview.Entries[index].Inserted = true
 			}
 		}
 		start = end
@@ -570,6 +766,38 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 	// The combined legacy placement continues to describe the global setting.
 	preview.Placement = &global
 	return final, nil
+}
+
+// Matching, budget admission and insertion use this same physical anchor.
+func worldbookGroupPlacement(config *dto.WorldbookConfig, mode string, depth int, final []presetMessage, legacyMarker int) (dto.WorldbookPlacement, bool) {
+	if mode == "" {
+		mode = dto.WorldbookInjectionInherit
+	}
+	messages := make([]dto.Message, len(final))
+	for index, item := range final {
+		messages[index] = item.message
+	}
+	placement := resolveWorldbookPlacement(&dto.WorldbookConfig{InjectionMode: mode, InjectionDepth: depth}, messages)
+	markerIndex := legacyMarker
+	isMarkerMode := mode == dto.WorldbookInjectionInherit || mode == dto.WorldbookInjectionBeforeDefinition || mode == dto.WorldbookInjectionAfterDefinition
+	if config.SemanticsVersion >= 2 {
+		if !isMarkerMode {
+			return resolveWorldbookHistoryPlacement(mode, depth, final), false
+		}
+		desired := "worldInfoBefore"
+		if mode == dto.WorldbookInjectionAfterDefinition {
+			desired = "worldInfoAfter"
+		}
+		markerIndex = slices.IndexFunc(final, func(item presetMessage) bool { return item.id == desired })
+		if markerIndex < 0 && mode == dto.WorldbookInjectionInherit {
+			markerIndex = slices.IndexFunc(final, func(item presetMessage) bool { return item.id == "worldInfoAfter" })
+		}
+	}
+	if isMarkerMode && markerIndex >= 0 {
+		return dto.WorldbookPlacement{Mode: mode, Index: markerIndex, Role: messages[markerIndex].Role}, true
+	}
+	placement.Fallback = placement.Fallback || isMarkerMode
+	return placement, false
 }
 
 func resolveWorldbookPlacement(config *dto.WorldbookConfig, messages []dto.Message) dto.WorldbookPlacement {
@@ -631,4 +859,45 @@ func worldbookDepthIndex(messages []dto.Message, depth int) int {
 		return -1
 	}
 	return len(messages) - depth
+}
+
+// Source history IDs exist only in the assembler. Preset-created user/system
+// messages never change the meaning of a conversation depth in v2.
+func resolveWorldbookHistoryPlacement(mode string, depth int, final []presetMessage) dto.WorldbookPlacement {
+	messages := make([]dto.Message, len(final))
+	indices := []int{}
+	for index, item := range final {
+		messages[index] = item.message
+		if item.source == "chat_history" && item.historyID != "" && worldbookScanMessageRole(item.message.Role) {
+			indices = append(indices, index)
+		}
+	}
+	placement := dto.WorldbookPlacement{Mode: mode, Role: "system", Index: worldbookSystemPreludeIndex(messages)}
+	if mode == dto.WorldbookInjectionBeforeLastUser {
+		found := false
+		for i := len(indices) - 1; i >= 0; i-- {
+			if messages[indices[i]].Role == "user" {
+				placement.Index = indices[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			placement.Fallback = true
+			placement.Mode = dto.WorldbookInjectionSystemPrelude
+		}
+	} else if mode == dto.WorldbookInjectionAtDepth {
+		if len(indices) == 0 {
+			placement.Fallback = true
+			placement.Mode = dto.WorldbookInjectionSystemPrelude
+		} else if depth == 0 {
+			placement.Index = indices[len(indices)-1] + 1
+		} else {
+			placement.Index = indices[max(0, len(indices)-depth)]
+		}
+	}
+	for placement.Index > 0 && placement.Index < len(messages) && (messages[placement.Index].Role == "tool" || messages[placement.Index].Role == "function") {
+		placement.Index--
+	}
+	return placement
 }

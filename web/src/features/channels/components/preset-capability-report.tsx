@@ -22,18 +22,171 @@ import { useTranslation } from 'react-i18next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
   inspectPresetCapability,
+  inspectAdaptationScope,
+  type AdaptationScopeReport,
   type PresetCapabilityReport as CapabilityReport,
 } from '../api'
 import { presetRecord as record } from '../lib/preset-script-preparation'
+import { migrateReplyAdapter } from '../lib/reply-adapter'
 
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
+const scenarioKeys: Record<string, string> = {
+  text: 'Plain text chat',
+  tools: 'Client tool call',
+  tool_history: 'Continue after a tool result',
+  json: 'JSON object reply',
+  schema: 'JSON schema reply',
+  stream: 'Streaming text reply',
+  other_protocol: 'Other API endpoints',
+}
+const scopeReasonKeys: Record<string, string> = {
+  internal_transport_with_client_tools:
+    'Preset reply tools conflict with client tools. Use plain-chat scope or a preset without reply tools.',
+  schema_transformation:
+    'Schema replies cannot use reply conversion or selected JSON text-field processing.',
+  text_transport_with_json:
+    'This preset returns text, but the client requires a JSON object.',
+  chat_completions_only:
+    'This processing setup supports Chat Completions only.',
+}
+
+export function AdaptationScopeCheck(props: {
+  scope?: string
+  defaultModel?: string
+  presetValue?: string
+  worldbookValue?: string
+  filterValue?: string
+  disabled?: boolean
+}) {
+  const { t } = useTranslation()
+  const [sampleModel, setSampleModel] = useState('')
+  const model = sampleModel || props.defaultModel || ''
+  const revision = JSON.stringify([
+    props.scope,
+    model,
+    props.presetValue,
+    props.worldbookValue,
+    props.filterValue,
+  ])
+  const [snapshot, setSnapshot] = useState<{
+    revision: string
+    report: AdaptationScopeReport
+  } | null>(null)
+  const [checking, setChecking] = useState(false)
+  const report = snapshot?.revision === revision ? snapshot.report : null
+  return (
+    <section
+      aria-label={t('Check request types')}
+      className='min-w-0 space-y-3 rounded-lg border p-3'
+    >
+      <div className='space-y-1'>
+        <p className='text-sm font-medium'>{t('Check request types')}</p>
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Checks which requests use this configuration without running scripts or calling a model. Actual model replies still need a real request test.'
+          )}
+        </p>
+      </div>
+      <FieldGroup className='flex flex-wrap items-end gap-2 sm:flex-row'>
+        <Field className='min-w-0 flex-1'>
+          <FieldLabel htmlFor='adaptation-check-model'>
+            {t('Model to check')}
+          </FieldLabel>
+          <Input
+            id='adaptation-check-model'
+            value={model}
+            onChange={(event) => setSampleModel(event.target.value)}
+            disabled={props.disabled || checking}
+          />
+        </Field>
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          disabled={props.disabled || checking || !model.trim()}
+          onClick={async () => {
+            setChecking(true)
+            try {
+              const next = await inspectAdaptationScope({
+                adaptation_scope: props.scope ?? 'all_supported',
+                model: model.trim(),
+                sillytavern_preset: props.presetValue?.trim()
+                  ? JSON.parse(props.presetValue)
+                  : undefined,
+                worldbook: props.worldbookValue?.trim()
+                  ? JSON.parse(props.worldbookValue)
+                  : undefined,
+                response_text_filter: props.filterValue?.trim()
+                  ? JSON.parse(props.filterValue)
+                  : undefined,
+              })
+              setSnapshot({ revision, report: next })
+            } catch (error) {
+              handleServerError(error)
+            } finally {
+              setChecking(false)
+            }
+          }}
+        >
+          {checking ? t('Checking…') : t('Check request types')}
+        </Button>
+      </FieldGroup>
+      {report && (
+        <div aria-live='polite' className='space-y-2'>
+          <ul className='divide-y rounded-md border text-sm'>
+            {report.scenarios.map((scenario) => {
+              let status = t('Uses processing; model not verified')
+              if (scenario.status === 'native') {
+                status = t('No preset processing')
+              }
+              if (scenario.status === 'conflict') {
+                status = t('Configuration conflict')
+              }
+              return (
+                <li
+                  key={scenario.kind}
+                  className='flex flex-wrap items-start justify-between gap-2 p-2'
+                >
+                  <span>
+                    {t(scenarioKeys[scenario.kind] ?? 'Other API endpoints')}
+                  </span>
+                  <Badge
+                    variant={
+                      scenario.status === 'conflict' ? 'destructive' : 'outline'
+                    }
+                  >
+                    {status}
+                  </Badge>
+                  {scenario.status === 'conflict' && (
+                    <p className='text-muted-foreground basis-full text-xs'>
+                      {t(
+                        scopeReasonKeys[scenario.reason] ??
+                          'Check the preset and client output requirements.'
+                      )}
+                    </p>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+          <p className='text-muted-foreground text-xs'>
+            {report.buffered
+              ? t(
+                  'Streaming replies wait for the complete upstream reply before local processing.'
+                )
+              : t(
+                  'This check found no full-reply buffering for streaming text.'
+                )}
+          </p>
+        </div>
+      )}
+    </section>
+  )
 }
 
 function capabilityEntryVariant(
@@ -51,6 +204,7 @@ function capabilityEntryLabel(
   if (entry.kind === 'marker') return t('Slot marker')
   if (entry.status === 'enabled') return t('Runs')
   if (entry.status === 'missing') return t('Missing')
+  if (entry.status === 'not_probed') return t('Not checked for this model')
   return t('Will not run')
 }
 
@@ -59,6 +213,7 @@ const capabilityKeys: Record<string, string> = {
   'script runtime': 'Script runtime',
   'tool text transport': 'Tool text transport',
   'tool protocol coordination': 'Tool protocol coordination',
+  'reply transport': 'Reply source',
   'output preprocessing': 'Output preprocessing',
   'tool call formatter': 'Tool call formatter',
   passthrough: 'Passthrough',
@@ -70,7 +225,10 @@ const scriptRuntimeKeys: Record<string, string> = {
 }
 
 const noticeKeys: Record<string, string> = {
-  browser_scripts_unavailable: 'Browser scripts are preserved but not executed.',
+  model_scope_skipped:
+    'The sample model is outside this preset’s model scope. Scripts were not run.',
+  browser_scripts_unavailable:
+    'Browser scripts are preserved but not executed.',
   unsupported_macro_or_parameter:
     'Some preset macros or parameters have no equivalent mapping.',
   exact_mode_unresolved:
@@ -98,37 +256,15 @@ export function PresetAdapterOverview(props: {
     typeof props.config.script_runtime === 'string'
       ? props.config.script_runtime
       : ''
-  const toolProtocol = record(props.config.tool_protocol)
-  const toolProtocolEnabled = toolProtocol.enabled === true
-  const auxiliary = stringList(toolProtocol.auxiliary)
-  const action = stringList(toolProtocol.action)
-  const content = stringList(toolProtocol.content)
-  const clientFinal =
-    typeof toolProtocol.client_final === 'string'
-      ? toolProtocol.client_final
-      : ''
-  const presetFinal =
-    typeof toolProtocol.preset_final === 'string'
-      ? toolProtocol.preset_final
-      : ''
-  const responseTarget =
-    typeof toolProtocol.response_target === 'string'
-      ? toolProtocol.response_target
-      : 'auto'
+  const migration = migrateReplyAdapter(props.config)
+  const containers = record(props.config.reply_adapter).containers
+  const count = Array.isArray(containers) ? containers.length : 0
   let runtimeLabel = t('Do not use preset extras')
   if (runtime === 'spreset-v1') {
     runtimeLabel = t('Use preset settings (SPreset)')
   } else if (runtime === 'tavern-v1') {
     runtimeLabel = t('Run bundled scripts')
   }
-  const coordination = toolProtocolEnabled
-    ? t('Tool coordination on')
-    : t('Tool coordination off')
-  let finalMode = t('Passthrough')
-  if (clientFinal) finalMode = t('Tool call')
-  else if (responseTarget === 'json') finalMode = t('JSON')
-  else if (responseTarget === 'text' || presetFinal) finalMode = t('Text')
-  const roleCount = auxiliary.length + action.length + content.length
   return (
     <section
       aria-label={t('Adaptation overview')}
@@ -136,14 +272,19 @@ export function PresetAdapterOverview(props: {
     >
       <span className='font-medium'>{t('Adaptation overview')}</span>
       <Badge variant={runtime ? 'secondary' : 'outline'}>{runtimeLabel}</Badge>
-      <Badge variant={toolProtocolEnabled ? 'secondary' : 'outline'}>
-        {coordination}
+      <Badge
+        variant={
+          migration.status === 'requires_review' ? 'destructive' : 'outline'
+        }
+      >
+        {migration.status === 'requires_review'
+          ? t('Old tool settings need review')
+          : t('Client format stays protected')}
       </Badge>
       <span className='text-muted-foreground'>
-        {t('Final reply: {{mode}}', { mode: finalMode })}
-      </span>
-      <span className='text-muted-foreground'>
-        {t('{{count}} coordinated tools', { count: roleCount })}
+        {count
+          ? t('{{count}} reply sources', { count })
+          : t('Text replies need no additional setup')}
       </span>
     </section>
   )
@@ -154,7 +295,12 @@ export function PresetCapabilityReportSettings(props: {
   disabled?: boolean
 }) {
   const { t } = useTranslation()
-  const [report, setReport] = useState<CapabilityReport | null>(null)
+  const revision = JSON.stringify(props.config)
+  const [snapshot, setReport] = useState<{
+    revision: string
+    report: CapabilityReport
+  } | null>(null)
+  const report = snapshot?.revision === revision ? snapshot.report : null
   const [checking, setChecking] = useState(false)
   return (
     <section
@@ -179,7 +325,7 @@ export function PresetCapabilityReportSettings(props: {
             setChecking(true)
             try {
               const next = await inspectPresetCapability(props.config)
-              setReport(next)
+              setReport({ revision, report: next })
             } catch (error) {
               handleServerError(error)
             } finally {

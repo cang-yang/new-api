@@ -388,13 +388,8 @@ func TestTextRegexOverflowPolicyAndStrictSourcePrecedence(t *testing.T) {
 		_, err := w.WriteString(body)
 		require.NoError(t, err)
 		err = w.Finish(ctx, true)
-		if policy == "passthrough" {
-			require.NoError(t, err)
-			assert.Equal(t, body, recorder.Body.String())
-		} else {
-			require.Error(t, err)
-			assert.Empty(t, recorder.Body.String())
-		}
+		require.Error(t, err, "overflow cannot bypass response validation")
+		assert.Empty(t, recorder.Body.String())
 	}
 	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, RegexFailurePolicy: "error", Preset: []byte(`{"prompts":[],"extensions":{"regex_scripts":[{"id":"p","findRegex":"secret","placement":[2]}]}}`)}
 	cfg := &dto.ResponseTextFilter{Mode: "rules", FailurePolicy: "passthrough"}
@@ -414,12 +409,7 @@ func TestTextRegexInvalidStoredConfigurationUsesFailurePolicy(t *testing.T) {
 		_, err := w.WriteString(body)
 		require.NoError(t, err)
 		err = w.Finish(ctx, true)
-		if policy == "passthrough" {
-			require.NoError(t, err)
-			assert.Equal(t, body, recorder.Body.String())
-		} else {
-			require.Error(t, err)
-			assert.Empty(t, recorder.Body.String())
-		}
+		require.Error(t, err, "invalid configuration must be corrected, not passed through")
+		assert.Empty(t, recorder.Body.String())
 	}
 }

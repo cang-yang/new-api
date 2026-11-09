@@ -54,13 +54,119 @@ func TestWorldbookBudgetRecursionAndImport(t *testing.T) {
 	require.Len(t, book.Entries, 1)
 	assert.Empty(t, book.Entries[0].Issues)
 	assertWorldbookNormalizedField(t, book.Entries[0], "probability")
-	assertWorldbookNormalizedField(t, book.Entries[0], "position")
+	assert.Equal(t, dto.WorldbookInjectionAtDepth, book.Entries[0].InjectionMode)
 	assert.Equal(t, "not_all", book.Entries[0].SecondaryLogic)
 	assert.NotEmpty(t, book.Entries[0].Source)
 	config.Books[0].Entries = []dto.WorldbookEntry{{ID: "unicode", Enabled: true, Constant: true, Content: strings.Repeat("界", 256)}}
 	result, err = MatchWorldbook(config, &dto.GeneralOpenAIRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, strings.Repeat("界", 256), result.Text, "budget counts Unicode characters")
+}
+
+func TestWorldbookV2BudgetUsesPhysicalAnchorsAndExpandedText(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{User: "阳", Preset: json.RawMessage(`{"wi_format":"<lore>{0}</lore>","prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+	config := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, MaxChars: 256, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+		{ID: "first", Enabled: true, Constant: true, Priority: 2, Content: strings.Repeat("界", 254), InjectionMode: "system_prelude"},
+		{ID: "second", Enabled: true, Constant: true, Content: "{{user}}", InjectionMode: "at_depth", InjectionDepth: 1},
+	}}}}
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	_, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Equal(t, "budget", trace.Worldbook.Entries[1].Reason, "two modes resolving to one boundary must count their separator")
+	config.Books[0].Entries = []dto.WorldbookEntry{{ID: "marker", Enabled: true, Constant: true, Content: "{{user}}", InjectionMode: "before_definition"}}
+	compiled, trace, err := CompileWorldbook(config, preset, request, SillyTavernContext{})
+	require.NoError(t, err)
+	require.True(t, trace.Worldbook.Entries[0].Inserted)
+	require.Equal(t, "<lore>阳</lore>", compiled.Messages[trace.Worldbook.Entries[0].Placement.Index].Content)
+}
+
+func TestWorldbookV2KeepsIdenticalContentFromDifferentEntries(t *testing.T) {
+	config := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+		{ID: "one", Enabled: true, Constant: true, Content: "same"},
+		{ID: "two", Enabled: true, Constant: true, Content: "same"},
+	}}}}
+	compiled, trace, err := CompileWorldbook(config, nil, &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hi"}}}, SillyTavernContext{})
+	require.NoError(t, err)
+	require.Equal(t, "same\n\nsame", compiled.Messages[0].Content)
+	for _, entry := range trace.Worldbook.Entries {
+		require.True(t, entry.Eligible && entry.Triggered && entry.Selected && entry.Inserted)
+	}
+}
+
+func TestWorldbookV2DepthIgnoresPresetMessagesAndPreservesToolBlocks(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"chatHistory","marker":true},{"identifier":"tail","role":"user","content":"preset tail"}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true},{"identifier":"tail","enabled":true}]}]}`)}
+	for _, legacy := range []bool{false, true} {
+		for _, depth := range []int{0, 1, 2} {
+			t.Run(fmt.Sprintf("legacy=%v/depth=%d", legacy, depth), func(t *testing.T) {
+				messages := []dto.Message{
+					{Role: "user", Content: "hello"},
+					{Role: "assistant", ToolCalls: []byte(`[{"id":"call","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)},
+					{Role: "tool", ToolCallId: "call", Content: "result"},
+				}
+				if legacy {
+					messages[1].ToolCalls = nil
+					messages[1].FunctionCall = []byte(`{"name":"lookup","arguments":"{}"}`)
+					messages[2].Role = "function"
+				}
+				config := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, InjectionMode: "at_depth", InjectionDepth: depth, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Constant: true, Content: "lore"}}}}}
+				compiled, trace, err := CompileWorldbook(config, preset, &dto.GeneralOpenAIRequest{Messages: messages}, SillyTavernContext{})
+				require.NoError(t, err)
+				position := 1
+				if depth == 0 {
+					position = 3
+				}
+				require.Equal(t, "lore", compiled.Messages[position].Content)
+				require.Equal(t, position, trace.Worldbook.Entries[0].Placement.Index)
+				require.Equal(t, "preset tail", compiled.Messages[len(compiled.Messages)-1].Content)
+				toolIndex := slices.IndexFunc(compiled.Messages, func(message dto.Message) bool { return message.Role == "tool" || message.Role == "function" })
+				require.Equal(t, "assistant", compiled.Messages[toolIndex-1].Role)
+			})
+		}
+	}
+}
+
+func TestWorldbookPreviewUsesSendOnceAndSeparatesLocalScripts(t *testing.T) {
+	config := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "e", Enabled: true, Keys: []string{"moon!"}, Content: "lore {{user}}"}}}}}
+	preset := scriptPresetConfig(t, map[string]any{"FinalRequestProcessing": map[string]any{
+		"enabled": true,
+		"script": `({request}) => {
+			if (!request.messages.some(m => m.content === "moon!") || !request.messages.some(m => m.content === "lore Alice")) throw Error("wrong script input");
+			request.messages.push({role:"system",content:"script ran"});
+			return request;
+		}`,
+	}})
+	preset.User = "Alice"
+	send := &dto.ResponseTextFilter{Mode: "rules", EnableSend: true, Rules: []dto.TextRegexRule{{ID: "send", Stage: "send", Action: "replace", Pattern: "/$/", Replacement: "!"}}}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "moon"}}}
+	for _, final := range []bool{false, true} {
+		result, err := PreviewWorldbookDraft(config, preset, send, request, SillyTavernContext{}, "draft-1", final)
+		require.NoError(t, err)
+		require.True(t, result.Entries[0].Inserted)
+		require.Equal(t, "lore Alice", result.Text)
+		require.Equal(t, "draft-1", result.DraftRevision)
+		require.NotEmpty(t, result.Fingerprint)
+		if final {
+			require.Equal(t, "script ran", result.FinalRequest.Messages[len(result.FinalRequest.Messages)-1].Content)
+		} else {
+			require.Nil(t, result.FinalRequest)
+		}
+	}
+	require.Equal(t, "moon", request.Messages[0].Content)
+}
+
+func TestWorldbookPreviewOutsideScopeDoesNotRunSendRulesOrScripts(t *testing.T) {
+	config := &dto.WorldbookConfig{Enabled: true, SemanticsVersion: 2, Books: []dto.Worldbook{{ID: "book", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "entry", Enabled: true, Constant: true, Content: "lore"}}}}}
+	preset := protocolScriptPresetConfig(t, map[string]any{
+		"FinalRequest": map[string]any{"enabled": true, "code": `throw new Error("must not run")`},
+	})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}, ToolChoice: "none"}
+	preview, err := PreviewWorldbookDraft(config, preset, nil, request, SillyTavernContext{}, "draft", true, "plain_chat_only")
+	require.NoError(t, err)
+	assert.Equal(t, "scope_bypass", preview.Phase)
+	assert.NotEmpty(t, preview.BypassReason)
+	assert.Empty(t, preview.Entries)
+	assert.Equal(t, request, preview.FinalRequest)
+	assert.NotSame(t, request, preview.FinalRequest)
 }
 
 func TestWorldbookRegexAndValidation(t *testing.T) {
@@ -468,7 +574,8 @@ func TestWorldbookImportNormalizesPersonalGatewaySemantics(t *testing.T) {
 	book, err := ImportWorldbook("simplified", []byte(`{"id":"book","enabled":true,"entries":[{"id":"entry","enabled":true,"constant":true,"content":"lore","keys":[],"secondary_keys":[],"secondary_logic":"none","source":{"sticky":3,"probability":50}}]}`))
 	require.NoError(t, err)
 	assert.Empty(t, book.Entries[0].Issues, "inspection source must not reblock an explicitly simplified entry")
-	assert.Empty(t, book.Entries[0].NormalizedRules)
+	assert.NotEmpty(t, book.Entries[0].NormalizedRules, "preserved source must regenerate risk records erased by the legacy confirmation UI")
+	assert.False(t, book.Entries[0].Enabled)
 	for _, field := range []string{"key", "keys", "keysecondary", "secondary_keys"} {
 		for _, prefix := range []string{"", `"id":"book","enabled":true,`} {
 			_, err = ImportWorldbook("malformed", []byte(fmt.Sprintf(`{%s"entries":[{"key":["moon"],"selective":true,"selectiveLogic":2,"content":"lore",%q:[7]}]}`, prefix, field)))
@@ -546,4 +653,38 @@ func TestWorldbookRegexWholeWordAndBoundedMediaTail(t *testing.T) {
 	text, truncated := worldbookMessageText(content, 7)
 	assert.True(t, truncated)
 	assert.Equal(t, " moon", text, "cutting a Unicode tail must not retain partial UTF-8")
+}
+
+func TestWorldbookRiskConfirmationIsBoundToSourceTargetAndVersion(t *testing.T) {
+	book, err := ImportWorldbook("risk", []byte(`{"entries":[{"content":"lore","constant":true,"sticky":3}]}`))
+	require.NoError(t, err)
+	entry := book.Entries[0]
+	entry.Enabled = true
+	config := &dto.WorldbookConfig{Enabled: true, SemanticsVersion: 2, InjectionMode: dto.WorldbookInjectionSystemPrelude}
+	require.False(t, worldbookRisksAccepted(entry, config))
+	entry.AcceptedRisks = map[string]string{}
+	for _, rule := range entry.NormalizedRules {
+		if rule.Action == "risk" {
+			entry.AcceptedRisks[rule.Field] = fmt.Sprintf("%s|system_prelude|0|2", rule.Fingerprint)
+		}
+	}
+	require.True(t, worldbookRisksAccepted(entry, config))
+	entry.Name = "renamed"
+	require.True(t, worldbookRisksAccepted(entry, config), "display edits must not invalidate confirmation")
+	config.InjectionMode = dto.WorldbookInjectionBeforeLastUser
+	require.False(t, worldbookRisksAccepted(entry, config))
+	config.InjectionMode = dto.WorldbookInjectionSystemPrelude
+	config.SemanticsVersion = 1
+	require.False(t, worldbookRisksAccepted(entry, config))
+	config.SemanticsVersion = 2
+	entry.Source = []byte(`{"content":"lore","constant":true,"sticky":4}`)
+	require.False(t, worldbookRisksAccepted(entry, config), "changed source invalidates old approval")
+	entry.NormalizedRules = nil
+	require.False(t, worldbookRisksAccepted(entry, config), "advanced JSON must not bypass review by removing records")
+	encoded, err := common.Marshal(dto.Worldbook{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{entry}})
+	require.NoError(t, err)
+	refreshed, err := ImportWorldbook("risk", encoded)
+	require.NoError(t, err)
+	require.NotEmpty(t, refreshed.Entries[0].NormalizedRules)
+	require.NotEqual(t, book.Entries[0].NormalizedRules[0].Fingerprint, refreshed.Entries[0].NormalizedRules[0].Fingerprint)
 }

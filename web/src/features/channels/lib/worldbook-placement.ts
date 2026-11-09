@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 export const worldbookPositionLabels: Record<string, string> = {
   follow_global: 'Follow worldbook settings',
   inherit: 'Follow preset worldbook markers',
+  before_definition: 'Before character definitions',
+  after_definition: 'After character definitions',
   system_prelude: 'System prelude',
   before_last_user: 'Before the latest user message',
   at_depth: 'At a fixed conversation depth',

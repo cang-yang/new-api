@@ -130,23 +130,18 @@ test('script compatibility is explicit, preserves the preset and disables the co
   expect(
     screen.getByRole('radio', { name: 'Do not use preset extras' })
   ).toHaveAttribute('aria-checked', 'false')
-  await user.click(
-    screen.getByRole('switch', {
-      name: 'Coordinate client and preset tool calls',
-    })
-  )
   expect(screen.queryByText('Compatibility boundaries')).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   const saved = JSON.parse(
     screen.getByLabelText('Saved config').textContent || '{}'
   )
   expect(saved.script_runtime).toBe('spreset-v1')
-  expect(saved.tool_protocol).toEqual({ enabled: true })
+  expect(saved.tool_protocol).toBeUndefined()
   expect(saved.tool_text.enabled).toBe(false)
   expect(saved.preset).toEqual(withHooks)
 })
 
-test('advanced tool protocol can project a preset terminal argument into the client response', async () => {
+test('reply sources save an explicit field without inferring business-tool phases', async () => {
   const user = userEvent.setup()
   const withHooks = {
     ...preset,
@@ -171,43 +166,33 @@ test('advanced tool protocol can project a preset terminal argument into the cli
   await user.click(
     screen.getByRole('radio', { name: 'Use preset settings (SPreset)' })
   )
-  await user.click(
-    screen.getByRole('switch', {
-      name: 'Coordinate client and preset tool calls',
-    })
-  )
-  await user.click(
-    screen.getByRole('button', { name: 'Advanced tool protocol' })
-  )
-  await user.type(screen.getByLabelText('Preset final tool'), 'soliumbra_reply')
-  await user.type(screen.getByLabelText('Auxiliary tools'), 'context')
-  await user.type(screen.getByLabelText('Action tools'), 'roll')
-  await user.type(screen.getByLabelText('Content tools'), 'reply_body')
+  await user.click(screen.getByRole('button', { name: 'Add reply source' }))
+  expect(
+    screen.getByRole('button', { name: 'Apply to channel' })
+  ).toBeDisabled()
+  await user.type(screen.getByLabelText('Reply tool name'), 'soliumbra_reply')
   await chooseSelectOption(
     user,
-    screen.getByRole('combobox', { name: 'Tool coordination phase' }),
-    'Always send the final tool'
+    screen.getByRole('combobox', { name: 'Reply format' }),
+    'JSON object'
   )
-  await chooseSelectOption(
-    user,
-    screen.getByRole('combobox', { name: 'Response target' }),
-    'JSON'
-  )
-  await user.type(screen.getByLabelText('Response argument'), 'extra')
+  await user.clear(screen.getByLabelText('Reply field'))
+  await user.type(screen.getByLabelText('Reply field'), '/extra')
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   const saved = JSON.parse(
     screen.getByLabelText('Saved config').textContent || '{}'
   )
-  expect(saved.tool_protocol).toEqual({
-    enabled: true,
-    preset_final: 'soliumbra_reply',
-    auxiliary: ['context'],
-    action: ['roll'],
-    content: ['reply_body'],
-    phase_policy: 'always_final',
-    response_target: 'json',
-    response_argument: 'extra',
+  expect(saved.reply_adapter).toEqual({
+    version: 2,
+    containers: [
+      {
+        name: 'soliumbra_reply',
+        argument_pointer: '/extra',
+        output_kind: 'json_object',
+      },
+    ],
   })
+  expect(saved.tool_protocol).toBeUndefined()
 })
 
 test('script compatibility hides the legacy adapter when the preset has no supported adapter', async () => {

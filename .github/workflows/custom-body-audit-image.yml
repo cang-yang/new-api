@@ -49,7 +49,8 @@ jobs:
           git diff --exit-code -- go.mod go.sum
           go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident|ChannelRegexPreview|Worldbook|AdaptationRetry|SelectedChannelResponseRegex' -count=1
           go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay|ErrorIncident' -count=1
-          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime|Worldbook|PresetCapability|Adaptation' -count=1
+          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime|Worldbook|PresetCapability|CapabilityModel|Adaptation|Relay|PresetAudit' -count=1
+          (cd relaykit && GOWORK=off go build ./...)
           go test ./relay/common -run 'TestApplyParamOverride|TestCompileParamOverride|TestSimulateParamOverride|TestStreamStatus' -count=1
           go test ./relay/helper -run 'TestStreamScannerHandler' -count=1
           go test ./relay/channel/openai -run 'Empty|OaiStreamHandler|OaiResponsesStreamHandler' -count=1
@@ -85,6 +86,8 @@ jobs:
           src/features/channels/components/__tests__/regex-rules-editor.test.tsx
           src/features/channels/components/__tests__/regex-playground.test.tsx
           src/features/channels/lib/__tests__/regex-rules.test.ts
+          src/features/channels/lib/__tests__/reply-adapter.test.ts
+          src/features/channels/components/__tests__/preset-script-selection.test.tsx
           src/features/channels/lib/__tests__/preset-editing.test.ts
           src/features/channels/lib/__tests__/sillytavern-configuration.test.ts
           src/features/channels/lib/__tests__/worldbook.test.ts

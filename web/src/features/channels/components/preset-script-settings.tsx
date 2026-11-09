@@ -35,16 +35,15 @@ import {
   FieldLabel,
   FieldSet,
 } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -59,6 +58,7 @@ import {
   PresetAdapterOverview,
   PresetCapabilityReportSettings,
 } from './preset-capability-report'
+import { ReplyAdapterSettings } from './reply-adapter-settings'
 
 type Props = {
   config: Record<string, unknown>
@@ -72,15 +72,6 @@ export function PresetScriptSettings(props: Props) {
   const supported = hasSPreset(props.config)
   const enabled = props.config.script_runtime === 'spreset-v1'
   const tavernEnabled = props.config.script_runtime === 'tavern-v1'
-  const toolProtocol = record(props.config.tool_protocol)
-  const toolProtocolEnabled = toolProtocol.enabled === true
-  const toolNameList = (value: unknown) =>
-    Array.isArray(value)
-      ? value.filter((name): name is string => typeof name === 'string')
-      : []
-  const auxiliaryTools = toolNameList(toolProtocol.auxiliary)
-  const actionTools = toolNameList(toolProtocol.action)
-  const contentTools = toolNameList(toolProtocol.content)
   const scripts = discoverPresetScripts(props.config)
   const hasScripts = scripts.some((script) => script.enabled)
   const [preparing, setPreparing] = useState(false)
@@ -122,22 +113,6 @@ export function PresetScriptSettings(props: Props) {
     }
     props.onChange(next)
   }
-  const updateToolProtocol = (changes: Record<string, unknown>) => {
-    const next = { ...toolProtocol, ...changes }
-    for (const [key, value] of Object.entries(changes)) {
-      if (
-        value === '' ||
-        value === undefined ||
-        value === null ||
-        (Array.isArray(value) && value.length === 0)
-      ) {
-        delete next[key]
-      }
-    }
-    props.onChange({ ...props.config, tool_protocol: next })
-  }
-  const toolProtocolText = (key: string) =>
-    typeof toolProtocol[key] === 'string' ? (toolProtocol[key] as string) : ''
   const failurePolicy = record(props.config.failure_policy)
   const failurePolicyText = (key: string) =>
     typeof failurePolicy[key] === 'string' ? (failurePolicy[key] as string) : ''
@@ -259,283 +234,11 @@ export function PresetScriptSettings(props: Props) {
             </FieldLabel>
           )}
         </RadioGroup>
-        <FieldGroup className='rounded-lg border p-4'>
-          <Field
-            orientation='horizontal'
-            data-disabled={props.disabled || (!enabled && !tavernEnabled)}
-          >
-            <Switch
-              id={`${id}-tool-protocol`}
-              checked={toolProtocolEnabled}
-              disabled={props.disabled || (!enabled && !tavernEnabled)}
-              onCheckedChange={(checked) => {
-                if (props.disabled || (!enabled && !tavernEnabled)) return
-                props.onChange({
-                  ...props.config,
-                  tool_protocol: {
-                    ...toolProtocol,
-                    enabled: checked,
-                  },
-                })
-              }}
-            />
-            <FieldLabel htmlFor={`${id}-tool-protocol`}>
-              {t('Coordinate client and preset tool calls')}
-            </FieldLabel>
-          </Field>
-          <FieldDescription>
-            {t(
-              'Off by default. Turn this on only when this preset script asks the model to call tools.'
-            )}
-          </FieldDescription>
-          <FieldDescription>
-            {t(
-              'Only coordinates tools the client declares in the request. A format that appears only in prompt text is never guessed.'
-            )}
-          </FieldDescription>
-          {toolProtocolEnabled && (enabled || tavernEnabled) ? (
-            <Collapsible className='min-w-0 space-y-3 border-t pt-4'>
-              <CollapsibleTrigger
-                render={
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    disabled={props.disabled}
-                  />
-                }
-              >
-                {t('Advanced tool protocol')}
-              </CollapsibleTrigger>
-              <CollapsibleContent className='space-y-3'>
-                <div className='grid gap-3 sm:grid-cols-2'>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-client-final`}>
-                      {t('Client final tool')}
-                    </FieldLabel>
-                    <Input
-                      id={`${id}-client-final`}
-                      value={toolProtocolText('client_final')}
-                      disabled={props.disabled}
-                      placeholder='client_reply'
-                      onChange={(event) =>
-                        updateToolProtocol({
-                          client_final: event.target.value,
-                        })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        'Optional. Only use this when the original client declares the final tool.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-preset-final`}>
-                      {t('Preset final tool')}
-                    </FieldLabel>
-                    <Input
-                      id={`${id}-preset-final`}
-                      value={toolProtocolText('preset_final')}
-                      disabled={props.disabled}
-                      placeholder='final_reply'
-                      onChange={(event) =>
-                        updateToolProtocol({
-                          preset_final: event.target.value,
-                        })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        'The preset tool whose result should become the client response.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                  <Field
-                    className='sm:col-span-2'
-                    data-disabled={props.disabled}
-                  >
-                    <FieldLabel htmlFor={`${id}-auxiliary-tools`}>
-                      {t('Auxiliary tools')}
-                    </FieldLabel>
-                    <Input
-                      id={`${id}-auxiliary-tools`}
-                      value={auxiliaryTools.join(', ')}
-                      disabled={props.disabled}
-                      placeholder='context, memory'
-                      onChange={(event) =>
-                        updateToolProtocol({
-                          auxiliary: event.target.value
-                            .split(',')
-                            .map((name) => name.trim())
-                            .filter(Boolean),
-                        })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        'Comma-separated preset tools that run before the final response.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-action-tools`}>
-                      {t('Action tools')}
-                    </FieldLabel>
-                    <Input
-                      id={`${id}-action-tools`}
-                      value={actionTools.join(', ')}
-                      disabled={props.disabled}
-                      placeholder='roll_dice, move'
-                      onChange={(event) =>
-                        updateToolProtocol({
-                          action: event.target.value
-                            .split(',')
-                            .map((name) => name.trim())
-                            .filter(Boolean),
-                        })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        'Comma-separated preset tools that ask the client to act. They stay as tool calls and are never turned into reply text.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-content-tools`}>
-                      {t('Content tools')}
-                    </FieldLabel>
-                    <Input
-                      id={`${id}-content-tools`}
-                      value={contentTools.join(', ')}
-                      disabled={props.disabled}
-                      placeholder='reply'
-                      onChange={(event) =>
-                        updateToolProtocol({
-                          content: event.target.value
-                            .split(',')
-                            .map((name) => name.trim())
-                            .filter(Boolean),
-                        })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        'Comma-separated preset tools that only carry the final text or JSON. They are never sent to the client as tool calls.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-phase-policy`}>
-                      {t('Tool coordination phase')}
-                    </FieldLabel>
-                    <Select
-                      value={toolProtocolText('phase_policy') || 'request'}
-                      disabled={props.disabled}
-                      onValueChange={(value) => {
-                        if (typeof value === 'string') {
-                          updateToolProtocol({ phase_policy: value })
-                        }
-                      }}
-                    >
-                      <SelectTrigger
-                        id={`${id}-phase-policy`}
-                        className='w-full'
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectItem value='request'>
-                          {t('Follow the current request')}
-                        </SelectItem>
-                        <SelectItem value='always_auxiliary'>
-                          {t('Always send auxiliary tools first')}
-                        </SelectItem>
-                        <SelectItem value='always_final'>
-                          {t('Always send the final tool')}
-                        </SelectItem>
-                        <SelectItem value='disabled'>
-                          {t('Do not coordinate tool calls')}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FieldDescription>
-                      {t(
-                        'Use a fixed phase only when the client does not resend earlier tool results.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-response-target`}>
-                      {t('Response target')}
-                    </FieldLabel>
-                    <Select
-                      value={toolProtocolText('response_target') || 'auto'}
-                      disabled={props.disabled}
-                      onValueChange={(value) => {
-                        if (typeof value === 'string') {
-                          updateToolProtocol({ response_target: value })
-                        }
-                      }}
-                    >
-                      <SelectTrigger
-                        id={`${id}-response-target`}
-                        className='w-full'
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectItem value='auto'>{t('Auto')}</SelectItem>
-                        <SelectItem value='text'>{t('Text')}</SelectItem>
-                        <SelectItem value='json'>{t('JSON')}</SelectItem>
-                        <SelectItem value='tool'>{t('Tool call')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field data-disabled={props.disabled}>
-                    <FieldLabel htmlFor={`${id}-response-argument`}>
-                      {t('Response argument')}
-                    </FieldLabel>
-                    <Input
-                      id={`${id}-response-argument`}
-                      value={toolProtocolText('response_argument')}
-                      disabled={props.disabled}
-                      placeholder='payload'
-                      onChange={(event) =>
-                        updateToolProtocol({
-                          response_argument: event.target.value,
-                        })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        'Required for text and JSON replies. Argument path that holds the client JSON or text.'
-                      )}
-                    </FieldDescription>
-                  </Field>
-                </div>
-                <p className='text-muted-foreground text-xs leading-relaxed'>
-                  {t(
-                    'Visibility is fixed to keep the client contract intact: auxiliary and action tools stay client-visible, while content tools are gateway-internal and are only projected into the final text or JSON.'
-                  )}
-                </p>
-              </CollapsibleContent>
-            </Collapsible>
-          ) : null}
-          {!enabled && !tavernEnabled && (
-            <FieldDescription>
-              {t('Enable a server-side preset script first.')}
-            </FieldDescription>
-          )}
-          {enabled || tavernEnabled ? (
-            <p className='text-muted-foreground text-sm'>
-              {toolProtocolEnabled
-                ? t('Current draft: tool coordination on')
-                : t('Current draft: tool coordination off')}
-            </p>
-          ) : null}
-        </FieldGroup>
+        <ReplyAdapterSettings
+          config={props.config}
+          onChange={props.onChange}
+          disabled={props.disabled}
+        />
         <FieldGroup className='rounded-lg border p-4'>
           <FieldLegend variant='label'>{t('Failure handling')}</FieldLegend>
           <FieldDescription>
@@ -549,7 +252,7 @@ export function PresetScriptSettings(props: Props) {
                 {t('Worldbook failure')}
               </FieldLabel>
               <Select
-                value={failurePolicyText('worldbook') || 'skip'}
+                value={failurePolicyText('worldbook') || 'fail'}
                 disabled={props.disabled}
                 onValueChange={(value) => {
                   if (typeof value === 'string') {
@@ -564,10 +267,14 @@ export function PresetScriptSettings(props: Props) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent alignItemWithTrigger={false}>
-                  <SelectItem value='skip'>
-                    {t('Skip the worldbook and continue')}
-                  </SelectItem>
-                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                  <SelectGroup>
+                    <SelectItem value='skip'>
+                      {t('Skip the worldbook and continue')}
+                    </SelectItem>
+                    <SelectItem value='fail'>
+                      {t('Fail the request')}
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </Field>
@@ -576,7 +283,7 @@ export function PresetScriptSettings(props: Props) {
                 {t('Preset or script failure')}
               </FieldLabel>
               <Select
-                value={failurePolicyText('preset') || 'request_passthrough'}
+                value={failurePolicyText('preset') || 'fail'}
                 disabled={props.disabled}
                 onValueChange={(value) => {
                   if (typeof value === 'string') {
@@ -592,64 +299,42 @@ export function PresetScriptSettings(props: Props) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent alignItemWithTrigger={false}>
-                  <SelectItem value='request_passthrough'>
-                    {t('Send the original request unchanged')}
-                  </SelectItem>
-                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                  <SelectGroup>
+                    <SelectItem value='request_passthrough'>
+                      {t('Send the original request unchanged')}
+                    </SelectItem>
+                    <SelectItem value='fail'>
+                      {t('Fail the request')}
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </Field>
             <Field data-disabled={props.disabled}>
-              <FieldLabel htmlFor={`${id}-failure-tool`}>
-                {t('Tool role failure')}
+              <FieldLabel htmlFor={`${id}-failure-output`}>
+                {t('Reply script failure')}
               </FieldLabel>
               <Select
-                value={
-                  failurePolicyText('tool_resolution') ||
-                  'tool_protocol_passthrough'
-                }
+                value={failurePolicyText('output_processing') || 'fail'}
                 disabled={props.disabled}
                 onValueChange={(value) => {
                   if (typeof value === 'string') {
-                    updateFailurePolicy({ tool_resolution: value })
+                    updateFailurePolicy({ output_processing: value })
                   }
                 }}
               >
-                <SelectTrigger id={`${id}-failure-tool`} className='w-full'>
+                <SelectTrigger id={`${id}-failure-output`} className='w-full'>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false}>
-                  <SelectItem value='tool_protocol_passthrough'>
-                    {t('Keep tools but skip coordination')}
-                  </SelectItem>
-                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field data-disabled={props.disabled}>
-              <FieldLabel htmlFor={`${id}-failure-response`}>
-                {t('Reply restore failure')}
-              </FieldLabel>
-              <Select
-                value={failurePolicyText('response_restore') || 'safe_raw'}
-                disabled={props.disabled}
-                onValueChange={(value) => {
-                  if (typeof value === 'string') {
-                    updateFailurePolicy({
-                      response_restore: value,
-                      response_validation: value,
-                    })
-                  }
-                }}
-              >
-                <SelectTrigger id={`${id}-failure-response`} className='w-full'>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false}>
-                  <SelectItem value='safe_raw'>
-                    {t('Send the raw reply only when it is safe')}
-                  </SelectItem>
-                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value='fail'>
+                      {t('Fail the request')}
+                    </SelectItem>
+                    <SelectItem value='preserve'>
+                      {t('Keep the previous valid result')}
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </Field>
@@ -658,7 +343,7 @@ export function PresetScriptSettings(props: Props) {
                 {t('Receive regex failure')}
               </FieldLabel>
               <Select
-                value={failurePolicyText('regex') || 'preserve'}
+                value={failurePolicyText('regex') || 'fail'}
                 disabled={props.disabled}
                 onValueChange={(value) => {
                   if (typeof value === 'string') {
@@ -670,15 +355,23 @@ export function PresetScriptSettings(props: Props) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent alignItemWithTrigger={false}>
-                  <SelectItem value='preserve'>
-                    {t('Keep the original text')}
-                  </SelectItem>
-                  <SelectItem value='empty'>{t('Empty the text')}</SelectItem>
-                  <SelectItem value='fail'>{t('Fail the request')}</SelectItem>
+                  <SelectGroup>
+                    <SelectItem value='preserve'>
+                      {t('Keep the previous valid result')}
+                    </SelectItem>
+                    <SelectItem value='fail'>
+                      {t('Fail the request')}
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </Field>
           </div>
+          <FieldDescription>
+            {t(
+              'Invalid configuration, tool conflicts and invalid replies always stop the request. A fallback is allowed only when it cannot bypass required reply cleanup.'
+            )}
+          </FieldDescription>
           <FieldDescription>
             {t(
               'A cross-channel retry is always rejected when the frozen plan would change, and a reply that has already started is never rewritten.'

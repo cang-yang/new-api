@@ -29,6 +29,7 @@ import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -42,6 +43,7 @@ import {
   createWorldbookConfig,
   parseWorldbook,
   worldbookConfirmEntry,
+  worldbookNeedsReview,
   worldbookSchema,
   type Worldbook,
   type WorldbookConfig,
@@ -54,6 +56,8 @@ type Props = {
   scopeKey: string | number
   value: string
   presetValue?: string
+  sendRulesValue?: string
+  adaptationScope?: string
   onChange: (value: string) => void
   disabled?: boolean
 }
@@ -72,9 +76,29 @@ function ScopedWorldbookSettings(props: Props) {
   const [bookID, setBookID] = useState('')
   const [entryID, setEntryID] = useState('')
   const [tab, setTab] = useState('books')
-  const [confirm, setConfirm] = useState<'discard' | 'remove' | null>(null)
+  const [confirm, setConfirm] = useState<
+    'discard' | 'remove' | 'upgrade' | null
+  >(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const conflict = open && baseline !== props.value
+  const review = useMutation({
+    mutationFn: async (book: Worldbook) => {
+      const refreshed = await importWorldbook(book.name, book)
+      return {
+        ...refreshed,
+        id: book.id,
+        enabled: book.enabled,
+        entries: refreshed.entries.map((entry, index) => ({
+          ...entry,
+          id: book.entries[index].id,
+          enabled: book.entries[index].enabled,
+        })),
+      }
+    },
+    onSuccess: (next) => updateBook(next),
+    onError: (error) => handleServerError(error),
+    meta: { errorToast: false },
+  })
   const importFile = useMutation({
     mutationFn: async (file: File) => {
       if (file.size > 6 * 1024 * 1024) {
@@ -100,7 +124,8 @@ function ScopedWorldbookSettings(props: Props) {
     onError: (error) => handleServerError(error),
     meta: { errorToast: false },
   })
-  const locked = props.disabled || conflict || importFile.isPending
+  const locked =
+    props.disabled || conflict || importFile.isPending || review.isPending
   const book = draft.books.find((item) => item.id === bookID) ?? draft.books[0]
   const entry = book?.entries.find((item) => item.id === entryID)
   const valid = worldbookSchema.safeParse(draft).success
@@ -110,7 +135,7 @@ function ScopedWorldbookSettings(props: Props) {
       books: draft.books.map((item) => (item.id === next.id ? next : item)),
     })
   const close = () => {
-    if (importFile.isPending) return
+    if (importFile.isPending || review.isPending) return
     if (JSON.stringify(draft) !== initial) setConfirm('discard')
     else setOpen(false)
   }
@@ -133,6 +158,16 @@ function ScopedWorldbookSettings(props: Props) {
           {!!current?.books.length && (
             <p className='text-muted-foreground text-xs'>
               {current.enabled ? t('Enabled') : t('Disabled')}
+              {' · '}
+              {t('{{count}} entries ready to match', {
+                count: current.books
+                  .filter((book) => book.enabled && current.enabled)
+                  .flatMap((book) => book.entries)
+                  .filter(
+                    (entry) =>
+                      entry.enabled && !worldbookNeedsReview(entry, current)
+                  ).length,
+              })}
             </p>
           )}
           {!current && (
@@ -307,11 +342,13 @@ function ScopedWorldbookSettings(props: Props) {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent alignItemWithTrigger={false}>
-                              {draft.books.map((item) => (
-                                <SelectItem key={item.id} value={item.id}>
-                                  {item.name}
-                                </SelectItem>
-                              ))}
+                              <SelectGroup>
+                                {draft.books.map((item) => (
+                                  <SelectItem key={item.id} value={item.id}>
+                                    {item.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
                             </SelectContent>
                           </Select>
                         </div>
@@ -326,6 +363,16 @@ function ScopedWorldbookSettings(props: Props) {
                             }
                           />
                         </Label>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          disabled={locked}
+                          onClick={() => review.mutate(book)}
+                        >
+                          {review.isPending
+                            ? t('Checking…')
+                            : t('Recheck imported entries')}
+                        </Button>
                         <Button
                           type='button'
                           variant='ghost'
@@ -345,6 +392,7 @@ function ScopedWorldbookSettings(props: Props) {
                         <WorldbookEntryOverview
                           key={book.id}
                           book={book}
+                          context={draft}
                           active={draft.enabled && book.enabled}
                           disabled={locked}
                           onEdit={setEntryID}
@@ -361,7 +409,7 @@ function ScopedWorldbookSettings(props: Props) {
                               ...book,
                               entries: book.entries.map((item) =>
                                 review.some((entry) => entry.id === item.id)
-                                  ? worldbookConfirmEntry(item)
+                                  ? worldbookConfirmEntry(item, draft)
                                   : item
                               ),
                             })
@@ -386,6 +434,7 @@ function ScopedWorldbookSettings(props: Props) {
                             <WorldbookEntryFields
                               key={`${book.id}:${entry.id}`}
                               entry={entry}
+                              context={draft}
                               disabled={locked}
                               onChange={(next) =>
                                 updateBook({
@@ -405,6 +454,58 @@ function ScopedWorldbookSettings(props: Props) {
               )}
               {tab === 'settings' && (
                 <fieldset disabled={locked} className='space-y-5'>
+                  <div className='space-y-2 rounded-lg border p-3'>
+                    <Label htmlFor='worldbook-version'>
+                      {t('Worldbook insertion behavior')}
+                    </Label>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Existing channels keep their original positions. Stable history positions count only conversation messages, not preset instructions. Preview the change before saving.'
+                      )}
+                    </p>
+                    <Select
+                      value={String(draft.semantics_version ?? 1)}
+                      onValueChange={(value) => {
+                        if (value === '2' && draft.semantics_version !== 2) {
+                          setConfirm('upgrade')
+                        } else if (value === '1') {
+                          setDraft({ ...draft, semantics_version: 1 })
+                        }
+                      }}
+                    >
+                      <SelectTrigger id='worldbook-version'>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value='1'>
+                            {t('Original positions (keep existing behavior)')}
+                          </SelectItem>
+                          <SelectItem value='2'>
+                            {t(
+                              'Stable history positions (recommended for new setups)'
+                            )}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      onClick={() => {
+                        const url = URL.createObjectURL(
+                          new Blob([baseline], { type: 'application/json' })
+                        )
+                        const link = document.createElement('a')
+                        link.href = url
+                        link.download = 'worldbook-before-position-change.json'
+                        link.click()
+                        URL.revokeObjectURL(url)
+                      }}
+                    >
+                      {t('Download original settings')}
+                    </Button>
+                  </div>
                   <div className='space-y-2'>
                     <Label htmlFor='worldbook-depth'>
                       {t('Recent messages to check')}
@@ -494,18 +595,26 @@ function ScopedWorldbookSettings(props: Props) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent alignItemWithTrigger={false}>
-                        <SelectItem value='inherit'>
-                          {t('Follow preset worldbook markers')}
-                        </SelectItem>
-                        <SelectItem value='system_prelude'>
-                          {t('System prelude')}
-                        </SelectItem>
-                        <SelectItem value='before_last_user'>
-                          {t('Before the latest user message')}
-                        </SelectItem>
-                        <SelectItem value='at_depth'>
-                          {t('At a fixed conversation depth')}
-                        </SelectItem>
+                        <SelectGroup>
+                          <SelectItem value='inherit'>
+                            {t('Follow preset worldbook markers')}
+                          </SelectItem>
+                          <SelectItem value='system_prelude'>
+                            {t('System prelude')}
+                          </SelectItem>
+                          <SelectItem value='before_last_user'>
+                            {t('Before the latest user message')}
+                          </SelectItem>
+                          <SelectItem value='at_depth'>
+                            {t('At a fixed conversation depth')}
+                          </SelectItem>
+                          <SelectItem value='before_definition'>
+                            {t('Before character definitions')}
+                          </SelectItem>
+                          <SelectItem value='after_definition'>
+                            {t('After character definitions')}
+                          </SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                     <p className='text-muted-foreground text-xs'>
@@ -545,6 +654,8 @@ function ScopedWorldbookSettings(props: Props) {
                 <WorldbookPreview
                   config={draft}
                   presetValue={props.presetValue}
+                  sendRulesValue={props.sendRulesValue}
+                  adaptationScope={props.adaptationScope}
                   disabled={locked || !valid}
                 />
               )}
@@ -553,7 +664,7 @@ function ScopedWorldbookSettings(props: Props) {
         )}
       </Dialog>
       <ConfirmDialog
-        open={confirm !== null}
+        open={confirm === 'discard' || confirm === 'remove'}
         onOpenChange={(next) => {
           if (!next) setConfirm(null)
         }}
@@ -576,6 +687,22 @@ function ScopedWorldbookSettings(props: Props) {
             setBookID('')
             setEntryID('')
           } else setOpen(false)
+          setConfirm(null)
+        }}
+      />
+      <ConfirmDialog
+        open={confirm === 'upgrade'}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null)
+        }}
+        title={t('Change worldbook insertion behavior?')}
+        desc={t(
+          'This changes how history depth and duplicate content work. Download the original settings, compare both versions with the same sample in Test matching, then save only when the positions are correct. Risky entries may need confirmation again.'
+        )}
+        confirmText={t('Use stable history positions')}
+        handleConfirm={() => {
+          setDraft({ ...draft, semantics_version: 2 })
+          setTab('preview')
           setConfirm(null)
         }}
       />

@@ -13,6 +13,8 @@ import (
 // SillyTavernPresetConfig is deliberately opt-in and channel scoped. The
 // original preset is kept intact so it can be edited or exported losslessly.
 type SillyTavernPresetConfig struct {
+	SourcePresetID     string          `json:"source_preset_id,omitempty"`
+	ReplyAdapter       *ReplyAdapter   `json:"reply_adapter,omitempty"`
 	RegexFailurePolicy string          `json:"regex_failure_policy,omitempty"`
 	Preset             json.RawMessage `json:"preset"`
 	Models             []string        `json:"models,omitempty"`
@@ -36,6 +38,19 @@ type SillyTavernPresetConfig struct {
 	ScriptModules       map[string]string         `json:"script_modules,omitempty"` // administrator-pinned JS modules; never fetched
 	ToolProtocol        *SillyTavernToolProtocol  `json:"tool_protocol,omitempty"`
 	FailurePolicy       *SillyTavernFailurePolicy `json:"failure_policy,omitempty"`
+}
+
+// ReplyAdapter declares internal response transports; it never owns client tools.
+type ReplyAdapter struct {
+	Version    int              `json:"version"`
+	Containers []ReplyContainer `json:"containers"`
+}
+
+type ReplyContainer struct {
+	Name            string  `json:"name"`
+	ArgumentPointer *string `json:"argument_pointer,omitempty"`
+	Formatter       bool    `json:"formatter,omitempty"`
+	OutputKind      string  `json:"output_kind"` // text or json_object
 }
 
 // SillyTavernToolProtocol optionally resolves ambiguous tool roles without
@@ -176,11 +191,17 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 	if c == nil {
 		return nil, nil
 	}
+	if len(c.SourcePresetID) > 128 {
+		return nil, fmt.Errorf("preset source identity exceeds 128 bytes")
+	}
 	if c.ScriptRuntime != "" && c.ScriptRuntime != "spreset-v1" && c.ScriptRuntime != "tavern-v1" {
 		return nil, fmt.Errorf("unsupported preset script_runtime version")
 	}
 	if c.ScriptRuntime != "" && c.ToolText != nil && c.ToolText.Enabled {
 		return nil, fmt.Errorf("preset script runtime and native tool_text transport cannot both be enabled")
+	}
+	if err := c.ReplyAdapter.Validate(); err != nil {
+		return nil, err
 	}
 	if err := validateSillyTavernToolProtocol(c.ToolProtocol); err != nil {
 		return nil, err

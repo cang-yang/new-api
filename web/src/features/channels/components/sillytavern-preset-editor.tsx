@@ -28,6 +28,7 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 
+import { validReplyAdapter } from '../lib/reply-adapter'
 import {
   editPresetConfigEntry,
   migratePresetPatches,
@@ -203,9 +204,16 @@ export function SillyTavernPresetEditor(props: Props) {
             </Button>
             <Button
               type='button'
-              disabled={locked || !draft}
+              disabled={locked || !draft || !validReplyAdapter(draft)}
               onClick={() => {
-                if (!draft || locked || props.value !== baseline) return
+                if (
+                  !draft ||
+                  locked ||
+                  props.value !== baseline ||
+                  !validReplyAdapter(draft)
+                ) {
+                  return
+                }
                 props.onChange(JSON.stringify(draft))
                 setOpen(false)
               }}
