@@ -3,6 +3,7 @@ package dto
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -47,10 +48,12 @@ type ReplyAdapter struct {
 }
 
 type ReplyContainer struct {
-	Name            string  `json:"name"`
-	ArgumentPointer *string `json:"argument_pointer,omitempty"`
-	Formatter       bool    `json:"formatter,omitempty"`
-	OutputKind      string  `json:"output_kind"` // text or json_object
+	Name              string  `json:"name"`
+	ArgumentPointer   *string `json:"argument_pointer,omitempty"`
+	Formatter         bool    `json:"formatter,omitempty"`
+	OutputKind        string  `json:"output_kind"` // text or json_object
+	SourcePromptID    string  `json:"source_prompt_id,omitempty"`
+	SourceFingerprint string  `json:"source_fingerprint,omitempty"`
 }
 
 // SillyTavernToolProtocol optionally resolves ambiguous tool roles without
@@ -274,6 +277,11 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 	if err := kitutil.Unmarshal(c.Preset, &preset); err != nil {
 		return nil, fmt.Errorf("invalid sillytavern_preset: %w", err)
 	}
+	merged, err := MergeSillyTavernRegexScripts(c.Preset)
+	if err != nil {
+		return nil, err
+	}
+	preset.Extensions.RegexScripts = merged
 	if len(preset.Prompts) == 0 || len(preset.Prompts) > 500 || len(preset.PromptOrder) == 0 {
 		return nil, fmt.Errorf("sillytavern_preset requires prompts and prompt_order (at most 500 prompts)")
 	}
@@ -326,6 +334,45 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 		return nil, fmt.Errorf("sillytavern_preset n must be between 1 and 16")
 	}
 	return &preset, nil
+}
+
+// Both extension layouts are used by plugin exporters. Exact copies share one
+// identity; conflicting copies must be resolved by the user, never by ordering.
+func MergeSillyTavernRegexScripts(data json.RawMessage) ([]SillyTavernRegexScript, error) {
+	var envelope struct {
+		Extensions struct {
+			Scripts []json.RawMessage `json:"regex_scripts"`
+			SPreset struct {
+				RegexBinding struct {
+					Regexes []json.RawMessage `json:"regexes"`
+				} `json:"RegexBinding"`
+			} `json:"SPreset"`
+		} `json:"extensions"`
+	}
+	if err := kitutil.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	if len(envelope.Extensions.Scripts)+len(envelope.Extensions.SPreset.RegexBinding.Regexes) > 200 {
+		return nil, fmt.Errorf("sillytavern_preset allows at most 100 distinct embedded regex scripts")
+	}
+	seen := map[string]any{}
+	var merged []SillyTavernRegexScript
+	for _, raw := range append(envelope.Extensions.Scripts, envelope.Extensions.SPreset.RegexBinding.Regexes...) {
+		var script SillyTavernRegexScript
+		var value any
+		if kitutil.Unmarshal(raw, &script) != nil || kitutil.Unmarshal(raw, &value) != nil || script.ID == "" {
+			return nil, fmt.Errorf("sillytavern_preset embedded regex scripts require nonempty IDs")
+		}
+		if previous, exists := seen[script.ID]; exists {
+			if !reflect.DeepEqual(previous, value) {
+				return nil, fmt.Errorf("embedded regex %q has conflicting copies", script.ID)
+			}
+			continue
+		}
+		seen[script.ID] = value
+		merged = append(merged, script)
+	}
+	return merged, nil
 }
 
 func validateSillyTavernToolProtocol(protocol *SillyTavernToolProtocol) error {

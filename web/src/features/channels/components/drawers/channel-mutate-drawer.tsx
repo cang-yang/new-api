@@ -203,7 +203,10 @@ import {
   discoverPresetScripts,
   preparePresetScripts,
 } from '../../lib/preset-script-preparation'
-import { mergePresetRegexScripts } from '../../lib/regex-rules'
+import {
+  collectPresetRegexScripts,
+  mergePresetRegexScripts,
+} from '../../lib/regex-rules'
 import { parsePresetEditor } from '../../lib/sillytavern-editor'
 import {
   collectInvalidStatusCodeEntries,
@@ -664,6 +667,7 @@ export function ChannelMutateDrawer({
         enable_embedded_regex: false,
         enable_send_regex: false,
       }
+      collectPresetRegexScripts(config.preset)
       if (!parsePresetEditor(config)) throw new Error('Invalid preset')
       const previousConfig = parsePresetEditor(previousValue || '')?.config
       if (previousConfig && Object.hasOwn(previousConfig, 'script_runtime')) {
@@ -698,16 +702,14 @@ export function ChannelMutateDrawer({
       }
       const presetValue = JSON.stringify(config)
       onChange(presetValue)
-      const scripts = (
-        preset.extensions as { regex_scripts?: unknown[] } | undefined
-      )?.regex_scripts
+      const scripts = collectPresetRegexScripts(preset)
       setPendingPresetRegex(
         Array.isArray(scripts) && scripts.length > 0
           ? { presetValue, scripts }
           : null
       )
       toast.success(t('Preset imported. Save the channel to apply it.'))
-    } catch {
+    } catch (error) {
       if (
         presetImportScope.current !== importScope ||
         !importScope.open ||
@@ -715,7 +717,13 @@ export function ChannelMutateDrawer({
       ) {
         return
       }
-      toast.error(t('Import a valid SillyTavern Chat Completion preset'))
+      toast.error(
+        error instanceof Error &&
+          error.message ===
+            'Preset contains conflicting copies of the same regex rule.'
+          ? t('Preset contains conflicting copies of the same regex rule.')
+          : t('Import a valid SillyTavern Chat Completion preset')
+      )
     } finally {
       if (
         presetImportScope.current === importScope &&

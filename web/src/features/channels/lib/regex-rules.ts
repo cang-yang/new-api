@@ -18,7 +18,62 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import { presetRecord } from './preset-script-preparation'
 import { validReplyPointer } from './reply-adapter'
+
+export type EmbeddedRegexScript = {
+  id?: string
+  scriptName?: string
+  disabled?: boolean
+  promptOnly?: boolean
+  markdownOnly?: boolean
+  placement?: number[]
+  replaceString?: string
+}
+
+// Exporters may save the same rule in both extension layouts. Compare JSON
+// content independently of property order and never silently choose a conflict.
+export function collectPresetRegexScripts(
+  preset: unknown
+): EmbeddedRegexScript[] {
+  const extensions = presetRecord(presetRecord(preset).extensions)
+  const binding = presetRecord(presetRecord(extensions.SPreset).RegexBinding)
+  const sources = [extensions.regex_scripts, binding.regexes]
+  const seen = new Map<string, string>()
+  const result: EmbeddedRegexScript[] = []
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical)
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, item]) => [key, canonical(item)])
+      )
+    }
+    return value
+  }
+  for (const source of sources) {
+    if (source === undefined) continue
+    if (!Array.isArray(source)) {
+      throw new Error('Invalid SillyTavern regex script')
+    }
+    for (const item of source) {
+      const script = presetRecord(item) as EmbeddedRegexScript
+      const identity = JSON.stringify(canonical(script))
+      if (script.id && seen.has(script.id)) {
+        if (seen.get(script.id) !== identity) {
+          throw new Error(
+            'Preset contains conflicting copies of the same regex rule.'
+          )
+        }
+        continue
+      }
+      if (script.id) seen.set(script.id, identity)
+      result.push(script)
+    }
+  }
+  return result
+}
 
 const utf8Encoder = new TextEncoder()
 const byteLimitedString = (limit: number) =>
@@ -181,7 +236,14 @@ export function importRegexScripts(
       rules.push({ ...base, id: crypto.randomUUID(), stage: 'send', roles })
     }
     if (receive && placements.includes(2)) {
-      rules.push({ ...base, id: crypto.randomUUID(), stage: 'receive' })
+      rules.push({
+        ...base,
+        id: crypto.randomUUID(),
+        stage: 'receive',
+        disabled:
+          base.disabled ||
+          (script.markdownOnly === true && script.promptOnly !== true),
+      })
     }
     if (!roles.length && !unsupported) warnings.push(name)
   }

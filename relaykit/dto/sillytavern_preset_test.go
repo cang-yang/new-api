@@ -1,10 +1,42 @@
 package dto
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPresetRegexSourcesMergeByIdentity(t *testing.T) {
+	first := json.RawMessage(`{"id":"history","scriptName":"Hide earlier analysis","findRegex":"/secret/g","replaceString":"","placement":[2],"promptOnly":true}`)
+	copyWithDifferentKeyOrder := json.RawMessage(`{"placement":[2],"replaceString":"","findRegex":"/secret/g","scriptName":"Hide earlier analysis","promptOnly":true,"id":"history"}`)
+	second := json.RawMessage(`{"id":"reply","scriptName":"Clean reply","findRegex":"/tag/g","replaceString":"","placement":[2]}`)
+	for _, tc := range []struct {
+		name       string
+		top, bound []json.RawMessage
+		want       int
+		fail       bool
+	}{
+		{"same rule is not executed twice", []json.RawMessage{first}, []json.RawMessage{copyWithDifferentKeyOrder, second}, 2, false},
+		{"binding-only rules remain available", nil, []json.RawMessage{first}, 1, false},
+		{"conflicting copies require review", []json.RawMessage{first}, []json.RawMessage{json.RawMessage(`{"id":"history","findRegex":"different"}`)}, 0, true},
+		{"missing identities cannot be linked safely", []json.RawMessage{json.RawMessage(`{"findRegex":"x"}`)}, nil, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := kitutil.Marshal(map[string]any{"extensions": map[string]any{"regex_scripts": tc.top, "SPreset": map[string]any{"RegexBinding": map[string]any{"regexes": tc.bound}}}})
+			require.NoError(t, err)
+			scripts, err := MergeSillyTavernRegexScripts(data)
+			if tc.fail {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, scripts, tc.want)
+			require.Equal(t, "history", scripts[0].ID)
+		})
+	}
+}
 
 func TestSillyTavernToolProtocolValidation(t *testing.T) {
 	valid := &SillyTavernPresetConfig{

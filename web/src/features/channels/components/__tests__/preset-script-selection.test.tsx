@@ -22,12 +22,75 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
-import { AdaptationScopeCheck } from '../preset-capability-report'
+import {
+  AdaptationScopeCheck,
+  PresetCapabilityReportSettings,
+} from '../preset-capability-report'
 import { PresetScriptSettings } from '../preset-script-settings'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('reply-source suggestions require a local check and apply only to the unchanged draft', async () => {
+  const user = userEvent.setup()
+  const source = {
+    name: 'narrative_packet',
+    formatter: true,
+    output_kind: 'text',
+    source_prompt_id: 'reply',
+    source_fingerprint: 'a'.repeat(64),
+  }
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        name: 'Generic preset',
+        probe_status: 'completed',
+        tool_names: ['narrative_packet', 'history_record'],
+        capabilities: [],
+        warnings: [],
+        entries: [],
+        reply_sources: [source],
+        history_tools: ['history_record'],
+      },
+    },
+  })
+  const onChange = vi.fn()
+  const draft = {
+    script_runtime: 'spreset-v1',
+    preset: { name: 'Generic preset' },
+  }
+  const view = render(
+    <PresetCapabilityReportSettings config={draft} onChange={onChange} />
+  )
+  expect(post).not.toHaveBeenCalled()
+  expect(
+    screen.queryByRole('button', { name: 'Use detected reply source' })
+  ).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Check capabilities' }))
+  expect(
+    await screen.findByText(
+      'Local check completed. No model was called; test a real request before using this channel.'
+    )
+  ).toBeVisible()
+  await user.click(
+    screen.getByRole('button', { name: 'Use detected reply source' })
+  )
+  expect(onChange).toHaveBeenCalledWith({
+    ...draft,
+    reply_adapter: { version: 2, containers: [source] },
+  })
+  view.rerender(
+    <PresetCapabilityReportSettings
+      config={{ ...draft, entry_overrides: { reply: false } }}
+      onChange={onChange}
+    />
+  )
+  expect(
+    screen.queryByRole('button', { name: 'Use detected reply source' })
+  ).toBeNull()
 })
 
 test('request-type checks are local previews and become stale when processing scope changes', async () => {

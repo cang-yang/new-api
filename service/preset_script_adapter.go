@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -45,6 +46,10 @@ type PresetScriptResponse struct {
 	tavern       *presetTavernSession
 	protocol     *presetProtocolPlan
 	resolvedPlan *AdaptationResolvedPlan
+	dataHost     *presetDataHost
+	boundTools   map[string]bool
+	historyTools map[string]bool
+	replySources map[string]dto.ReplyContainer
 }
 
 func AttachPresetScriptResponse(c *gin.Context, trace PresetCompileTrace) {
@@ -102,7 +107,11 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 	if err != nil || settings == nil {
 		return nil, nil, err
 	}
-	response := &PresetScriptResponse{settings: settings, ownedTools: map[string]bool{}, fingerprint: presetScriptFingerprint(config)}
+	host, err := newPresetDataHost(config)
+	if err != nil {
+		return nil, nil, err
+	}
+	response := &PresetScriptResponse{settings: settings, ownedTools: map[string]bool{}, boundTools: map[string]bool{}, historyTools: map[string]bool{}, replySources: map[string]dto.ReplyContainer{}, dataHost: host, fingerprint: presetScriptFingerprint(config)}
 	clientTools := append([]dto.ToolCallRequest(nil), request.Tools...)
 	order := preset.PromptOrder[0].Order
 	for _, group := range preset.PromptOrder {
@@ -129,7 +138,7 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 			continue
 		}
 		var definition dto.FunctionRequest
-		if err := runPresetScript("() => {\n"+binding.Code+"\n}", nil, &definition, deadline); err != nil {
+		if err := runPresetScriptWithHost("() => {\n"+binding.Code+"\n}", nil, &definition, deadline, host); err != nil {
 			return nil, nil, fmt.Errorf("ToolBindings: %w", err)
 		}
 		for _, tool := range request.Tools {
@@ -138,14 +147,35 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 			}
 		}
 		request.Tools = append(request.Tools, dto.ToolCallRequest{Type: "function", Function: definition})
+		response.boundTools[definition.Name] = true
+		if settings.OutputPreprocessing.ConsumeToolCalls && settings.OutputPreprocessing.ToolCallFormatter.Enabled {
+			response.replySources[definition.Name] = dto.ReplyContainer{Name: definition.Name, Formatter: true, OutputKind: "text", SourcePromptID: prompt.Identifier}
+		}
+	}
+	beforeScript, err := common.DeepCopy(request)
+	if err != nil {
+		return nil, nil, err
 	}
 	if settings.FinalRequestProcessing.Enabled {
-		if err := applyPresetRequestScript(settings.FinalRequestProcessing.Script, request, deadline); err != nil {
+		if err := applyPresetRequestScriptWithHost(settings.FinalRequestProcessing.Script, request, deadline, host); err != nil {
 			return nil, nil, err
 		}
 	}
 	if err := validatePresetScriptTools(request.Tools, clientTools, response.ownedTools); err != nil {
 		return nil, nil, err
+	}
+	if err := classifyPresetHistoryTools(beforeScript, request, response); err != nil {
+		return nil, nil, err
+	}
+	for name, source := range response.replySources {
+		definition, _ := findToolByName(request.Tools, name)
+		data, err := common.Marshal([]any{source.SourcePromptID, settings.ToolBindings[source.SourcePromptID].Code, definition, settings.OutputPreprocessing.ToolCallFormatter})
+		if err != nil {
+			return nil, nil, err
+		}
+		sum := sha256.Sum256(data)
+		source.SourceFingerprint = hex.EncodeToString(sum[:])
+		response.replySources[name] = source
 	}
 	warnings := []string{"SPreset data hooks run in an isolated server runtime; browser APIs, remote scripts, tool actions and log uploads are not executed"}
 	// Do not pretend that other enabled plugin features are supported.
@@ -165,6 +195,15 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 			Enabled bool `json:"enabled"`
 		}
 		_ = common.Unmarshal(value, &feature)
+		if key == "ForcedPostProcessing" && feature.Enabled {
+			var processing struct {
+				Mode string `json:"mode"`
+			}
+			_ = common.Unmarshal(value, &processing)
+			if processing.Mode == "" || processing.Mode == "none" {
+				continue
+			}
+		}
 		if feature.Enabled || string(value) == "true" {
 			warnings = append(warnings, fmt.Sprintf("SPreset feature %s is preserved but not executed by spreset-v1", key))
 		}
@@ -356,6 +395,10 @@ func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpe
 }
 
 func applyPresetRequestScript(script string, request *dto.GeneralOpenAIRequest, deadline time.Time) error {
+	return applyPresetRequestScriptWithHost(script, request, deadline, nil)
+}
+
+func applyPresetRequestScriptWithHost(script string, request *dto.GeneralOpenAIRequest, deadline time.Time, host *presetDataHost) error {
 	encoded, err := common.Marshal(request)
 	if err != nil {
 		return err
@@ -363,11 +406,11 @@ func applyPresetRequestScript(script string, request *dto.GeneralOpenAIRequest, 
 	var after map[string]json.RawMessage
 	source := strings.TrimRight(strings.TrimSpace(script), "; \r\n\t")
 	source = "input => { const result = (" + source + ")(input); return result === undefined ? input.request : result; }"
-	err = runPresetScript(source, map[string]any{
+	err = runPresetScriptWithHost(source, map[string]any{
 		"request": json.RawMessage(encoded), "model": request.Model,
 		"source": "openai", "stream": request.Stream != nil && *request.Stream, "preview": false,
 		"provider": map[string]string{"adapter": "openai", "model": request.Model},
-	}, &after, deadline)
+	}, &after, deadline, host)
 	if err != nil {
 		return fmt.Errorf("FinalRequestProcessing: %w", err)
 	}
@@ -407,13 +450,17 @@ func applyPresetRequestChanges(encoded []byte, after map[string]json.RawMessage,
 		}
 		if len(config.FunctionCallingConfig.Allowed) > 0 {
 			names := config.FunctionCallingConfig.Allowed
-			if len(names) != len(tools) {
-				return fmt.Errorf("FinalRequestProcessing restricted toolConfig is unsupported")
-			}
-			for _, tool := range tools {
-				if !slices.Contains(names, tool.Function.Name) {
-					return fmt.Errorf("FinalRequestProcessing restricted toolConfig is unsupported")
+			seen := map[string]bool{}
+			for _, name := range names {
+				if _, exists := findToolByName(tools, name); !exists || seen[name] {
+					return fmt.Errorf("FinalRequestProcessing toolConfig references an unknown or duplicate tool")
 				}
+				seen[name] = true
+			}
+			if mode == "ANY" && len(names) == 1 {
+				after["tool_choice"], _ = common.Marshal(map[string]any{"type": "function", "function": map[string]string{"name": names[0]}})
+			} else if mode != "NONE" && len(names) != len(tools) {
+				return fmt.Errorf("FinalRequestProcessing restricted toolConfig cannot be represented without changing tool selection")
 			}
 		}
 		delete(after, "toolConfig")

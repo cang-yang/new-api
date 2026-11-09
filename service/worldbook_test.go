@@ -34,6 +34,15 @@ func TestWorldbookMatchingAndIsolation(t *testing.T) {
 	assert.Len(t, second.Messages, 3, "retry accumulated injection")
 }
 
+func TestWorldbookAbsentWithPresetMarkersPreservesChat(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"chatHistory","marker":true},{"identifier":"worldInfoAfter","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"chatHistory","enabled":true},{"identifier":"worldInfoAfter","enabled":true}]}]}`)}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	compiled, trace, err := CompileWorldbook(nil, preset, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, request.Messages, compiled.Messages)
+	assert.Nil(t, trace.Worldbook)
+}
+
 func TestWorldbookBudgetRecursionAndImport(t *testing.T) {
 	config := &dto.WorldbookConfig{Enabled: true, MaxChars: 256, Recursive: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
 		{ID: "a", Enabled: true, Constant: true, Content: "silver", Priority: 9},

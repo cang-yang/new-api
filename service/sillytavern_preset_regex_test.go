@@ -104,7 +104,7 @@ func TestPreviewTextRegexRespectsSendGateRoleAndDepth(t *testing.T) {
 }
 
 func TestPreviewTextRegexIncludesEnabledPresetScripts(t *testing.T) {
-	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"strip","scriptName":"strip thinking","placement":[2],"markdownOnly":true,"findRegex":"/<thinking>[\\s\\S]*?<\\/thinking>/g","replaceString":""}]}}`)}
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"strip","scriptName":"strip thinking","placement":[2],"findRegex":"/<thinking>[\\s\\S]*?<\\/thinking>/g","replaceString":""}]}}`)}
 	got, err := PreviewTextRegex(nil, preset, "m", "receive", "assistant", 0, "<thinking>hidden</thinking>story")
 	require.NoError(t, err)
 	assert.Equal(t, "story", got.Output)
@@ -188,7 +188,7 @@ func TestImportedSendRegexDoesNotExecuteItsEmbeddedCopy(t *testing.T) {
 }
 
 func TestPreviewTextRegexKeepsNamesOfUnlinkedRulesWithSameID(t *testing.T) {
-	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"same","scriptName":"embedded","placement":[2],"markdownOnly":true,"findRegex":"/^/","replaceString":"!"}]}}`)}
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main"}],"prompt_order":[{"order":[]}],"extensions":{"regex_scripts":[{"id":"same","scriptName":"embedded","placement":[2],"findRegex":"/^/","replaceString":"!"}]}}`)}
 	config := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "same", Name: "manual", Stage: "receive", Action: "replace", Pattern: "/^/", Replacement: "!"}}}
 	got, err := PreviewTextRegex(config, preset, "m", "receive", "assistant", 0, "body")
 	require.NoError(t, err)
@@ -302,9 +302,11 @@ func TestTextRegexPresetSendDirections(t *testing.T) {
 	assert.Equal(t, "a", filtered.(*dto.GeneralOpenAIRequest).Messages[1].Content)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	w := BeginResponseTextFilterWithPreset(ctx, nil, preset, "m")
-	require.NotNil(t, w)
-	got, _ := w.transform("a")
-	assert.Equal(t, "c", got)
+	assert.Nil(t, w, "Tavern display rules must not turn plain API replies into HTML")
+	copy := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "explicit", SourceScriptID: "display", Stage: "receive", Action: "replace", Pattern: "/a/g", Replacement: "c"}}}
+	preview, err := PreviewTextRegex(copy, preset, "m", "receive", "assistant", 0, "a")
+	require.NoError(t, err)
+	assert.Equal(t, "c", preview.Output, "an explicit external rule is an operator opt-in")
 }
 
 func TestTextRegexSSEReplaceAcrossChunksAndEmptyRules(t *testing.T) {

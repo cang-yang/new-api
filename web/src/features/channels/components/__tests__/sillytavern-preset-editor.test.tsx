@@ -642,7 +642,6 @@ const preset = {
       {
         id: 'send',
         scriptName: 'Clean text',
-        markdownOnly: true,
         placement: [2],
       },
       {
@@ -655,8 +654,15 @@ const preset = {
         id: 'html',
         scriptName: 'HTML status panel',
         markdownOnly: true,
+        promptOnly: true,
         placement: [2],
         replaceString: '<div><style>.status{color:red}</style>$1</div>',
+      },
+      {
+        id: 'display-html',
+        scriptName: 'Tavern visual panel',
+        markdownOnly: true,
+        placement: [2],
       },
     ],
   },
@@ -820,6 +826,14 @@ test('HTML-generating receive rules are marked and remain independently controll
     'Some response rules generate HTML'
   )
   expect(screen.getByText('May generate HTML')).toBeTruthy()
+  expect(
+    screen.getByText('Tavern display only · not run on API messages')
+  ).toBeVisible()
+  const displayOnly = screen.getByRole('switch', {
+    name: 'Enable regex script Tavern visual panel',
+  })
+  expect(displayOnly).toHaveAttribute('aria-disabled', 'true')
+  expect(displayOnly).toHaveAttribute('aria-checked', 'false')
   await user.click(
     screen.getByRole('switch', { name: 'Enable embedded regex scripts' })
   )

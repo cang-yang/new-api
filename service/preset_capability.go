@@ -41,6 +41,8 @@ type PresetCapabilityReport struct {
 	Notices          []PresetCapabilityNotice `json:"notices"`
 	Entries          []PresetCapabilityEntry  `json:"entries"`
 	ProbeStatus      string                   `json:"probe_status"`
+	ReplySources     []dto.ReplyContainer     `json:"reply_sources,omitempty"`
+	HistoryTools     []string                 `json:"history_tools,omitempty"`
 }
 
 type AdaptationScenario struct {
@@ -86,6 +88,13 @@ func InspectAdaptationScope(scope, model string, preset *dto.SillyTavernPresetCo
 	}
 	internal := activePreset != nil && (activePreset.ToolText != nil && activePreset.ToolText.Enabled ||
 		activePreset.ReplyAdapter != nil && len(activePreset.ReplyAdapter.Containers) > 0)
+	if activePreset != nil && activePreset.ScriptRuntime == "spreset-v1" {
+		settings, err := parseSPresetSettings(activePreset)
+		if err != nil {
+			return nil, err
+		}
+		internal = internal || settings != nil && settings.OutputPreprocessing.ConsumeToolCalls && settings.OutputPreprocessing.ToolCallFormatter.Enabled && len(settings.ToolBindings) > 0
+	}
 	receiveRules, err := compileChannelTextRegex(filter, model, "receive")
 	if err != nil {
 		return nil, err
@@ -262,6 +271,16 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 		report.Capabilities = append(report.Capabilities, "reply transport")
 	}
 	if trace.ScriptResponse != nil {
+		response := trace.ScriptResponse
+		for name := range response.historyTools {
+			report.HistoryTools = append(report.HistoryTools, name)
+		}
+		sort.Strings(report.HistoryTools)
+		if response.protocol != nil && response.protocol.audit.Activated {
+			for _, name := range response.protocol.contents {
+				report.ReplySources = append(report.ReplySources, response.protocol.containers[name])
+			}
+		}
 		for name := range trace.ScriptResponse.ownedTools {
 			report.ToolNames = append(report.ToolNames, name)
 		}
@@ -337,7 +356,12 @@ func classifyPresetCapabilityNotices(warnings []string) []PresetCapabilityNotice
 	seen := map[string]bool{}
 	for _, warning := range warnings {
 		code := "preset_warning"
+		severity := "warning"
 		switch {
+		case strings.Contains(warning, "SPreset data hooks run"), strings.Contains(warning, "Tavern data scripts use request-local"):
+			code, severity = "request_local_scripts", "info"
+		case strings.Contains(warning, "SPreset feature LogUpload"):
+			code, severity = "log_upload_skipped", "info"
 		case strings.Contains(warning, "Browser scripts"):
 			code = "browser_scripts_unavailable"
 		case strings.Contains(warning, "unsupported macro"), strings.Contains(warning, "not mapped"):
@@ -362,7 +386,7 @@ func classifyPresetCapabilityNotices(warnings []string) []PresetCapabilityNotice
 		seen[key] = true
 		notices = append(notices, PresetCapabilityNotice{
 			Code:     code,
-			Severity: "warning",
+			Severity: severity,
 			Detail:   warning,
 		})
 	}

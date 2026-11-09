@@ -321,7 +321,7 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 		session.diagnostic.Module = tavernDiagnosticIdentity(name)
 		return nil, fmt.Errorf("module is not in the administrator-pinned bundle")
 	}
-	host, err := moejs.Compile("gateway-tavern-host", presetTavernHost)
+	host, err := moejs.Compile("gateway-tavern-host", presetDataHostSource+presetTavernHost)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Tavern host could not compile")
 	}
@@ -362,9 +362,14 @@ func prepareTavernScripts(config *dto.SillyTavernPresetConfig, request *dto.Gene
 		Request     map[string]json.RawMessage `json:"request"`
 		Diagnostics []bool                     `json:"diagnostics"`
 	}
+	dataHost, err := newPresetDataHost(config)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := session.call("start", map[string]any{
 		"request": json.RawMessage(before), "scripts": entries, "user": macro.user, "char": macro.char,
 		"chatID": macro.chatID, "variables": macro.vars, "globalVariables": macro.globalVars,
+		"dataHost": dataHost,
 	}, &result); err != nil {
 		return nil, nil, err
 	}

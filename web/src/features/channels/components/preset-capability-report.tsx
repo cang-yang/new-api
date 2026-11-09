@@ -225,6 +225,10 @@ const scriptRuntimeKeys: Record<string, string> = {
 }
 
 const noticeKeys: Record<string, string> = {
+  request_local_scripts:
+    'Scripts can process this request and its reply. They cannot access other chats, browser pages or external services.',
+  log_upload_skipped:
+    'The preset’s external log upload is not run. This does not prevent normal message processing.',
   model_scope_skipped:
     'The sample model is outside this preset’s model scope. Scripts were not run.',
   browser_scripts_unavailable:
@@ -292,6 +296,7 @@ export function PresetAdapterOverview(props: {
 
 export function PresetCapabilityReportSettings(props: {
   config: Record<string, unknown>
+  onChange?: (config: Record<string, unknown>) => void
   disabled?: boolean
 }) {
   const { t } = useTranslation()
@@ -338,6 +343,57 @@ export function PresetCapabilityReportSettings(props: {
       </div>
       {report && (
         <div className='flex min-w-0 flex-col gap-3'>
+          {report.probe_status === 'completed' && (
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Local check completed. No model was called; test a real request before using this channel.'
+              )}
+            </p>
+          )}
+          {report.reply_sources?.length === 1 && (
+            <div className='bg-muted/30 flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-md border p-3'>
+              <div className='min-w-0 flex-1 text-sm'>
+                <p className='font-medium'>
+                  {t('Detected reply source')}:{' '}
+                  <span className='break-all'>
+                    {report.reply_sources[0].name}
+                  </span>
+                </p>
+                <p className='text-muted-foreground mt-1 text-xs'>
+                  {t(
+                    'The preset’s own script turns this tool’s arguments into your reply. History tools are not used as reply sources.'
+                  )}
+                </p>
+              </div>
+              {props.onChange && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={props.disabled}
+                  onClick={() => {
+                    props.onChange?.({
+                      ...props.config,
+                      reply_adapter: {
+                        version: 2,
+                        containers: report.reply_sources,
+                      },
+                    })
+                  }}
+                >
+                  {t('Use detected reply source')}
+                </Button>
+              )}
+            </div>
+          )}
+          {!!report.history_tools?.length && (
+            <p className='text-muted-foreground text-xs break-words'>
+              {t(
+                'Prepared history tools: {{tools}}. These only carry earlier messages; New API does not execute them.',
+                { tools: report.history_tools.join(', ') }
+              )}
+            </p>
+          )}
           <div className='flex flex-wrap items-center gap-2 text-sm'>
             <span className='font-medium'>{report.name}</span>
             {report.script_runtime ? (
@@ -363,8 +419,18 @@ export function PresetCapabilityReportSettings(props: {
             </p>
           )}
           {report.warnings.length > 0 && (
-            <Alert variant='destructive'>
-              <AlertTitle>{t('Needs attention')}</AlertTitle>
+            <Alert
+              variant={
+                report.notices?.every((notice) => notice.severity === 'info')
+                  ? 'default'
+                  : 'destructive'
+              }
+            >
+              <AlertTitle>
+                {report.notices?.every((notice) => notice.severity === 'info')
+                  ? t('Processing limits')
+                  : t('Needs attention')}
+              </AlertTitle>
               <AlertDescription>
                 <ul className='list-disc space-y-1 pl-4'>
                   {(report.notices?.length

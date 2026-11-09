@@ -380,12 +380,13 @@ export function PresetScriptSettings(props: Props) {
         </FieldGroup>
         <PresetCapabilityReportSettings
           config={props.config}
+          onChange={props.onChange}
           disabled={props.disabled}
         />
         {supported && scripts.length > 0 && (
           <p className='text-muted-foreground text-sm'>
             {t(
-              'Both options were found. Only one can run at a time; follow the preset author’s instructions.'
+              'SPreset settings and bundled scripts are separate processing modes. In SPreset mode, browser menus and visual styling scripts are not run.'
             )}
           </p>
         )}

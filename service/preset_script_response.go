@@ -33,7 +33,7 @@ func (p *PresetScriptResponse) formatOwnedCalls(calls []*presetToolTextCall, str
 	texts := make([]string, 0, len(calls))
 	for _, call := range calls {
 		var value any
-		if err := common.UnmarshalPreservingNumbers([]byte(call.arguments.String()), &value); err != nil {
+		if err := common.UnmarshalPreservingNumbers([]byte(call.arguments.String()), &value); err != nil || common.GetJsonType([]byte(call.arguments.String())) != "object" {
 			return "", fmt.Errorf("toolCallFormatter requires complete JSON arguments")
 		}
 		arguments = append(arguments, map[string]any{
@@ -56,18 +56,10 @@ func (p *PresetScriptResponse) formatOwnedCalls(calls []*presetToolTextCall, str
 		return defaultText, nil
 	}
 	var result any
-	if err := runPresetScript(settings.ToolCallFormatter.Script, map[string]any{
+	if err := runPresetScriptWithHost(settings.ToolCallFormatter.Script, map[string]any{
 		"calls": arguments, "defaultText": defaultText, "stream": stream, "final": true, "channel": "main",
-	}, &result, deadline); err != nil {
+	}, &result, deadline, p.dataHost); err != nil {
 		return "", fmt.Errorf("toolCallFormatter: %w", err)
-	}
-	if object, ok := result.(map[string]any); ok {
-		for _, key := range []string{"output", "text", "content"} {
-			if value, exists := object[key]; exists {
-				result = value
-				break
-			}
-		}
 	}
 	text, ok := result.(string)
 	if !ok {
@@ -96,9 +88,9 @@ func (p *PresetScriptResponse) processText(text string, deadline time.Time) (str
 			Rejected bool `json:"rejected"`
 		} `json:"state"`
 	}
-	if err := runPresetScript(settings.Script, map[string]any{
+	if err := runPresetScriptWithHost(settings.Script, map[string]any{
 		"buffer": text, "final": true, "state": map[string]any{},
-	}, &result, deadline); err != nil {
+	}, &result, deadline, p.dataHost); err != nil {
 		return "", fmt.Errorf("OutputPreprocessing: %w", err)
 	}
 	// A gateway does not autonomously regenerate rejected responses.

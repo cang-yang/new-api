@@ -114,7 +114,7 @@ func compileEffectivePresetTextRegex(config *dto.SillyTavernPresetConfig, channe
 			if len(roles) == 0 {
 				continue
 			}
-		} else if !slices.Contains(script.Placement, 2) || script.PromptOnly && !script.MarkdownOnly {
+		} else if !slices.Contains(script.Placement, 2) || script.PromptOnly && !script.MarkdownOnly || script.MarkdownOnly && !script.PromptOnly {
 			continue
 		}
 		if !send && script.MinDepth != nil && *script.MinDepth > 0 {

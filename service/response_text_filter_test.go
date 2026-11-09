@@ -272,7 +272,7 @@ func TestEmbeddedPresetRegexTransformsClientResponseOnly(t *testing.T) {
 		"prompts":[{"identifier":"main","content":"hi"}],
 		"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}],
 		"extensions":{"regex_scripts":[
-			{"id":"receiver","findRegex":"/foo(?=bar)/g","replaceString":"X","placement":[2],"markdownOnly":true},
+			{"id":"receiver","findRegex":"/foo(?=bar)/g","replaceString":"X","placement":[2]},
 			{"id":"sender","findRegex":"/bar/g","replaceString":"WRONG","placement":[2],"promptOnly":true},
 			{"id":"disabled","disabled":true,"findRegex":"/X/g","replaceString":"WRONG","placement":[2],"markdownOnly":true}
 		]}
@@ -309,7 +309,7 @@ func TestEmbeddedPresetRegexTransformsClientResponseOnly(t *testing.T) {
 }
 
 func TestEmbeddedPresetRegexTrimsCapturedTextOnly(t *testing.T) {
-	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}],"extensions":{"regex_scripts":[{"id":"trim","findRegex":"/(?<body><body>[^<]+<\\/body>)/","replaceString":"prefix:$<body>:suffix","trimStrings":["<body>","</body>"],"placement":[2],"markdownOnly":true}]}}`)}
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}],"extensions":{"regex_scripts":[{"id":"trim","findRegex":"/(?<body><body>[^<]+<\\/body>)/","replaceString":"prefix:$<body>:suffix","trimStrings":["<body>","</body>"],"placement":[2]}]}}`)}
 	writer := &ResponseTextFilterWriter{}
 	writer.regexes, _ = compilePresetResponseRegex(preset, "model")
 	require.Len(t, writer.regexes, 1)

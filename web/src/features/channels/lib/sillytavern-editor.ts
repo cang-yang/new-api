@@ -16,7 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { regexReplacementGeneratesHtml } from './regex-rules'
+import {
+  collectPresetRegexScripts,
+  regexReplacementGeneratesHtml,
+} from './regex-rules'
 
 export type PresetEntry = {
   identifier: string
@@ -123,30 +126,29 @@ export function parsePresetEditor(value: string | Record<string, unknown>): {
       string,
       boolean
     >
-    const regexScripts = (preset.extensions?.regex_scripts || []).map(
-      (script) => ({
-        id: script.id || '',
-        name: script.scriptName || script.id || 'Regex',
-        enabled: script.id
-          ? (regexOverrides[script.id] ?? !script.disabled)
-          : !script.disabled,
-        promptOnly: script.promptOnly === true,
-        markdownOnly: script.markdownOnly === true,
-        sendSide:
-          Array.isArray(script.placement) &&
-          script.placement.some(
-            (placement) => placement === 1 || placement === 2
-          ) &&
-          !(script.markdownOnly && !script.promptOnly),
-        generatesHtml:
-          typeof script.replaceString === 'string' &&
-          regexReplacementGeneratesHtml(script.replaceString),
-        responseSide:
-          Array.isArray(script.placement) &&
-          script.placement.includes(2) &&
-          !(script.promptOnly && !script.markdownOnly),
-      })
-    )
+    const regexScripts = collectPresetRegexScripts(preset).map((script) => ({
+      id: script.id || '',
+      name: script.scriptName || script.id || 'Regex',
+      enabled: script.id
+        ? (regexOverrides[script.id] ?? !script.disabled)
+        : !script.disabled,
+      promptOnly: script.promptOnly === true,
+      markdownOnly: script.markdownOnly === true,
+      sendSide:
+        Array.isArray(script.placement) &&
+        script.placement.some(
+          (placement) => placement === 1 || placement === 2
+        ) &&
+        !(script.markdownOnly && !script.promptOnly),
+      generatesHtml:
+        typeof script.replaceString === 'string' &&
+        regexReplacementGeneratesHtml(script.replaceString),
+      responseSide:
+        Array.isArray(script.placement) &&
+        script.placement.includes(2) &&
+        !(script.promptOnly && !script.markdownOnly) &&
+        !(script.markdownOnly && !script.promptOnly),
+    }))
     return { config, entries, regexScripts }
   } catch {
     return null

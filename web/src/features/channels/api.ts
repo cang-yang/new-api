@@ -112,6 +112,9 @@ export type PresetCapabilityReport = {
   has_script_runtime: boolean
   script_runtime?: string
   tool_names: string[]
+  reply_sources?: import('./lib/reply-adapter').ReplyContainer[]
+  history_tools?: string[]
+  probe_status?: string
   capabilities: string[]
   warnings: string[]
   notices?: PresetCapabilityNotice[]

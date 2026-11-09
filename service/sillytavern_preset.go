@@ -272,7 +272,7 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		content := prompt.Content
 		if prompt.Marker {
 			content = context.Markers[prompt.Identifier]
-			if (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil && context.worldbookConfig.SemanticsVersion < 2 {
+			if (prompt.Identifier == "worldInfoBefore" || prompt.Identifier == "worldInfoAfter") && context.worldbookPreview != nil && context.worldbookConfig != nil && context.worldbookConfig.SemanticsVersion < 2 {
 				for _, group := range context.worldbookPreview.groups {
 					if group.mode == dto.WorldbookInjectionInherit && worldbookMarker == "" {
 						content = strings.TrimSpace(content + "\n\n" + group.text)

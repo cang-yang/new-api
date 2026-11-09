@@ -46,11 +46,18 @@ export const replyAdapterSchema = z
             argument_pointer: z.string().refine(validReplyPointer).optional(),
             formatter: z.boolean().optional(),
             output_kind: z.enum(['text', 'json_object']),
+            source_prompt_id: z.string().min(1).max(256).optional(),
+            source_fingerprint: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .optional(),
           })
           .refine(
             (item) =>
               (item.argument_pointer !== undefined) !==
-              (item.formatter === true)
+                (item.formatter === true) &&
+              (item.source_prompt_id !== undefined) ===
+                (item.source_fingerprint !== undefined)
           )
       )
       .max(32),
@@ -73,6 +80,8 @@ export type ReplyContainer = {
   argument_pointer?: string
   formatter?: boolean
   output_kind: 'text' | 'json_object'
+  source_prompt_id?: string
+  source_fingerprint?: string
 }
 export type ReplyAdapter = { version: 2; containers: ReplyContainer[] }
 export type ReplySampleField = {

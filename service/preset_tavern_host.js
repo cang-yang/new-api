@@ -1,6 +1,7 @@
 // Independent, data-only Tavern Helper contract. No DOM or external IO.
 let request, currentScript = '', input;
 let messages = [], ready = [], diagnostics = [];
+let checkMetadata;
 const report = globalThis.__tavernDiagnostic;
 delete globalThis.__tavernDiagnostic;
 let phase = 'import', pendingWork = 0;
@@ -209,14 +210,16 @@ const api = {
 };
 Object.assign(globalThis, api);
 globalThis.TavernHelper = Object.freeze({...api});
-globalThis.SillyTavern = Object.freeze({getCurrentChatId: () => input.chatID, event_types:tavern_events});
-for (const name of ['document', 'window', 'localStorage', 'sessionStorage'])
+for (const name of ['document', 'localStorage', 'sessionStorage'])
   Object.defineProperty(globalThis, name, {get: () => reject('browser-dom')});
 for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket'])
   Object.defineProperty(globalThis, name, {get: () => reject('external-io')});
 globalThis.console = Object.freeze({log(){},warn(){},error(){},info(){},debug(){}});
 export async function start(serialized) {
   input = JSON.parse(serialized);
+  checkMetadata = createPresetDataHost(input.dataHost.settings, input.dataHost.metadata, {
+    getCurrentChatId: () => input.chatID, event_types: tavern_events,
+  });
   request = input.request;
   messages = request.messages;
   for (const script of input.scripts) scriptData.set(script.id, script.data || {});
@@ -243,6 +246,7 @@ export async function start(serialized) {
   request.messages = messages = prompt.chat;
   await emit(events.CHAT_COMPLETION_SETTINGS_READY, request);
   messages = request.messages;
+  checkMetadata();
   return JSON.stringify({request,diagnostics});
 }
 export async function finish(serialized) {
@@ -253,5 +257,6 @@ export async function finish(serialized) {
   await emit(events.GENERATION_ENDED, id);
   if (!messages[id] || typeof messages[id].content !== 'string')
     throw new TypeError('Final response must be text');
+  checkMetadata();
   return JSON.stringify(messages[id].content);
 }

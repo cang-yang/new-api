@@ -116,11 +116,22 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		}
 	}
 	owned := orderedOwnedToolNames(compiled, response.ownedTools)
-	if len(containers) == 0 && len(owned) == 1 && presetProtocolHasResponseFormatter(response) {
-		containers = append(containers, dto.ReplyContainer{Name: owned[0], Formatter: true, OutputKind: "text"})
+	candidates := make([]string, 0, len(owned))
+	for _, name := range owned {
+		if !response.historyTools[name] {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(containers) == 0 && len(candidates) == 1 && presetProtocolHasResponseFormatter(response) && response.settings.OutputPreprocessing.ConsumeToolCalls {
+		if container, exists := response.replySources[candidates[0]]; exists {
+			containers = append(containers, container)
+		}
 	}
 	if len(owned) == 0 {
 		return inactivePresetProtocolPlan(false, false, "no_internal_transport"), 0, nil
+	}
+	if len(candidates) == 0 {
+		return nil, 0, fmt.Errorf("preset generated history tools without a reply source")
 	}
 	if clientDeclaresToolContract(original) {
 		return nil, 0, fmt.Errorf("preset reply transport conflicts with client tools; use plain-chat scope or a preset without internal tools")
@@ -130,15 +141,33 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	}
 	declared := map[string]dto.ReplyContainer{}
 	for _, container := range containers {
+		if container.SourceFingerprint != "" {
+			source := response.replySources[container.Name]
+			if source.SourceFingerprint != container.SourceFingerprint || source.SourcePromptID != container.SourcePromptID {
+				return nil, 0, fmt.Errorf("detected reply source has changed; check the preset and confirm its reply source again")
+			}
+		}
+		if !response.ownedTools[container.Name] || response.historyTools[container.Name] {
+			return nil, 0, fmt.Errorf("reply source must refer to a current preset reply tool")
+		}
 		declared[container.Name] = container
 	}
 	for _, name := range owned {
-		if _, ok := declared[name]; !ok {
+		if _, ok := declared[name]; !ok && !response.historyTools[name] {
 			return nil, 0, fmt.Errorf("preset tool %q has no declared reply transport", name)
 		}
 	}
-	plan := &presetProtocolPlan{phase: presetProtocolPhaseFinal, contents: owned, internal: map[string]bool{}, visible: map[string]bool{}, containers: declared}
+	if len(response.historyTools) > 0 && compiled.ToolChoice != "none" {
+		if _, exists := declared[presetToolChoiceName(compiled.ToolChoice)]; !exists {
+			return nil, 0, fmt.Errorf("preset must select a reply tool without allowing history-only tools")
+		}
+	}
+	plan := &presetProtocolPlan{phase: presetProtocolPhaseFinal, contents: candidates, internal: map[string]bool{}, visible: map[string]bool{}, containers: declared}
 	for _, name := range owned {
+		plan.internal[name] = true
+		if response.historyTools[name] {
+			continue
+		}
 		container := declared[name]
 		contract := "text"
 		if container.OutputKind == "json_object" {
@@ -151,9 +180,8 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 			return nil, 0, fmt.Errorf("reply transports must declare the same output kind")
 		}
 		plan.contract = contract
-		plan.internal[name] = true
 	}
-	plan.audit = PresetProtocolAudit{Enabled: true, Eligible: true, Activated: true, Reason: "explicit_reply_transport", Contents: owned, Contract: plan.contract}
+	plan.audit = PresetProtocolAudit{Enabled: true, Eligible: true, Activated: true, Reason: "explicit_reply_transport", Contents: candidates, Contract: plan.contract}
 	plan.audit.Fingerprint = plan.fingerprint()
 	return plan, 0, nil
 }
@@ -357,6 +385,13 @@ func (p *presetProtocolPlan) restoreTerminal(response *PresetScriptResponse, bod
 	if p == nil || !p.audit.Activated || p.phase != presetProtocolPhaseFinal || p.contract == presetProtocolContractTool {
 		return body, nil
 	}
+	for _, choice := range mustResponseChoices(body, stream) {
+		for _, call := range choice.tools {
+			if _, declared := p.containers[call.name.String()]; !declared {
+				return nil, fmt.Errorf("upstream returned an unknown or history-only tool instead of a reply source")
+			}
+		}
+	}
 	owned := p.internal
 	if len(owned) == 0 {
 		owned = map[string]bool{p.finalTool: true}
@@ -366,12 +401,15 @@ func (p *presetProtocolPlan) restoreTerminal(response *PresetScriptResponse, bod
 			return "", fmt.Errorf("preset protocol final response requires exactly one terminal tool call")
 		}
 		var decoded any
-		if err := common.UnmarshalPreservingNumbers([]byte(calls[0].arguments.String()), &decoded); err != nil {
-			return "", fmt.Errorf("preset protocol terminal arguments must be valid JSON")
+		if err := common.UnmarshalPreservingNumbers([]byte(calls[0].arguments.String()), &decoded); err != nil || common.GetJsonType([]byte(calls[0].arguments.String())) != "object" {
+			return "", fmt.Errorf("preset protocol terminal arguments must be a complete JSON object")
 		}
 		// An explicit response_argument is an operator contract stored with the
 		// preset, so it always wins over heuristics and text formatters.
 		container, declared := p.containers[calls[0].name.String()]
+		if !declared {
+			return "", fmt.Errorf("upstream returned a history-only tool instead of a reply")
+		}
 		if declared && container.ArgumentPointer != nil || p.responseArgument != "" {
 			var value any
 			var err error

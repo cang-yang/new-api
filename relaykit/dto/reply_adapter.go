@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -43,6 +44,14 @@ func (a *ReplyAdapter) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, c := range a.Containers {
+		if (c.SourcePromptID == "") != (c.SourceFingerprint == "") || len(c.SourcePromptID) > 256 || c.SourceFingerprint != "" && len(c.SourceFingerprint) != 64 {
+			return fmt.Errorf("detected reply sources require a prompt identity and SHA-256 fingerprint")
+		}
+		if c.SourceFingerprint != "" {
+			if _, err := hex.DecodeString(c.SourceFingerprint); err != nil {
+				return fmt.Errorf("detected reply sources require a valid SHA-256 fingerprint")
+			}
+		}
 		if !validSillyTavernToolName(c.Name) || seen[c.Name] || c.OutputKind != "text" && c.OutputKind != "json_object" {
 			return fmt.Errorf("reply transports require unique names and an output kind")
 		}

@@ -20,6 +20,7 @@ import { expect, test } from 'vitest'
 
 import {
   importRegexScripts,
+  collectPresetRegexScripts,
   mergeImportedRegexRules,
   mergePresetRegexScripts,
   regexRulesSchema,
@@ -328,11 +329,50 @@ test('plain capture trims and case-insensitive match macro import without losing
   expect(imported.rules).toMatchObject([
     {
       stage: 'receive',
-      disabled: false,
+      disabled: true,
       trim_strings: ['hello'],
       replacement: '{{MATCH}} $1',
     },
   ])
+})
+
+test('preset rule layouts are merged by ID and conflicting copies are rejected', () => {
+  const rule = {
+    id: 'shared',
+    scriptName: 'Shared',
+    findRegex: '/x/g',
+    placement: [2],
+  }
+  expect(
+    collectPresetRegexScripts({
+      extensions: {
+        regex_scripts: [rule],
+        SPreset: {
+          RegexBinding: {
+            regexes: [
+              {
+                placement: [2],
+                findRegex: '/x/g',
+                scriptName: 'Shared',
+                id: 'shared',
+              },
+              { ...rule, id: 'second' },
+            ],
+          },
+        },
+      },
+    })
+  ).toHaveLength(2)
+  expect(() =>
+    collectPresetRegexScripts({
+      extensions: {
+        regex_scripts: [rule],
+        SPreset: {
+          RegexBinding: { regexes: [{ ...rule, findRegex: '/y/g' }] },
+        },
+      },
+    })
+  ).toThrow('conflicting copies')
 })
 test('legacy import matching preserves different extraction behavior', () => {
   const current = {

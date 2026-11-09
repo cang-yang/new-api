@@ -13,6 +13,7 @@ on:
       - 'go.sum'
       - '**/*.go'
       - 'service/preset_tavern_host.js'
+      - 'service/preset_data_host.js'
       - 'relaykit/**'
       - 'web/**'
 
@@ -49,8 +50,8 @@ jobs:
           git diff --exit-code -- go.mod go.sum
           go test ./controller -run 'BodyAudit|ChannelTestStoresBodyAudit|AuditTrace|RequestLab|SimulateParamOverride|ShouldRetry|AuditReplay|FingerprintChannelError|ErrorIncident|ChannelRegexPreview|Worldbook|AdaptationRetry|SelectedChannelResponseRegex' -count=1
           go test ./model -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AuditReplay|ErrorIncident' -count=1
-          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime|Worldbook|PresetCapability|CapabilityModel|Adaptation|Relay|PresetAudit' -count=1
-          (cd relaykit && GOWORK=off go build ./...)
+          go test ./service -run 'BodyAudit|AuditTrace|AuditAttempt|AuditConfig|RequestLab|AppendStreamStatus|ValidateRequestSpendLimit|PreConsumeBillingRejects|AttemptConfigSnapshot|ResponseTextFilter|PreviewTextRegex|TextRegex|PresetRegex|SendTextRegex|SillyTavern|TavernRuntime|Worldbook|PresetCapability|CapabilityModel|Adaptation|Relay|PresetAudit|PresetDataHost|PresetGeneratedHistory' -count=1
+          (cd relaykit && GOWORK=off go test ./dto && GOWORK=off go build ./...)
           go test ./relay/common -run 'TestApplyParamOverride|TestCompileParamOverride|TestSimulateParamOverride|TestStreamStatus' -count=1
           go test ./relay/helper -run 'TestStreamScannerHandler' -count=1
           go test ./relay/channel/openai -run 'Empty|OaiStreamHandler|OaiResponsesStreamHandler' -count=1

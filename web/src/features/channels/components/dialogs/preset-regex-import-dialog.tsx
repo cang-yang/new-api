@@ -79,6 +79,13 @@ export function PresetRegexImportDialog({
       }
     >
       <div className='space-y-3'>
+        {rules.some((rule) => rule.stage === 'receive' && rule.disabled) && (
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Tavern display-only rules are imported disabled. Enable them in the regex editor only if you want their output sent to your client.'
+            )}
+          </p>
+        )}
         <div className='flex items-center gap-3 rounded-lg border p-3'>
           <Switch
             aria-label={t('Import receive-side rules')}

@@ -123,7 +123,7 @@ export function PresetRegexSettings(props: {
           >
             <div className='min-w-0 flex-1 space-y-1'>
               <p className='text-sm font-medium break-words'>{script.name}</p>
-              {script.responseSide && script.generatesHtml && (
+              {script.generatesHtml && (
                 <Badge
                   variant='outline'
                   className='border-amber-500/40 text-amber-800 dark:text-amber-200'
@@ -132,17 +132,25 @@ export function PresetRegexSettings(props: {
                 </Badge>
               )}
               <p className='text-muted-foreground text-xs'>
+                {script.markdownOnly && !script.promptOnly && (
+                  <span>
+                    {t('Tavern display only · not run on API messages')}
+                  </span>
+                )}
                 {script.sendSide && <span>{t('Send-side')} · </span>}
                 {script.responseSide
                   ? t(
                       'Response-side · incompatible syntax is skipped with a warning'
                     )
                   : !script.sendSide &&
+                    !script.markdownOnly &&
                     t('Unsupported placement · preserved only')}
               </p>
             </div>
             <Switch
-              checked={script.enabled}
+              checked={
+                script.enabled && (script.responseSide || script.sendSide)
+              }
               disabled={
                 props.disabled ||
                 !(
