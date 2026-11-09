@@ -163,7 +163,7 @@ func TestSelectedChannelResponseRegexUsesContextSettings(t *testing.T) {
 		})
 	}
 
-	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}],"extensions":{"regex_scripts":[{"id":"receiver","findRegex":"/<thinking>[\\s\\S]*?<\\/thinking>/g","replaceString":"","placement":[2],"markdownOnly":true}]}}`)}
+	preset := &dto.SillyTavernPresetConfig{EnableEmbeddedRegex: true, Preset: []byte(`{"prompts":[{"identifier":"main","content":"hi"}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true}]}],"extensions":{"regex_scripts":[{"id":"receiver","findRegex":"/<thinking>[\\s\\S]*?<\\/thinking>/g","replaceString":"","placement":[2]}]}}`)}
 	presetRecorder := httptest.NewRecorder()
 	presetContext, _ := gin.CreateTestContext(presetRecorder)
 	common.SetContextKey(presetContext, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{SillyTavernPreset: preset})
@@ -173,6 +173,11 @@ func TestSelectedChannelResponseRegexUsesContextSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, presetWriter.Finish(presetContext, true))
 	assert.Equal(t, "body", gjson.Get(presetRecorder.Body.String(), "choices.0.message.content").String())
+
+	preset.Preset = []byte(strings.Replace(string(preset.Preset), `"placement":[2]`, `"placement":[2],"markdownOnly":true`, 1))
+	displayContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(displayContext, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{SillyTavernPreset: preset})
+	assert.Nil(t, beginSelectedResponseTextFilter(displayContext, "model"), "display-only rules must not change API replies or trigger buffering")
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
