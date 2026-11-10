@@ -170,8 +170,12 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 			require.NoError(t, err)
 			compiled, trace, err := CompileSillyTavernPreset(config, request, context)
 			require.NoError(t, err, "a client protocol must not disable the preset's context script")
-			require.Contains(t, compiled.Messages[0].Content, "SCRIPT_CONTEXT:")
-			require.Contains(t, compiled.Messages[0].Content, "CLIENT_INPUT")
+			contextIndex := 0
+			if kind == "history" || kind == "explicit_history" {
+				contextIndex = 2
+			}
+			require.Contains(t, compiled.Messages[contextIndex].Content, "SCRIPT_CONTEXT:")
+			require.Contains(t, compiled.Messages[contextIndex].Content, "CLIENT_INPUT")
 			require.Equal(t, request.Tools, compiled.Tools)
 			require.Equal(t, request.ToolChoice, compiled.ToolChoice)
 			require.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
@@ -185,7 +189,9 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 			withoutRequirements := &ResponseTextFilterWriter{scriptResponse: trace.ScriptResponse}
 			require.ErrorContains(t, withoutRequirements.validateDelivery([]byte(`{"choices":[]}`), false), "saved client requirements")
 			if kind == "history" || kind == "explicit_history" {
-				require.Equal(t, request.Messages[1:], compiled.Messages[len(compiled.Messages)-3:])
+				require.Equal(t, request.Messages[1:3], compiled.Messages[:2],
+					"native calls/results must remain intact before the script's current context")
+				require.Contains(t, compiled.Messages[2].Content, "SCRIPT_CONTEXT:")
 			}
 			after, err := common.Marshal(request)
 			require.NoError(t, err)
@@ -220,7 +226,7 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 			}
 		})
 	}
-	t.Run("current task remains an executable message after context compilation", func(t *testing.T) {
+	t.Run("compiled context owns the current task without replaying raw instructions", func(t *testing.T) {
 		messages := []dto.Message{
 			{Role: "system", Content: "GENERAL_CONTEXT"},
 			{Role: "user", Content: "PREVIOUS_INPUT"},
@@ -245,9 +251,12 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, compiled.Messages[0].Content, "SCRIPT_CONTEXT:",
 				"preserving the client task must not bypass its context script")
-			require.GreaterOrEqual(t, len(compiled.Messages), 5)
-			require.Equal(t, messages[3:], compiled.Messages[len(compiled.Messages)-3:],
-				"the current task and trailing instructions must not exist only inside script context data")
+			require.Len(t, compiled.Messages, 2, "the gateway must not append raw client messages after the script")
+			require.Contains(t, compiled.Messages[0].Content, "CURRENT_TASK:")
+			require.Contains(t, compiled.Messages[0].Content, "CURRENT_INPUT")
+			require.Contains(t, compiled.Messages[0].Content, "CURRENT_SUFFIX")
+			require.NotContains(t, compiled.Messages[1].Content, "CURRENT_INPUT",
+				"the delivery instruction must not repeat client content")
 			if kind == "plain" {
 				require.Equal(t, "preset_reply", compiled.Tools[0].Function.Name,
 					"plain task preservation must retain the preset's reply transport")
@@ -266,13 +275,143 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, compiled.Tools, "the channel must not reintroduce a private reply tool")
 		require.Contains(t, compiled.Messages[0].Content, "SCRIPT_CONTEXT:")
-		require.Equal(t, request.Messages[0], compiled.Messages[len(compiled.Messages)-1])
+		require.Len(t, compiled.Messages, 2)
+		require.Contains(t, compiled.Messages[0].Content, "Return the update, not a story")
 		require.Equal(t, "text", trace.Protocol.Contract)
 		require.Equal(t, "client_delivery", trace.Protocol.Reason)
 		require.True(t, trace.ScriptResponse.nativeDelivery)
 		copied.DeliveryMode = "unknown"
 		_, _, err = CompileSillyTavernPreset(copied, request, SillyTavernContext{})
 		require.ErrorContains(t, err, "delivery_mode")
+	})
+	t.Run("request edits and ordinary reply hooks remain effective", func(t *testing.T) {
+		for _, delivery := range []string{"preset", "client"} {
+			t.Run(delivery, func(t *testing.T) {
+				preset := scriptPresetConfig(t, map[string]any{
+					"ToolBindings": map[string]any{"reply": map[string]any{
+						"enabled": true, "code": `return {name:"preset_reply",parameters:{type:"object",properties:{body:{type:"string"}}}};`,
+					}},
+					"FinalRequestProcessing": map[string]any{
+						"enabled": true,
+						"script": `({request}) => {
+							request.messages = request.messages.map(m => ({...m,content:String(m.content).replaceAll("RAW_SENTINEL","NORMALIZED")}));
+							request.tool_choice = {type:"function",function:{name:"preset_reply"}};
+							return request;
+						}`,
+					},
+					"OutputPreprocessing": map[string]any{
+						"enabled": true,
+						"script": `({buffer}) => {
+							if (!buffer.startsWith("<answer>")) throw new Error("formatter did not run");
+							return {output:buffer.replace("raw-reply","processed-reply"),state:{}};
+						}`,
+						"consumeToolCalls": true,
+						"toolCallFormatter": map[string]any{
+							"enabled": true, "script": `({calls}) => "<answer>"+calls[0].arguments.body+"</answer>"`,
+						},
+					},
+				})
+				preset.ReplyAdapter = &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{
+					{Name: "preset_reply", Formatter: true, OutputKind: "text"},
+				}}
+				if delivery == "client" {
+					preset.DeliveryMode = "client"
+				}
+				request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{
+					{Role: "user", Content: "RAW_SENTINEL"},
+					{Role: "system", Content: "RAW_SENTINEL trailing instruction"},
+				}}
+				compiled, trace, err := CompileSillyTavernPreset(preset, request, SillyTavernContext{})
+				require.NoError(t, err)
+				encoded, err := common.Marshal(compiled.Messages)
+				require.NoError(t, err)
+				require.NotContains(t, string(encoded), "RAW_SENTINEL", "script edits must not be undone by raw task replay")
+				require.Equal(t, "NORMALIZED", compiled.Messages[1].Content)
+				require.Equal(t, "NORMALIZED trailing instruction", compiled.Messages[2].Content)
+				require.Equal(t, "RAW_SENTINEL", request.Messages[0].Content)
+				details := BuildAdaptationDiagnostic(&trace).Stages[1].Details
+				require.Equal(t, true, details["request_script_executed"])
+				require.Equal(t, true, details["request_messages_changed"])
+				require.Equal(t, 3, details["request_input_messages"])
+				require.Equal(t, 3, details["request_output_messages"])
+				require.Equal(t, delivery, details["delivery"])
+
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				requirements, err := SnapshotClientRequirements(request)
+				require.NoError(t, err)
+				ctx.Set(ClientRequirementsKey, requirements)
+				AttachPresetScriptResponse(ctx, trace)
+				filter := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{
+					{ID: "unwrap", Stage: "receive", Action: "replace", Pattern: `/<\/?answer>/g`},
+				}}
+				writer := BeginResponseTextFilterWithPreset(ctx, filter, preset, "m")
+				require.NotNil(t, writer)
+				body := []byte(`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"<answer>raw-reply</answer>"}}]}`)
+				if delivery == "preset" {
+					body = []byte(`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"reply","type":"function","function":{"name":"preset_reply","arguments":"{\"body\":\"raw-reply\"}"}}]}}]}`)
+				}
+				result, err := writer.processResponse(body, false)
+				require.NoError(t, err)
+				choices, err := responseChoices(result, false)
+				require.NoError(t, err)
+				require.Equal(t, "processed-reply", choices["0"].text.String(),
+					"formatter, output hook and receive regex must compose, not merely be configured")
+				require.Empty(t, choices["0"].tools)
+			})
+		}
+	})
+	t.Run("multimodal content is not replayed after the script", func(t *testing.T) {
+		request := &dto.GeneralOpenAIRequest{
+			Model: "m", ResponseFormat: &dto.ResponseFormat{Type: "json_object"},
+			Messages: []dto.Message{{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": "describe the attachment"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,IMAGE_SENTINEL"}},
+			}}},
+		}
+		compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+		require.NoError(t, err)
+		encoded, err := common.Marshal(compiled.Messages)
+		require.NoError(t, err)
+		require.Equal(t, 1, strings.Count(string(encoded), "IMAGE_SENTINEL"),
+			"client multimodal parts must follow one script-controlled path")
+	})
+	t.Run("protocol history survives without replaying surrounding client messages", func(t *testing.T) {
+		for _, legacy := range []bool{false, true} {
+			t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+				request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{
+					{Role: "system", Content: "BACKGROUND_ONLY"},
+					{Role: "user", Content: "LOOKUP_EARLIER"},
+					{Role: "assistant", ToolCalls: []byte(`[{"id":"a","type":"function","function":{"name":"lookup","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)},
+					{Role: "tool", ToolCallId: "b", Content: `{"value":2}`},
+					{Role: "tool", ToolCallId: "a", Content: `{"value":1}`},
+					{Role: "assistant", Content: "EARLIER_SUMMARY"},
+					{Role: "user", Content: "LATEST_TASK"},
+					{Role: "developer", Content: "LATEST_CONSTRAINT"},
+				}}
+				if legacy {
+					request.Messages[2] = dto.Message{Role: "assistant", FunctionCall: []byte(`{"name":"lookup","arguments":"{}"}`)}
+					request.Messages[3] = dto.Message{Role: "function", Name: common.GetPointer("lookup"), Content: `{"value":2}`}
+					request.Messages = append(request.Messages[:4], request.Messages[5:]...)
+				}
+				expected := request.Messages[2:5]
+				if legacy {
+					expected = request.Messages[2:4]
+				}
+				compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+				require.NoError(t, err, "completed tool history does not require definitions to be repeated")
+				require.Equal(t, expected, compiled.Messages[:len(expected)])
+				require.Empty(t, compiled.Tools)
+				require.NoError(t, validatePresetClientToolContract(request, compiled))
+				require.Contains(t, compiled.Messages[len(expected)].Content, "LATEST_TASK")
+				require.Contains(t, compiled.Messages[len(expected)].Content, "LATEST_CONSTRAINT")
+				require.Len(t, compiled.Messages, len(expected)+2)
+				for _, source := range trace.Messages[:len(expected)] {
+					require.Equal(t, "client_tool_history", source.Source)
+				}
+				require.Equal(t, "preset_script", trace.Messages[len(expected)].Source)
+				require.Equal(t, "delivery_contract", trace.Messages[len(trace.Messages)-1].Source)
+			})
+		}
 	})
 }
 

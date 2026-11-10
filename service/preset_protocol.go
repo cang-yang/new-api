@@ -81,7 +81,7 @@ func clientRequiresNativeDelivery(request *dto.GeneralOpenAIRequest) bool {
 
 // Scripts receive a context view, not ownership of the client's wire protocol.
 // Protocol-bearing messages are serialized as data in that view; the native
-// tool conversation is reattached verbatim after compilation. No tool runs here.
+// tool conversation is retained separately from compiled content. No tool runs here.
 func presetClientContextMessages(messages []dto.Message) ([]dto.Message, error) {
 	result := make([]dto.Message, len(messages))
 	for index, message := range messages {
@@ -112,25 +112,6 @@ func presetClientContextMessages(messages []dto.Message) ([]dto.Message, error) 
 		result[index] = dto.Message{Role: role, Content: string(encoded) + "\n" + content}
 	}
 	return result, nil
-}
-
-// presetClientTaskMessages preserves the client's current task after a script
-// has organized its history. Protocol messages are never split from their
-// associated calls/results, and no task classification is inferred from prose.
-func presetClientTaskMessages(history []dto.Message) []dto.Message {
-	start := 0
-	for index, message := range history {
-		if message.Role == "assistant" {
-			start = index + 1
-		}
-	}
-	for index, message := range history {
-		if clientToolConversationMessage(message) {
-			start = min(start, index)
-			break
-		}
-	}
-	return history[start:]
 }
 
 func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, original *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
@@ -182,20 +163,26 @@ func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, origin
 	if err != nil {
 		return nil, trace, err
 	}
-	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Gateway delivery contract: retain the preceding contextual information and behavior, but use the client's native response protocol for this request. " +
-		"Only tools in the current tool/function definitions may be called; respect the current tool choice and parallel-call setting. " +
-		"Private preset reply/context tools shown in earlier examples are context, not tools to call now. " +
-		"The following client messages describe the current task. Follow their requested result and format rather than repeating an earlier example, greeting, or generic preset opening. " +
-		"When a response format is specified, answer directly in that format without a preset tool wrapper, prose wrapper, or Markdown fence."})
-	// A script may compress every incoming message into context data. Retain the
-	// current task as executable messages, not just as an example to describe.
-	// Start after the most recent assistant turn; pending tool calls and their
-	// results must instead remain together with the complete native suffix.
+	// Native calls/results are a protocol obligation, not permission to replay
+	// the entire raw conversation. Place them before the script's current
+	// context so a previous tool result does not become the apparent latest task.
 	history := snapshot.Messages
 	if explicitHistory != nil {
 		history = explicitHistory
 	}
-	compiled.Messages = append(compiled.Messages, presetClientTaskMessages(history)...)
+	var protocolMessages []dto.Message
+	for _, message := range history {
+		if clientToolConversationMessage(message) {
+			protocolMessages = append(protocolMessages, message)
+		}
+	}
+	compiled.Messages = append(protocolMessages, compiled.Messages...)
+	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Gateway delivery contract: preserve the behavior and current task expressed by the compiled preset context above, including its context records. " +
+		"Complete the latest task represented there; do not restart a historical example or generic opening. " +
+		"Use the client's native response protocol for delivery. " +
+		"Only tools in the current tool/function definitions may be called; respect the current tool choice and parallel-call setting. " +
+		"Private preset reply/context tools shown in earlier examples are context, not tools to call now. " +
+		"When a response format is specified, answer directly in that format without a preset tool wrapper, prose wrapper, or Markdown fence."})
 	if len(compiled.Messages) > 4096 {
 		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("client delivery exceeded the message limit"))
 	}
@@ -242,9 +229,19 @@ func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, origin
 		response.protocol.audit.Fingerprint = response.protocol.fingerprint()
 		trace.Protocol = &response.protocol.audit
 	}
-	trace.Messages = nil
+	scriptSources := trace.Messages
+	trace.Messages = make([]PresetMessageSource, 0, len(compiled.Messages))
 	for index, message := range compiled.Messages {
-		trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: message.Role, Source: "preset_script_client_delivery"})
+		source := PresetMessageSource{Role: message.Role, Source: "delivery_contract"}
+		switch {
+		case index < len(protocolMessages):
+			source.Source = "client_tool_history"
+		case index-len(protocolMessages) < len(scriptSources):
+			source = scriptSources[index-len(protocolMessages)]
+		}
+		source.Index = index
+		source.Role = message.Role
+		trace.Messages = append(trace.Messages, source)
 	}
 	delivered = true
 	return compiled, trace, nil

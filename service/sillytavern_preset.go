@@ -125,32 +125,20 @@ func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		return compilePresetWithClientDelivery(config, request, context)
 	}
 	compiled, trace, err := compileSillyTavernPreset(config, request, context)
-	if err != nil || trace.ScriptResponse == nil || !presetSupportsClientDelivery(config) {
+	if err != nil || trace.ScriptResponse == nil || !presetSupportsClientDelivery(config) || !trace.ScriptResponse.requestMessagesChanged {
 		return compiled, trace, err
 	}
-	history := request.Messages
-	if context.ChatHistory != nil {
-		history = context.ChatHistory
-	}
-	task := presetClientTaskMessages(history)
-	if len(task) == 0 {
-		return compiled, trace, nil
-	}
-	if len(compiled.Messages)+len(task)+1 > 4096 {
+	if len(compiled.Messages) >= 4096 {
 		if trace.ScriptResponse.tavern != nil {
 			trace.ScriptResponse.tavern.Close()
 		}
-		return nil, trace, newResponseStageError(FailureStageScript, fmt.Errorf("preserving the client task exceeded the message limit"))
+		return nil, trace, newResponseStageError(FailureStageScript, fmt.Errorf("preset delivery instruction exceeded the message limit"))
 	}
-	// Context scripts can turn the whole conversation into data records. Keep
-	// that context, while making the current user task an actual instruction.
-	// The existing reply transport/formatter still owns plain-text delivery.
-	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "The following client messages specify the current task. Use the preceding preset context to complete that task, not an earlier example or generic opening. " +
-		"Honor the client's requested result and format within the configured reply transport. Do not add story continuations, greetings, or extra sections when the task requests a different result."})
-	compiled.Messages = append(compiled.Messages, task...)
-	for index := len(trace.Messages); index < len(compiled.Messages); index++ {
-		trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: compiled.Messages[index].Role, Source: "client_task"})
-	}
+	// The script owns message content. A delivery reminder may refer to that
+	// result, but must not undo normalization by replaying unprocessed messages.
+	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Complete the latest task expressed by the compiled preset context above, including its context records, using the configured reply transport. " +
+		"Retain the preset's behavior and processed context; do not restart a historical example or generic opening."})
+	trace.Messages = append(trace.Messages, PresetMessageSource{Index: len(compiled.Messages) - 1, Role: "system", Source: "delivery_contract"})
 	return compiled, trace, nil
 }
 

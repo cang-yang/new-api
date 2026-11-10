@@ -40,17 +40,21 @@ type spresetSettings struct {
 // The response side receives only this request's registered tool ownership.
 // It must never infer ownership from the provider's response.
 type PresetScriptResponse struct {
-	nativeDelivery bool
-	settings       *spresetSettings
-	ownedTools     map[string]bool
-	fingerprint    [32]byte
-	tavern         *presetTavernSession
-	protocol       *presetProtocolPlan
-	resolvedPlan   *AdaptationResolvedPlan
-	dataHost       *presetDataHost
-	boundTools     map[string]bool
-	historyTools   map[string]bool
-	replySources   map[string]dto.ReplyContainer
+	nativeDelivery         bool
+	requestHookExecuted    bool
+	requestMessagesChanged bool
+	requestInputMessages   int
+	requestOutputMessages  int
+	settings               *spresetSettings
+	ownedTools             map[string]bool
+	fingerprint            [32]byte
+	tavern                 *presetTavernSession
+	protocol               *presetProtocolPlan
+	resolvedPlan           *AdaptationResolvedPlan
+	dataHost               *presetDataHost
+	boundTools             map[string]bool
+	historyTools           map[string]bool
+	replySources           map[string]dto.ReplyContainer
 }
 
 func AttachPresetScriptResponse(c *gin.Context, trace PresetCompileTrace) {
@@ -162,7 +166,11 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 		if err := applyPresetRequestScriptWithHost(settings.FinalRequestProcessing.Script, request, deadline, host); err != nil {
 			return nil, nil, err
 		}
+		response.requestHookExecuted = true
 	}
+	response.requestInputMessages = len(beforeScript.Messages)
+	response.requestOutputMessages = len(request.Messages)
+	response.requestMessagesChanged = !samePresetValue(beforeScript.Messages, request.Messages)
 	if err := validatePresetScriptTools(request.Tools, clientTools, response.ownedTools); err != nil {
 		return nil, nil, err
 	}

@@ -1135,7 +1135,7 @@ func TestSillyTavernScriptRuntimeRealPreset(t *testing.T) {
 			assert.Equal(t, request.Tools, compiled.Tools)
 			assert.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
 			if kind == "tool_history" {
-				assert.Equal(t, request.Messages[1:], compiled.Messages[len(compiled.Messages)-3:])
+				assert.Equal(t, request.Messages[1:3], compiled.Messages[:2])
 			}
 		})
 	}

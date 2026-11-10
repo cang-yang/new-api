@@ -161,13 +161,25 @@ func BuildAdaptationDiagnostic(trace *PresetCompileTrace) *AdaptationDiagnostic 
 		diagnostic.Record("worldbook", "skipped", "worldbook is not configured for this request", nil)
 	}
 	if trace.Name != "" || trace.Mode != "" || len(trace.Messages) > 0 {
-		diagnostic.Record("preset", "completed", "preset compiled before upstream conversion", map[string]any{
+		details := map[string]any{
 			"name":          trace.Name,
 			"mode":          trace.Mode,
 			"message_count": len(trace.Messages),
 			"warning_count": len(trace.Warnings),
 			"has_script":    trace.ScriptResponse != nil,
-		})
+		}
+		if response := trace.ScriptResponse; response != nil && response.settings != nil {
+			delivery := "preset"
+			if response.nativeDelivery {
+				delivery = "client"
+			}
+			details["delivery"] = delivery
+			details["request_script_executed"] = response.requestHookExecuted
+			details["request_messages_changed"] = response.requestMessagesChanged
+			details["request_input_messages"] = response.requestInputMessages
+			details["request_output_messages"] = response.requestOutputMessages
+		}
+		diagnostic.Record("preset", "completed", "preset compiled before upstream conversion", details)
 	} else {
 		diagnostic.Record("preset", "skipped", "no preset was selected for this request", nil)
 	}
