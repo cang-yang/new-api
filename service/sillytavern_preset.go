@@ -120,6 +120,41 @@ const maxSillyTavernExpansionBytes = 8 << 20
 // conversion. Original message objects (including multimodal and tool fields)
 // are retained as whole objects; only preset-created messages contain strings.
 func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
+	if request != nil && presetSupportsClientDelivery(config) && (config.DeliveryMode == "client" || clientRequiresNativeDelivery(request)) &&
+		(len(config.Models) == 0 || slices.Contains(config.Models, request.Model)) {
+		return compilePresetWithClientDelivery(config, request, context)
+	}
+	compiled, trace, err := compileSillyTavernPreset(config, request, context)
+	if err != nil || trace.ScriptResponse == nil || !presetSupportsClientDelivery(config) {
+		return compiled, trace, err
+	}
+	history := request.Messages
+	if context.ChatHistory != nil {
+		history = context.ChatHistory
+	}
+	task := presetClientTaskMessages(history)
+	if len(task) == 0 {
+		return compiled, trace, nil
+	}
+	if len(compiled.Messages)+len(task)+1 > 4096 {
+		if trace.ScriptResponse.tavern != nil {
+			trace.ScriptResponse.tavern.Close()
+		}
+		return nil, trace, newResponseStageError(FailureStageScript, fmt.Errorf("preserving the client task exceeded the message limit"))
+	}
+	// Context scripts can turn the whole conversation into data records. Keep
+	// that context, while making the current user task an actual instruction.
+	// The existing reply transport/formatter still owns plain-text delivery.
+	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "The following client messages specify the current task. Use the preceding preset context to complete that task, not an earlier example or generic opening. " +
+		"Honor the client's requested result and format within the configured reply transport. Do not add story continuations, greetings, or extra sections when the task requests a different result."})
+	compiled.Messages = append(compiled.Messages, task...)
+	for index := len(trace.Messages); index < len(compiled.Messages); index++ {
+		trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: compiled.Messages[index].Role, Source: "client_task"})
+	}
+	return compiled, trace, nil
+}
+
+func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
 	var trace PresetCompileTrace
 	if config == nil {
 		return request, trace, nil

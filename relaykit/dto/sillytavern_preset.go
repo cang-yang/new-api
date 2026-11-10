@@ -22,6 +22,9 @@ type SillyTavernPresetConfig struct {
 	User               string          `json:"user,omitempty"`
 	Char               string          `json:"char,omitempty"`
 	ParameterPolicy    string          `json:"parameter_policy,omitempty"` // preset (default) or client
+	// Client delivery retains data scripts, but uses the client's native reply
+	// protocol even when it requests plain text without declaring tools.
+	DeliveryMode string `json:"delivery_mode,omitempty"` // empty/preset or client
 	// PostProcessing controls the optional final message normalization:
 	// none, merge, semi_strict, strict, or single_user.
 	PostProcessing      string                    `json:"post_processing,omitempty"`
@@ -202,6 +205,12 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 	}
 	if c.ScriptRuntime != "" && c.ToolText != nil && c.ToolText.Enabled {
 		return nil, fmt.Errorf("preset script runtime and native tool_text transport cannot both be enabled")
+	}
+	if c.DeliveryMode != "" && c.DeliveryMode != "preset" && c.DeliveryMode != "client" {
+		return nil, fmt.Errorf("preset delivery_mode must be preset or client")
+	}
+	if c.DeliveryMode == "client" && (c.ScriptRuntime == "" || c.ReplyAdapter == nil || c.ReplyAdapter.Version != 2 || len(c.ReplyAdapter.Containers) == 0) {
+		return nil, fmt.Errorf("client delivery requires a data script and a declared reply adapter")
 	}
 	if err := c.ReplyAdapter.Validate(); err != nil {
 		return nil, err

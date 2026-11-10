@@ -65,6 +65,191 @@ type presetProtocolPlan struct {
 	internal         map[string]bool
 }
 
+// A declared reply adapter distinguishes the preset's delivery mechanism from
+// its data-processing hooks. Native client contracts can then own delivery
+// without turning off those hooks or guessing which business tool is "final".
+func presetSupportsClientDelivery(config *dto.SillyTavernPresetConfig) bool {
+	return config != nil && config.ScriptRuntime != "" && config.ReplyAdapter != nil &&
+		config.ReplyAdapter.Version == 2 && len(config.ReplyAdapter.Containers) > 0 &&
+		(config.ToolText == nil || !config.ToolText.Enabled)
+}
+
+func clientRequiresNativeDelivery(request *dto.GeneralOpenAIRequest) bool {
+	return request != nil && (clientDeclaresToolContract(request) ||
+		request.ResponseFormat != nil && request.ResponseFormat.Type != "" && request.ResponseFormat.Type != "text")
+}
+
+// Scripts receive a context view, not ownership of the client's wire protocol.
+// Protocol-bearing messages are serialized as data in that view; the native
+// tool conversation is reattached verbatim after compilation. No tool runs here.
+func presetClientContextMessages(messages []dto.Message) ([]dto.Message, error) {
+	result := make([]dto.Message, len(messages))
+	for index, message := range messages {
+		if !clientToolConversationMessage(message) {
+			result[index] = message
+			continue
+		}
+		content, text := message.Content.(string)
+		if !text && message.Content != nil {
+			encoded, err := common.Marshal(message.Content)
+			if err != nil {
+				return nil, err
+			}
+			content = string(encoded)
+		}
+		// Text is already the model-facing representation. Encoding it again
+		// inside a JSON string adds a second escape layer to paths, quotes and
+		// JSON examples. Keep only protocol metadata in the context envelope.
+		message.Content = nil
+		encoded, err := common.Marshal(map[string]any{"context_only": true, "message": message})
+		if err != nil {
+			return nil, err
+		}
+		role := "user"
+		if message.Role == "assistant" {
+			role = "assistant"
+		}
+		result[index] = dto.Message{Role: role, Content: string(encoded) + "\n" + content}
+	}
+	return result, nil
+}
+
+// presetClientTaskMessages preserves the client's current task after a script
+// has organized its history. Protocol messages are never split from their
+// associated calls/results, and no task classification is inferred from prose.
+func presetClientTaskMessages(history []dto.Message) []dto.Message {
+	start := 0
+	for index, message := range history {
+		if message.Role == "assistant" {
+			start = index + 1
+		}
+	}
+	for index, message := range history {
+		if clientToolConversationMessage(message) {
+			start = min(start, index)
+			break
+		}
+	}
+	return history[start:]
+}
+
+func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, original *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
+	var trace PresetCompileTrace
+	snapshot, err := cloneGeneralRequest(original)
+	if err != nil {
+		return nil, trace, err
+	}
+	input := *snapshot
+	// Only protocol fields are detached. Limits, routing, model parameters,
+	// multimodal parts and message text retain their normal compilation path.
+	input.Tools, input.ToolChoice = nil, nil
+	input.Functions, input.FunctionCall = nil, nil
+	input.ResponseFormat, input.ParallelTooCalls = nil, nil
+	input.Messages, err = presetClientContextMessages(input.Messages)
+	if err != nil {
+		return nil, trace, err
+	}
+	explicitHistory := context.ChatHistory
+	if explicitHistory != nil {
+		copied, copyErr := common.DeepCopy(&explicitHistory)
+		if copyErr != nil {
+			return nil, trace, copyErr
+		}
+		explicitHistory = *copied
+		context.ChatHistory, err = presetClientContextMessages(explicitHistory)
+		if err != nil {
+			return nil, trace, err
+		}
+	}
+	compiled, trace, err := compileSillyTavernPreset(config, &input, context)
+	if err != nil {
+		return nil, trace, err
+	}
+	delivered := false
+	defer func() {
+		if !delivered && trace.ScriptResponse != nil && trace.ScriptResponse.tavern != nil {
+			trace.ScriptResponse.tavern.Close()
+		}
+	}()
+	// Keep the complete script-produced context, but never offer its private
+	// reply transport as a client business tool or overwrite a client schema.
+	compiled.Tools, compiled.ToolChoice = snapshot.Tools, snapshot.ToolChoice
+	compiled.Functions, compiled.FunctionCall = snapshot.Functions, snapshot.FunctionCall
+	compiled.ResponseFormat, compiled.ParallelTooCalls = snapshot.ResponseFormat, snapshot.ParallelTooCalls
+	// Internal call/result examples remain context data, not a second live tool
+	// protocol. Providers need not accept history for tools absent from tools[].
+	compiled.Messages, err = presetClientContextMessages(compiled.Messages)
+	if err != nil {
+		return nil, trace, err
+	}
+	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Gateway delivery contract: retain the preceding contextual information and behavior, but use the client's native response protocol for this request. " +
+		"Only tools in the current tool/function definitions may be called; respect the current tool choice and parallel-call setting. " +
+		"Private preset reply/context tools shown in earlier examples are context, not tools to call now. " +
+		"The following client messages describe the current task. Follow their requested result and format rather than repeating an earlier example, greeting, or generic preset opening. " +
+		"When a response format is specified, answer directly in that format without a preset tool wrapper, prose wrapper, or Markdown fence."})
+	// A script may compress every incoming message into context data. Retain the
+	// current task as executable messages, not just as an example to describe.
+	// Start after the most recent assistant turn; pending tool calls and their
+	// results must instead remain together with the complete native suffix.
+	history := snapshot.Messages
+	if explicitHistory != nil {
+		history = explicitHistory
+	}
+	compiled.Messages = append(compiled.Messages, presetClientTaskMessages(history)...)
+	if len(compiled.Messages) > 4096 {
+		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("client delivery exceeded the message limit"))
+	}
+	if err := validatePresetClientToolContract(snapshot, compiled); err != nil {
+		return nil, trace, newResponseStageError(FailureStageToolResolution, err)
+	}
+	if explicitHistory != nil {
+		explicit := *snapshot
+		explicit.Messages = explicitHistory
+		if err := validatePresetClientToolContract(&explicit, compiled); err != nil {
+			return nil, trace, newResponseStageError(FailureStageToolResolution, err)
+		}
+	}
+	if trace.ScriptResponse != nil {
+		response := trace.ScriptResponse
+		response.nativeDelivery = true
+		// A matching name does not transfer ownership from a client to a preset.
+		for _, tool := range snapshot.Tools {
+			delete(response.ownedTools, tool.Function.Name)
+		}
+		var functions []dto.FunctionRequest
+		_ = common.Unmarshal(snapshot.Functions, &functions)
+		for _, function := range functions {
+			delete(response.ownedTools, function.Name)
+		}
+		previous := response.protocol
+		contract := presetProtocolContractText
+		if snapshot.ResponseFormat != nil && snapshot.ResponseFormat.Type != "" && snapshot.ResponseFormat.Type != "text" {
+			contract = presetProtocolContractJSON
+		}
+		if clientDeclaresToolContract(snapshot) {
+			contract = presetProtocolContractTool
+		}
+		response.protocol = &presetProtocolPlan{
+			audit: PresetProtocolAudit{
+				Enabled: true, Eligible: true, Activated: true, Reason: "client_delivery",
+				Contract: contract, Phase: presetProtocolPhaseFinal, Visibility: presetProtocolVisibilityClientVisible,
+			},
+			contract: contract, phase: presetProtocolPhaseFinal, internal: response.ownedTools,
+		}
+		if previous != nil {
+			response.protocol.containers, response.protocol.contents = previous.containers, previous.contents
+		}
+		response.protocol.audit.Fingerprint = response.protocol.fingerprint()
+		trace.Protocol = &response.protocol.audit
+	}
+	trace.Messages = nil
+	for index, message := range compiled.Messages {
+		trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: message.Role, Source: "preset_script_client_delivery"})
+	}
+	delivered = true
+	return compiled, trace, nil
+}
+
 // buildPresetProtocolPlan accepts only explicitly declared reply containers.
 // Client business tools and history are protected, not assigned gateway roles.
 func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, config *dto.SillyTavernPresetConfig, response *PresetScriptResponse) (*presetProtocolPlan, int, error) {
@@ -239,11 +424,16 @@ func clientDeclaresToolContract(request *dto.GeneralOpenAIRequest) bool {
 		return true
 	}
 	for _, message := range request.Messages {
-		if len(message.ToolCalls) > 0 || len(message.FunctionCall) > 0 || len(message.Tools) > 0 || message.ToolCallId != "" || message.Role == "tool" || message.Role == "function" {
+		if clientToolConversationMessage(message) {
 			return true
 		}
 	}
 	return false
+}
+
+func clientToolConversationMessage(message dto.Message) bool {
+	return len(message.ToolCalls) > 0 || len(message.FunctionCall) > 0 || len(message.Tools) > 0 ||
+		message.ToolCallId != "" || message.Role == "tool" || message.Role == "function"
 }
 
 func presetToolChoiceName(choice any) string {
@@ -328,9 +518,11 @@ func (p *presetProtocolPlan) fingerprint() string {
 		Contents         []string
 		Visibility       string
 		Containers       map[string]dto.ReplyContainer
+		ClientDelivery   bool
 	}{
 		Version:          "reply-adapter-v2",
 		Containers:       p.containers,
+		ClientDelivery:   p.audit.Reason == "client_delivery",
 		Enabled:          p.audit.Enabled,
 		ResponseTarget:   p.responseTarget,
 		ResponseArgument: p.responseArgument,

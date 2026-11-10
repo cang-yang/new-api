@@ -91,6 +91,191 @@ func TestRelayScopeUsesExplicitProtocolOnly(t *testing.T) {
 	require.True(t, applies, "prose must not trigger business-phase guesses")
 }
 
+func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
+	t.Run("context data preserves its text representation", func(t *testing.T) {
+		text := `{"path":"C:\\notes\\new.txt","literal":"\\n","quote":"他说\"你好\"","html":"<thinking>data</thinking>"}`
+		message := dto.Message{Role: "tool", ToolCallId: "context_result", Content: text}
+		projected, err := presetClientContextMessages([]dto.Message{message})
+		require.NoError(t, err)
+		require.Len(t, projected, 1)
+		content, ok := projected[0].Content.(string)
+		require.True(t, ok)
+		metadata, body, found := strings.Cut(content, "\n")
+		require.True(t, found, "context metadata must not re-encode the tool result as a JSON string")
+		require.Equal(t, text, body, "model-facing context must retain the original representation of paths, quotes and tags")
+		require.Contains(t, metadata, `"context_only":true`)
+		require.Empty(t, projected[0].ToolCallId, "a context record must not become a live client tool result")
+		require.Equal(t, text, message.Content, "the original protocol message must remain untouched")
+	})
+	pointer := "/body"
+	config := scriptPresetConfig(t, map[string]any{
+		"ToolBindings": map[string]any{"reply": map[string]any{
+			"enabled": true, "code": `return {name:"preset_reply",parameters:{type:"object",properties:{body:{type:"string"}}}};`,
+		}},
+		"FinalRequestProcessing": map[string]any{
+			"enabled": true,
+			"script": `({request}) => {
+				const context = JSON.stringify(request.messages);
+				request.messages = [{role:"system",content:"SCRIPT_CONTEXT:" + context}];
+				request.tool_choice = {type:"function",function:{name:"preset_reply"}};
+				return request;
+			}`,
+		},
+		"OutputPreprocessing": map[string]any{
+			"enabled": true,
+			"script":  `() => { throw new Error("client tool calls must not reach text hooks"); }`,
+		},
+	})
+	config.ReplyAdapter = &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{
+		{Name: "preset_reply", ArgumentPointer: &pointer, OutputKind: "text"},
+	}}
+	clientTool := dto.ToolCallRequest{Type: "function", Function: dto.FunctionRequest{
+		Name: "lookup", Parameters: []byte(`{"type":"object","properties":{"id":{"type":"string"}}}`),
+	}}
+	for _, kind := range []string{"auto", "required", "none", "named", "json_object", "json_schema", "history", "explicit_history", "legacy", "name_collision"} {
+		t.Run(kind, func(t *testing.T) {
+			request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "CLIENT_INPUT"}}}
+			context := SillyTavernContext{}
+			switch kind {
+			case "json_object", "json_schema":
+				request.ResponseFormat = &dto.ResponseFormat{Type: kind}
+				if kind == "json_schema" {
+					request.ResponseFormat.JsonSchema = []byte(`{"name":"result","strict":true,"schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}}`)
+				}
+			case "legacy":
+				request.Functions = []byte(`[{"name":"lookup","parameters":{"type":"object"}}]`)
+				request.FunctionCall = []byte(`{"name":"lookup"}`)
+			case "history", "explicit_history":
+				request.Tools = []dto.ToolCallRequest{clientTool}
+				request.Messages = append(request.Messages,
+					dto.Message{Role: "assistant", ToolCalls: []byte(`[{"id":"native_call","type":"function","function":{"name":"lookup","arguments":"{\"id\":\"a\"}"}}]`)},
+					dto.Message{Role: "tool", ToolCallId: "native_call", Content: `{"value":"C:\\notes\\new.txt"}`},
+					dto.Message{Role: "user", Content: "CONTINUE_AFTER_TOOL"})
+				if kind == "explicit_history" {
+					context.ChatHistory = request.Messages
+				}
+			default:
+				request.Tools = []dto.ToolCallRequest{clientTool}
+				request.ParallelTooCalls = common.GetPointer(false)
+				request.ToolChoice = kind
+				if kind == "named" {
+					request.ToolChoice = map[string]any{"type": "function", "function": map[string]any{"name": "lookup"}}
+				}
+				if kind == "name_collision" {
+					request.Tools[0].Function.Name = "preset_reply"
+					request.ToolChoice = "required"
+				}
+			}
+			before, err := common.Marshal(request)
+			require.NoError(t, err)
+			compiled, trace, err := CompileSillyTavernPreset(config, request, context)
+			require.NoError(t, err, "a client protocol must not disable the preset's context script")
+			require.Contains(t, compiled.Messages[0].Content, "SCRIPT_CONTEXT:")
+			require.Contains(t, compiled.Messages[0].Content, "CLIENT_INPUT")
+			require.Equal(t, request.Tools, compiled.Tools)
+			require.Equal(t, request.ToolChoice, compiled.ToolChoice)
+			require.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
+			require.Equal(t, request.Functions, compiled.Functions)
+			require.Equal(t, request.FunctionCall, compiled.FunctionCall)
+			require.Equal(t, request.ParallelTooCalls, compiled.ParallelTooCalls)
+			require.NoError(t, SealClientRequirements(&ClientRequirements{request: request}, compiled, nil))
+			require.NotNil(t, trace.ScriptResponse)
+			require.Equal(t, "client_delivery", trace.Protocol.Reason)
+			require.Equal(t, "completed", BuildAdaptationDiagnostic(&trace).Stages[2].Status)
+			withoutRequirements := &ResponseTextFilterWriter{scriptResponse: trace.ScriptResponse}
+			require.ErrorContains(t, withoutRequirements.validateDelivery([]byte(`{"choices":[]}`), false), "saved client requirements")
+			if kind == "history" || kind == "explicit_history" {
+				require.Equal(t, request.Messages[1:], compiled.Messages[len(compiled.Messages)-3:])
+			}
+			after, err := common.Marshal(request)
+			require.NoError(t, err)
+			require.Equal(t, string(before), string(after), "compilation must not mutate the client request")
+
+			// A real client call must not be swallowed by the preset formatter,
+			// including when its name equals the preset's reply transport.
+			if len(request.Tools) > 0 && kind != "none" {
+				for _, stream := range []bool{false, true} {
+					field := "message"
+					if stream {
+						field = "delta"
+					}
+					body := []byte(fmt.Sprintf(`{"choices":[{"index":0,"finish_reason":"tool_calls",%q:{"tool_calls":[{"index":0,"id":"native_response","type":"function","function":{"name":%q,"arguments":"{}"}}]}}]}`, field, request.Tools[0].Function.Name))
+					if stream {
+						body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+					}
+					diagnostic := newAdaptationDiagnostic()
+					writer := &ResponseTextFilterWriter{requirements: &ClientRequirements{request: request}, scriptResponse: trace.ScriptResponse, diagnostic: diagnostic}
+					result, err := writer.processResponse(body, stream)
+					require.NoError(t, err)
+					require.Equal(t, string(body), string(result))
+					require.Contains(t, diagnostic.Stages, AdaptationDiagnosticStage{
+						Stage: string(FailureStageOutputProcessing), Status: "skipped",
+					}, "a skipped reply hook must not be reported as completed")
+					if kind != "name_collision" {
+						private := []byte(strings.Replace(string(body), `"name":"lookup"`, `"name":"preset_reply"`, 1))
+						_, err = writer.processResponse(private, stream)
+						require.Error(t, err, "private preset tools must not leak through native delivery")
+					}
+				}
+			}
+		})
+	}
+	t.Run("current task remains an executable message after context compilation", func(t *testing.T) {
+		messages := []dto.Message{
+			{Role: "system", Content: "GENERAL_CONTEXT"},
+			{Role: "user", Content: "PREVIOUS_INPUT"},
+			{Role: "assistant", Content: "PREVIOUS_REPLY"},
+			{Role: "system", Content: "CURRENT_TASK: return only the requested update block"},
+			{Role: "user", Content: "CURRENT_INPUT"},
+			{Role: "system", Content: "CURRENT_SUFFIX"},
+		}
+		for _, kind := range []string{"plain", "json", "explicit_json"} {
+			request := &dto.GeneralOpenAIRequest{
+				Model: "m", Messages: messages,
+			}
+			if kind != "plain" {
+				request.ResponseFormat = &dto.ResponseFormat{Type: "json_object"}
+			}
+			context := SillyTavernContext{}
+			if kind == "explicit_json" {
+				context.ChatHistory = messages
+				request.Messages = []dto.Message{{Role: "user", Content: "NOT_THE_EXPLICIT_HISTORY"}}
+			}
+			compiled, trace, err := CompileSillyTavernPreset(config, request, context)
+			require.NoError(t, err)
+			require.Contains(t, compiled.Messages[0].Content, "SCRIPT_CONTEXT:",
+				"preserving the client task must not bypass its context script")
+			require.GreaterOrEqual(t, len(compiled.Messages), 5)
+			require.Equal(t, messages[3:], compiled.Messages[len(compiled.Messages)-3:],
+				"the current task and trailing instructions must not exist only inside script context data")
+			if kind == "plain" {
+				require.Equal(t, "preset_reply", compiled.Tools[0].Function.Name,
+					"plain task preservation must retain the preset's reply transport")
+				require.False(t, trace.ScriptResponse.nativeDelivery)
+			} else {
+				require.Equal(t, "client_delivery", trace.Protocol.Reason)
+			}
+		}
+	})
+	t.Run("explicit client delivery keeps scripts without requiring a client tool", func(t *testing.T) {
+		copied, err := common.DeepCopy(config)
+		require.NoError(t, err)
+		copied.DeliveryMode = "client"
+		request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "Return the update, not a story"}}}
+		compiled, trace, err := CompileSillyTavernPreset(copied, request, SillyTavernContext{})
+		require.NoError(t, err)
+		require.Empty(t, compiled.Tools, "the channel must not reintroduce a private reply tool")
+		require.Contains(t, compiled.Messages[0].Content, "SCRIPT_CONTEXT:")
+		require.Equal(t, request.Messages[0], compiled.Messages[len(compiled.Messages)-1])
+		require.Equal(t, "text", trace.Protocol.Contract)
+		require.Equal(t, "client_delivery", trace.Protocol.Reason)
+		require.True(t, trace.ScriptResponse.nativeDelivery)
+		copied.DeliveryMode = "unknown"
+		_, _, err = CompileSillyTavernPreset(copied, request, SillyTavernContext{})
+		require.ErrorContains(t, err, "delivery_mode")
+	})
+}
+
 func TestRelayJSONTextFieldsAndMandatoryExtraction(t *testing.T) {
 	request := &dto.GeneralOpenAIRequest{ResponseFormat: &dto.ResponseFormat{Type: "json_object"}}
 	requirements, err := SnapshotClientRequirements(request)

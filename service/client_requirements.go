@@ -133,13 +133,16 @@ func responseChoices(body []byte, stream bool) (map[string]*responseChoice, erro
 }
 
 func (w *ResponseTextFilterWriter) validateDelivery(body []byte, stream bool) error {
+	if w.scriptResponse != nil && w.scriptResponse.nativeDelivery && (w.requirements == nil || w.requirements.request == nil) {
+		return fmt.Errorf("client delivery requires saved client requirements")
+	}
 	choices, err := responseChoices(body, stream)
 	if err != nil {
 		return err
 	}
 	internal := w.internalToolNames()
 	for _, choice := range choices {
-		if len(internal) > 0 && len(choice.tools) > 0 {
+		if len(internal) > 0 && len(choice.tools) > 0 && (w.scriptResponse == nil || !w.scriptResponse.nativeDelivery) {
 			return fmt.Errorf("reply transport was not completely restored")
 		}
 		for _, call := range choice.tools {

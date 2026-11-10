@@ -27,28 +27,29 @@ var responseProcessingSlots = make(chan struct{}, 16)
 // regex match span arbitrary SSE chunks and keeps protocol metadata intact.
 type ResponseTextFilterWriter struct {
 	gin.ResponseWriter
-	admitted       bool
-	requirements   *ClientRequirements
-	structured     bool
-	checkpoint     []byte
-	onlyOutput     bool
-	skipOutput     bool
-	skipChoices    map[string]bool
-	config         dto.ResponseTextFilter
-	pattern        *regexp.Regexp
-	regexes        []presetResponseRegex
-	hasFilter      bool
-	toolText       *dto.SillyTavernToolText
-	scriptResponse *PresetScriptResponse
-	diagnostic     *AdaptationDiagnostic
-	policy         *AdaptationFailurePolicy
-	forceEmpty     bool
-	status         int
-	buffer         bytes.Buffer
-	blocked        bool
-	warned         bool
-	transformErr   error
-	deadline       time.Time
+	admitted        bool
+	requirements    *ClientRequirements
+	structured      bool
+	checkpoint      []byte
+	onlyOutput      bool
+	outputProcessed bool
+	skipOutput      bool
+	skipChoices     map[string]bool
+	config          dto.ResponseTextFilter
+	pattern         *regexp.Regexp
+	regexes         []presetResponseRegex
+	hasFilter       bool
+	toolText        *dto.SillyTavernToolText
+	scriptResponse  *PresetScriptResponse
+	diagnostic      *AdaptationDiagnostic
+	policy          *AdaptationFailurePolicy
+	forceEmpty      bool
+	status          int
+	buffer          bytes.Buffer
+	blocked         bool
+	warned          bool
+	transformErr    error
+	deadline        time.Time
 }
 
 // responseStageError tags a processing failure with the pipeline stage that
@@ -362,6 +363,7 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 // processResponse runs restore, validation and transformation in the fixed
 // order and tags any failure with its pipeline stage.
 func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]byte, error) {
+	w.outputProcessed = false
 	if w.transformErr != nil {
 		w.recordStage(FailureStageResponseValidation, "failed", w.transformErr)
 		return nil, w.transformErr
@@ -436,7 +438,7 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 			return prepared, nil
 		} else {
 			status := "skipped"
-			if w.scriptResponse != nil && (w.scriptResponse.tavern != nil || w.scriptResponse.settings != nil && w.scriptResponse.settings.OutputPreprocessing.Enabled) {
+			if w.outputProcessed {
 				status = "completed"
 			}
 			w.recordStage(FailureStageOutputProcessing, status, nil)
@@ -538,6 +540,8 @@ func (w *ResponseTextFilterWriter) transform(text string) (string, bool) {
 			w.transformErr = newResponseStageError(FailureStageOutputProcessing, err)
 			return original, false
 		}
+		w.outputProcessed = w.outputProcessed || w.scriptResponse.tavern != nil ||
+			w.scriptResponse.settings != nil && w.scriptResponse.settings.OutputPreprocessing.Enabled
 	}
 	if w.onlyOutput {
 		return text, text != original

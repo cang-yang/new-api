@@ -127,14 +127,15 @@ func InspectAdaptationScope(scope, model string, preset *dto.SillyTavernPresetCo
 		active := activePreset != nil || worldbook != nil && worldbook.Enabled || filter != nil && (len(filter.Models) == 0 || slices.Contains(filter.Models, model))
 		if applies && active {
 			scenario.Status, scenario.Reason = "adapted_unverified", "model_output_not_checked"
+			clientDelivery := presetSupportsClientDelivery(activePreset) && (activePreset.DeliveryMode == "client" || clientRequiresNativeDelivery(request))
 			switch {
 			case kind == "other_protocol":
 				scenario.Status, scenario.Reason = "conflict", "chat_completions_only"
-			case internal && (kind == "tools" || kind == "tool_history"):
+			case !clientDelivery && internal && (kind == "tools" || kind == "tool_history"):
 				scenario.Status, scenario.Reason = "conflict", "internal_transport_with_client_tools"
-			case kind == "schema" && (internal || filter != nil && len(filter.JSONTextPointers) > 0):
+			case kind == "schema" && (!clientDelivery && internal || filter != nil && len(filter.JSONTextPointers) > 0):
 				scenario.Status, scenario.Reason = "conflict", "schema_transformation"
-			case kind == "json" && internal:
+			case !clientDelivery && kind == "json" && internal:
 				scenario.Status, scenario.Reason = "conflict", "text_transport_with_json"
 				if activePreset.ReplyAdapter != nil {
 					scenario.Status, scenario.Reason = "adapted_unverified", "model_output_not_checked"

@@ -40,16 +40,17 @@ type spresetSettings struct {
 // The response side receives only this request's registered tool ownership.
 // It must never infer ownership from the provider's response.
 type PresetScriptResponse struct {
-	settings     *spresetSettings
-	ownedTools   map[string]bool
-	fingerprint  [32]byte
-	tavern       *presetTavernSession
-	protocol     *presetProtocolPlan
-	resolvedPlan *AdaptationResolvedPlan
-	dataHost     *presetDataHost
-	boundTools   map[string]bool
-	historyTools map[string]bool
-	replySources map[string]dto.ReplyContainer
+	nativeDelivery bool
+	settings       *spresetSettings
+	ownedTools     map[string]bool
+	fingerprint    [32]byte
+	tavern         *presetTavernSession
+	protocol       *presetProtocolPlan
+	resolvedPlan   *AdaptationResolvedPlan
+	dataHost       *presetDataHost
+	boundTools     map[string]bool
+	historyTools   map[string]bool
+	replySources   map[string]dto.ReplyContainer
 }
 
 func AttachPresetScriptResponse(c *gin.Context, trace PresetCompileTrace) {
@@ -67,7 +68,8 @@ func presetScriptFingerprint(config *dto.SillyTavernPresetConfig) [32]byte {
 		Modules      map[string]string
 		ToolProtocol *dto.SillyTavernToolProtocol
 		ReplyAdapter *dto.ReplyAdapter
-	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules, config.ToolProtocol, config.ReplyAdapter})
+		DeliveryMode string
+	}{config.Preset, config.ScriptRuntime, config.EntryOverrides, config.ScriptModules, config.ToolProtocol, config.ReplyAdapter, config.DeliveryMode})
 	return sha256.Sum256(data)
 }
 

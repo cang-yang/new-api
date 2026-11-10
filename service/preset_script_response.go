@@ -9,6 +9,9 @@ import (
 )
 
 func (p *PresetScriptResponse) restoreTools(body []byte, stream bool, deadline time.Time) ([]byte, error) {
+	if p.nativeDelivery {
+		return body, nil
+	}
 	if p.protocol != nil && p.protocol.audit.Activated {
 		return p.protocol.restoreTerminal(p, body, stream, deadline)
 	}

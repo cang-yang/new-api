@@ -131,8 +131,10 @@ func TestAdaptationScopeReportDoesNotRunScriptsOrClaimModelCompatibility(t *test
 	require.NoError(t, err)
 	assert.NotEqual(t, report.Fingerprint, strict.Fingerprint)
 	for _, scenario := range strict.Scenarios {
-		if scenario.Kind != "text" && scenario.Kind != "stream" {
+		if scenario.Kind == "other_protocol" {
 			assert.Equal(t, "conflict", scenario.Status, scenario.Kind)
+		} else {
+			assert.Equal(t, "adapted_unverified", scenario.Status, scenario.Kind)
 		}
 	}
 	assert.True(t, strict.Buffered)

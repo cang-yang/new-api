@@ -1093,6 +1093,52 @@ func TestSillyTavernScriptRuntimeRealPreset(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "Hello, reader.")
 	assert.NotContains(t, string(output), `"tool_calls":[`)
+	for _, kind := range []string{"tools", "json_object", "json_schema", "tool_history", "name_collision"} {
+		t.Run("native_client_"+kind, func(t *testing.T) {
+			request := &dto.GeneralOpenAIRequest{Model: "example", Messages: []dto.Message{{Role: "user", Content: "CLIENT_CONTEXT_SENTINEL"}}}
+			switch kind {
+			case "json_object", "json_schema":
+				request.ResponseFormat = &dto.ResponseFormat{Type: kind}
+			default:
+				name := "lookup"
+				if kind == "name_collision" {
+					name = report.ReplySources[0].Name
+				}
+				request.Tools = []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{
+					Name: name, Parameters: []byte(`{"type":"object","properties":{"value":{"type":"string"}}}`),
+				}}}
+				request.ToolChoice = "required"
+				if kind == "tool_history" {
+					request.Messages = append(request.Messages,
+						dto.Message{Role: "assistant", ToolCalls: []byte(`[{"id":"client_history","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)},
+						dto.Message{Role: "tool", ToolCallId: "client_history", Content: "TOOL_RESULT_SENTINEL"},
+						dto.Message{Role: "user", Content: "CONTINUATION_SENTINEL"})
+				}
+			}
+			worldbook := &dto.WorldbookConfig{
+				SemanticsVersion: 2, Enabled: true, InjectionMode: dto.WorldbookInjectionBeforeDefinition,
+				Books: []dto.Worldbook{{ID: "native-book", Enabled: true, Entries: []dto.WorldbookEntry{
+					{ID: "native-entry", Enabled: true, Constant: true, Content: "CLIENT_WORLD_BOOK_SENTINEL"},
+				}}},
+			}
+			compiled, trace, err := CompileWorldbook(worldbook, config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.NotNil(t, trace.ScriptResponse)
+			require.True(t, trace.ScriptResponse.nativeDelivery)
+			require.NoError(t, validatePresetClientToolContract(request, compiled))
+			encoded, err := common.Marshal(compiled.Messages)
+			require.NoError(t, err)
+			assert.Contains(t, string(encoded), "CLIENT_CONTEXT_SENTINEL")
+			assert.Contains(t, string(encoded), "CLIENT_WORLD_BOOK_SENTINEL")
+			assert.NotContains(t, string(encoded), "<run_tool_replacement>", "the actual request hook, not just static prompts, must execute")
+			assert.Contains(t, string(encoded), "SoliUmbra World Context Registry.", "the actual script-produced context must survive client delivery")
+			assert.Equal(t, request.Tools, compiled.Tools)
+			assert.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
+			if kind == "tool_history" {
+				assert.Equal(t, request.Messages[1:], compiled.Messages[len(compiled.Messages)-3:])
+			}
+		})
+	}
 	for _, stream := range []bool{false, true} {
 		t.Run("delivery_"+strconv.FormatBool(stream), func(t *testing.T) {
 			_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "example", Messages: []dto.Message{{Role: "user", Content: "Hello."}}}, SillyTavernContext{})
