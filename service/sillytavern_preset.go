@@ -26,21 +26,23 @@ import (
 // A plain OpenAI client can omit it: incoming system messages remain generic
 // chat history and are never guessed to be a particular SillyTavern marker.
 type SillyTavernContext struct {
-	worldbookConfig  *dto.WorldbookConfig
-	worldbookPreview *WorldbookPreview
-	worldbookSource  *dto.GeneralOpenAIRequest
-	User             string            `json:"user,omitempty"`
-	Char             string            `json:"char,omitempty"`
-	LastUserMessage  string            `json:"last_user_message,omitempty"`
-	Markers          map[string]string `json:"markers,omitempty"`
-	ChatHistory      []dto.Message     `json:"chat_history,omitempty"`
-	DialogueExamples [][]dto.Message   `json:"dialogue_examples,omitempty"`
-	Variables        map[string]string `json:"variables,omitempty"`
-	GlobalVariables  map[string]string `json:"global_variables,omitempty"`
-	MacroValues      map[string]string `json:"macro_values,omitempty"`
-	ChatID           string            `json:"chat_id,omitempty"`
-	Input            *string           `json:"input,omitempty"`
-	Now              time.Time         `json:"-"`
+	internalReplyOnly bool // compiler-owned; never decoded from client context
+	scriptClient      *dto.GeneralOpenAIRequest
+	worldbookConfig   *dto.WorldbookConfig
+	worldbookPreview  *WorldbookPreview
+	worldbookSource   *dto.GeneralOpenAIRequest
+	User              string            `json:"user,omitempty"`
+	Char              string            `json:"char,omitempty"`
+	LastUserMessage   string            `json:"last_user_message,omitempty"`
+	Markers           map[string]string `json:"markers,omitempty"`
+	ChatHistory       []dto.Message     `json:"chat_history,omitempty"`
+	DialogueExamples  [][]dto.Message   `json:"dialogue_examples,omitempty"`
+	Variables         map[string]string `json:"variables,omitempty"`
+	GlobalVariables   map[string]string `json:"global_variables,omitempty"`
+	MacroValues       map[string]string `json:"macro_values,omitempty"`
+	ChatID            string            `json:"chat_id,omitempty"`
+	Input             *string           `json:"input,omitempty"`
+	Now               time.Time         `json:"-"`
 }
 
 type PresetMessageSource struct {
@@ -120,25 +122,23 @@ const maxSillyTavernExpansionBytes = 8 << 20
 // conversion. Original message objects (including multimodal and tool fields)
 // are retained as whole objects; only preset-created messages contain strings.
 func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
-	if request != nil && presetSupportsClientDelivery(config) && (config.DeliveryMode == "client" || clientRequiresNativeDelivery(request)) &&
+	if request != nil && presetSupportsClientDelivery(config) && (clientForbidsToolCalls(request) ||
+		request.ResponseFormat != nil && request.ResponseFormat.Type != "" && request.ResponseFormat.Type != "text") &&
 		(len(config.Models) == 0 || slices.Contains(config.Models, request.Model)) {
-		return compilePresetWithClientDelivery(config, request, context)
+		return compilePresetWithInternalReply(config, request, context)
 	}
 	compiled, trace, err := compileSillyTavernPreset(config, request, context)
-	if err != nil || trace.ScriptResponse == nil || !presetSupportsClientDelivery(config) || !trace.ScriptResponse.requestMessagesChanged {
+	if err != nil || trace.ScriptResponse == nil {
 		return compiled, trace, err
 	}
-	if len(compiled.Messages) >= 4096 {
-		if trace.ScriptResponse.tavern != nil {
-			trace.ScriptResponse.tavern.Close()
+	if response := trace.ScriptResponse; response.protocol != nil && response.protocol.audit.Activated {
+		if err := response.freezeGenerationContract(request, compiled); err != nil {
+			if response.tavern != nil {
+				response.tavern.Close()
+			}
+			return nil, trace, err
 		}
-		return nil, trace, newResponseStageError(FailureStageScript, fmt.Errorf("preset delivery instruction exceeded the message limit"))
 	}
-	// The script owns message content. A delivery reminder may refer to that
-	// result, but must not undo normalization by replaying unprocessed messages.
-	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Complete the latest task expressed by the compiled preset context above, including its context records, using the configured reply transport. " +
-		"Retain the preset's behavior and processed context; do not restart a historical example or generic opening."})
-	trace.Messages = append(trace.Messages, PresetMessageSource{Index: len(compiled.Messages) - 1, Role: "system", Source: "delivery_contract"})
 	return compiled, trace, nil
 }
 
@@ -554,7 +554,12 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 	}()
 	if config.ScriptRuntime != "" {
-		response, warnings, err := preparePresetScripts(config, preset, compiled, &macro)
+		clientView := *request
+		if context.scriptClient != nil {
+			clientView = *context.scriptClient
+		}
+		clientView.Messages = chat
+		response, warnings, err := preparePresetScripts(config, preset, compiled, &macro, &clientView)
 		if err != nil {
 			return nil, trace, newResponseStageError(FailureStageScript, err)
 		}
@@ -602,7 +607,7 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 			explicit.Messages = context.ChatHistory
 			protocolRequest = &explicit
 		}
-		plan, mode, err := buildPresetProtocolPlan(protocolRequest, compiled, config, trace.ScriptResponse)
+		plan, mode, err := buildPresetProtocolPlan(protocolRequest, compiled, config, trace.ScriptResponse, context.internalReplyOnly)
 		if err != nil {
 			return nil, trace, newResponseStageError(FailureStageToolResolution, err)
 		} else if plan != nil {

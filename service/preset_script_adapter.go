@@ -40,21 +40,23 @@ type spresetSettings struct {
 // The response side receives only this request's registered tool ownership.
 // It must never infer ownership from the provider's response.
 type PresetScriptResponse struct {
-	nativeDelivery         bool
-	requestHookExecuted    bool
-	requestMessagesChanged bool
-	requestInputMessages   int
-	requestOutputMessages  int
-	settings               *spresetSettings
-	ownedTools             map[string]bool
-	fingerprint            [32]byte
-	tavern                 *presetTavernSession
-	protocol               *presetProtocolPlan
-	resolvedPlan           *AdaptationResolvedPlan
-	dataHost               *presetDataHost
-	boundTools             map[string]bool
-	historyTools           map[string]bool
-	replySources           map[string]dto.ReplyContainer
+	generationRequest        *dto.GeneralOpenAIRequest
+	generationClientControls []byte
+	textToClientFormat       bool
+	requestHookExecuted      bool
+	requestMessagesChanged   bool
+	requestInputMessages     int
+	requestOutputMessages    int
+	settings                 *spresetSettings
+	ownedTools               map[string]bool
+	fingerprint              [32]byte
+	tavern                   *presetTavernSession
+	protocol                 *presetProtocolPlan
+	resolvedPlan             *AdaptationResolvedPlan
+	dataHost                 *presetDataHost
+	boundTools               map[string]bool
+	historyTools             map[string]bool
+	replySources             map[string]dto.ReplyContainer
 }
 
 func AttachPresetScriptResponse(c *gin.Context, trace PresetCompileTrace) {
@@ -95,7 +97,7 @@ func parseSPresetSettings(config *dto.SillyTavernPresetConfig) (*spresetSettings
 	return envelope.Extensions.SPreset, nil
 }
 
-func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.SillyTavernPreset, request *dto.GeneralOpenAIRequest, macro *presetMacroContext) (*PresetScriptResponse, []string, error) {
+func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.SillyTavernPreset, request *dto.GeneralOpenAIRequest, macro *presetMacroContext, clientRequest *dto.GeneralOpenAIRequest) (*PresetScriptResponse, []string, error) {
 	if config.ScriptRuntime == "tavern-v1" {
 		clientTools := append([]dto.ToolCallRequest(nil), request.Tools...)
 		response, warnings, err := prepareTavernScripts(config, request, macro)
@@ -114,6 +116,20 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 		return nil, nil, err
 	}
 	host, err := newPresetDataHost(config)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The compiler supplies the effective client history before preset assembly.
+	// This separate view is for cooperating hooks; it never restores messages
+	// that a hook dropped or silently changes the final upstream request.
+	if clientRequest == nil {
+		clientRequest = request
+	}
+	host.Client, err = common.Marshal(map[string]any{
+		"messages": clientRequest.Messages, "tools": clientRequest.Tools, "tool_choice": clientRequest.ToolChoice,
+		"functions": clientRequest.Functions, "function_call": clientRequest.FunctionCall,
+		"parallel_tool_calls": clientRequest.ParallelTooCalls, "response_format": clientRequest.ResponseFormat,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -279,8 +295,8 @@ func validatePresetClientToolContract(original, compiled *dto.GeneralOpenAIReque
 
 // validatePresetClientToolContractWithMode validates the client-visible
 // contract before an active gateway protocol plan is allowed to project the
-// provider-visible tools and tool_choice. Mode 1 still protects history,
-// functions, legacy function_call and every original tool definition.
+// provider-visible tools and tool_choice. Mode 1 permits internal reply
+// selection, but still protects history, legacy controls and tool definitions.
 func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpenAIRequest, mode int) error {
 	if original.ResponseFormat != nil {
 		before, _ := common.Marshal(original.ResponseFormat)
@@ -309,7 +325,7 @@ func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpe
 	if afterChoice == nil {
 		afterChoice = "auto"
 	}
-	{
+	if mode == 0 {
 		before, _ := common.Marshal(beforeChoice)
 		after, _ := common.Marshal(afterChoice)
 		if !samePresetJSON(before, after) {
@@ -390,11 +406,8 @@ func validatePresetClientToolContractWithMode(original, compiled *dto.GeneralOpe
 			}
 		}
 		for _, call := range calls {
-			if owned[call.Function.Name] {
-				if mode == 0 {
-					return fmt.Errorf("preset conflicts with client tools: tool history name was claimed by the preset")
-				}
-				continue
+			if owned[call.Function.Name] && mode == 0 {
+				return fmt.Errorf("preset conflicts with client tools: tool history name was claimed by the preset")
 			}
 			if callCounts[call.ID] != 1 {
 				return fmt.Errorf("preset conflicts with client tools: tool call ID was reused")
@@ -415,9 +428,14 @@ func applyPresetRequestScriptWithHost(script string, request *dto.GeneralOpenAIR
 	}
 	var after map[string]json.RawMessage
 	source := strings.TrimRight(strings.TrimSpace(script), "; \r\n\t")
-	source = "input => { const result = (" + source + ")(input); return result === undefined ? input.request : result; }"
+	source = "input => { if (input.client) freezePresetDataView(input.client); const result = (" + source + ")(input); return result === undefined ? input.request : result; }"
+	var client json.RawMessage
+	if host != nil {
+		client = host.Client
+	}
 	err = runPresetScriptWithHost(source, map[string]any{
 		"request": json.RawMessage(encoded), "model": request.Model,
+		"client": client,
 		"source": "openai", "stream": request.Stream != nil && *request.Stream, "preview": false,
 		"provider": map[string]string{"adapter": "openai", "model": request.Model},
 	}, &after, deadline, host)

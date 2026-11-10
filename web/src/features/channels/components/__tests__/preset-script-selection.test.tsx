@@ -27,10 +27,48 @@ import {
   PresetCapabilityReportSettings,
 } from '../preset-capability-report'
 import { PresetScriptSettings } from '../preset-script-settings'
+import { ReplyAdapterSettings } from '../reply-adapter-settings'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('JSON conversion is explicit and retained when editing a reply source', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const draft = {
+    reply_adapter: {
+      version: 2,
+      structured_output: true,
+      containers: [{ name: 'reply', formatter: true, output_kind: 'text' }],
+    },
+  }
+  const view = render(
+    <ReplyAdapterSettings config={draft} onChange={onChange} />
+  )
+  const toggle = screen.getByRole('switch', {
+    name: "Convert preset replies to the client's JSON format",
+  })
+  expect(toggle).toBeChecked()
+  await user.click(toggle)
+  expect(onChange).toHaveBeenLastCalledWith({
+    reply_adapter: { ...draft.reply_adapter, structured_output: false },
+  })
+  await user.type(screen.getByRole('textbox', { name: 'Reply tool name' }), '2')
+  expect(onChange).toHaveBeenLastCalledWith({
+    reply_adapter: {
+      ...draft.reply_adapter,
+      containers: [{ name: 'reply2', formatter: true, output_kind: 'text' }],
+    },
+  })
+  view.rerender(
+    <ReplyAdapterSettings config={draft} onChange={onChange} disabled />
+  )
+  expect(toggle).toHaveAttribute('aria-disabled', 'true')
+  onChange.mockClear()
+  await user.click(toggle)
+  expect(onChange).not.toHaveBeenCalled()
 })
 
 test('reply-source suggestions require a local check and apply only to the unchanged draft', async () => {

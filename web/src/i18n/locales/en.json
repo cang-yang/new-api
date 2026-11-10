@@ -5848,6 +5848,8 @@
     "Reply restore failure": "回复恢复失败",
     "Reply script failure": "Reply script failure",
     "Reply source": "Reply source",
+    "Convert preset replies to the client's JSON format": "Convert preset replies to the client's JSON format",
+    "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.": "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.",
     "Reply source settings fell back safely": "Reply source settings fell back safely",
     "Reply sources were validated against client requirements": "Reply sources were validated against client requirements",
     "Reply tool name": "Reply tool name",

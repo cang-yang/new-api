@@ -1,14 +1,17 @@
 // Data shared by hooks in one request, never a simulated browser or chat store.
+// A hook may explicitly carry native protocol messages into its own output.
+// Freezing this view does not imply any automatic history repair by the host.
+function freezePresetDataView(value) {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freezePresetDataView(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function createPresetDataHost(settings, metadata = {}, extra = {}) {
-  const freeze = value => {
-    if (value && typeof value === 'object') {
-      for (const child of Object.values(value)) freeze(child);
-      Object.freeze(value);
-    }
-    return value;
-  };
   const context = Object.freeze({
-    chatCompletionSettings: freeze(settings),
+    chatCompletionSettings: freezePresetDataView(settings),
     chatMetadata: metadata,
   });
   const tavern = Object.freeze({...extra, getContext: () => context});

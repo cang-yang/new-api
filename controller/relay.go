@@ -231,7 +231,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if value, exists := c.Get(service.ClientRequirementsKey); exists {
 			requirements, _ := value.(*service.ClientRequirements)
 			if chat, ok := compiled.(*kitdto.GeneralOpenAIRequest); ok {
-				if err := service.SealClientRequirements(requirements, chat, initialOtherSettings.ResponseTextFilter); err != nil {
+				if err := service.SealClientRequirements(requirements, chat, initialOtherSettings.ResponseTextFilter, trace.ScriptResponse); err != nil {
 					newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 					return
 				}

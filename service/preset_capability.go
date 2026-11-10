@@ -127,24 +127,14 @@ func InspectAdaptationScope(scope, model string, preset *dto.SillyTavernPresetCo
 		active := activePreset != nil || worldbook != nil && worldbook.Enabled || filter != nil && (len(filter.Models) == 0 || slices.Contains(filter.Models, model))
 		if applies && active {
 			scenario.Status, scenario.Reason = "adapted_unverified", "model_output_not_checked"
-			clientDelivery := presetSupportsClientDelivery(activePreset) && (activePreset.DeliveryMode == "client" || clientRequiresNativeDelivery(request))
+			convertedFormat := presetSupportsClientDelivery(activePreset) && activePreset.ReplyAdapter.StructuredOutput
 			switch {
 			case kind == "other_protocol":
 				scenario.Status, scenario.Reason = "conflict", "chat_completions_only"
-			case !clientDelivery && internal && (kind == "tools" || kind == "tool_history"):
-				scenario.Status, scenario.Reason = "conflict", "internal_transport_with_client_tools"
-			case kind == "schema" && (!clientDelivery && internal || filter != nil && len(filter.JSONTextPointers) > 0):
+			case kind == "schema" && (!convertedFormat && internal || filter != nil && len(filter.JSONTextPointers) > 0):
 				scenario.Status, scenario.Reason = "conflict", "schema_transformation"
-			case !clientDelivery && kind == "json" && internal:
+			case !convertedFormat && kind == "json" && internal:
 				scenario.Status, scenario.Reason = "conflict", "text_transport_with_json"
-				if activePreset.ReplyAdapter != nil {
-					scenario.Status, scenario.Reason = "adapted_unverified", "model_output_not_checked"
-					for _, container := range activePreset.ReplyAdapter.Containers {
-						if container.OutputKind != "json_object" {
-							scenario.Status, scenario.Reason = "conflict", "text_transport_with_json"
-						}
-					}
-				}
 			}
 			if kind == "stream" {
 				report.Buffered = activePreset != nil && activePreset.ScriptRuntime != "" ||

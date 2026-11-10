@@ -24,6 +24,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldGroup,
   FieldLabel,
@@ -72,7 +73,12 @@ export function ReplyAdapterSettings(props: {
   const save = (items: ReplyContainer[]) => {
     const next = {
       ...props.config,
-      reply_adapter: { version: 2, containers: items },
+      reply_adapter: {
+        ...adapter,
+        version: 2,
+        containers: items,
+        ...(items.length === 0 ? { structured_output: false } : {}),
+      },
     }
     props.onChange(next)
   }
@@ -314,6 +320,37 @@ export function ReplyAdapterSettings(props: {
         >
           {t('Add reply source')}
         </Button>
+        {containers.length > 0 && (
+          <Field orientation='horizontal' data-disabled={props.disabled}>
+            <FieldContent>
+              <FieldLabel htmlFor={`${id}structured`}>
+                {t("Convert preset replies to the client's JSON format")}
+              </FieldLabel>
+              <FieldDescription id={`${id}structured-help`}>
+                {t(
+                  "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried."
+                )}
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id={`${id}structured`}
+              aria-describedby={`${id}structured-help`}
+              checked={adapter.structured_output === true}
+              disabled={props.disabled}
+              onCheckedChange={(value) =>
+                props.onChange({
+                  ...props.config,
+                  reply_adapter: {
+                    ...adapter,
+                    version: 2,
+                    containers,
+                    structured_output: value,
+                  },
+                })
+              }
+            />
+          </Field>
+        )}
         {containers.length > 0 && (
           <Field>
             <FieldLabel htmlFor={`${id}sample`}>

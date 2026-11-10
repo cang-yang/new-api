@@ -5848,6 +5848,8 @@
     "Reply restore failure": "回复恢复失败",
     "Reply script failure": "Ошибка скрипта ответа",
     "Reply source": "Источник ответа",
+    "Convert preset replies to the client's JSON format": "Преобразовывать ответы пресета в JSON-формат клиента",
+    "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.": "Включайте после проверки пресета с JSON-запросами. Форматирование, скрипт ответа и очистка текста сохраняются; итоговый JSON проверяется по требованиям клиента. Некорректные ответы не исправляются и не генерируются повторно.",
     "Reply source settings fell back safely": "Безопасный откат настроек источника ответа",
     "Reply sources were validated against client requirements": "Источники ответа проверены по требованиям клиента",
     "Reply tool name": "Имя инструмента с ответом",

@@ -131,11 +131,19 @@ func TestAdaptationScopeReportDoesNotRunScriptsOrClaimModelCompatibility(t *test
 	require.NoError(t, err)
 	assert.NotEqual(t, report.Fingerprint, strict.Fingerprint)
 	for _, scenario := range strict.Scenarios {
-		if scenario.Kind == "other_protocol" {
+		if scenario.Kind == "other_protocol" || scenario.Kind == "json" || scenario.Kind == "schema" {
 			assert.Equal(t, "conflict", scenario.Status, scenario.Kind)
 		} else {
 			assert.Equal(t, "adapted_unverified", scenario.Status, scenario.Kind)
 		}
 	}
 	assert.True(t, strict.Buffered)
+	config.ReplyAdapter.StructuredOutput = true
+	converted, err := InspectAdaptationScope("all_supported", "m", config, nil, nil)
+	require.NoError(t, err)
+	for _, scenario := range converted.Scenarios {
+		if scenario.Kind == "json" || scenario.Kind == "schema" {
+			assert.Equal(t, "adapted_unverified", scenario.Status, scenario.Kind)
+		}
+	}
 }

@@ -38,6 +38,7 @@ export function validReplyPointer(pointer: string): boolean {
 export const replyAdapterSchema = z
   .object({
     version: z.literal(2),
+    structured_output: z.boolean().optional(),
     containers: z
       .array(
         z
@@ -65,7 +66,8 @@ export const replyAdapterSchema = z
   .refine(
     (adapter) =>
       new Set(adapter.containers.map((item) => item.name)).size ===
-      adapter.containers.length
+        adapter.containers.length &&
+      (!adapter.structured_output || adapter.containers.length > 0)
   )
 
 export function validReplyAdapter(config: Record<string, unknown>): boolean {
@@ -83,7 +85,11 @@ export type ReplyContainer = {
   source_prompt_id?: string
   source_fingerprint?: string
 }
-export type ReplyAdapter = { version: 2; containers: ReplyContainer[] }
+export type ReplyAdapter = {
+  version: 2
+  containers: ReplyContainer[]
+  structured_output?: boolean
+}
 export type ReplySampleField = {
   pointer: string
   kind: 'text' | 'json_object'

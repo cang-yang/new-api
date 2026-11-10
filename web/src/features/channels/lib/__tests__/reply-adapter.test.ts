@@ -43,6 +43,16 @@ test('reply field validation rejects ambiguous or unsafe declarations before app
     validReplyAdapter({ reply_adapter: { version: 2, containers: [row] } })
   ).toBe(true)
   expect(
+    validReplyAdapter({
+      reply_adapter: { version: 2, containers: [row], structured_output: true },
+    })
+  ).toBe(true)
+  expect(
+    validReplyAdapter({
+      reply_adapter: { version: 2, containers: [], structured_output: true },
+    })
+  ).toBe(false)
+  expect(
     validReplyAdapter({ reply_adapter: { version: 2, containers: [row, row] } })
   ).toBe(false)
   expect(

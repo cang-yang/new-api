@@ -620,7 +620,7 @@ func PreviewWorldbookDraft(config *dto.WorldbookConfig, preset *dto.SillyTavernP
 		if finalRequest {
 			if requirements, err := SnapshotClientRequirements(request); err != nil {
 				return WorldbookPreview{}, err
-			} else if err := SealClientRequirements(requirements, compiled, sendRules); err != nil {
+			} else if err := SealClientRequirements(requirements, compiled, sendRules, trace.ScriptResponse); err != nil {
 				return WorldbookPreview{}, err
 			}
 			preview.FinalRequest = compiled

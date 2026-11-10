@@ -5848,6 +5848,8 @@
     "Reply restore failure": "回复恢复失败",
     "Reply script failure": "Khi tập lệnh trả lời lỗi",
     "Reply source": "Nguồn trả lời",
+    "Convert preset replies to the client's JSON format": "Chuyển câu trả lời của preset sang định dạng JSON của ứng dụng",
+    "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.": "Chỉ bật sau khi thử preset với yêu cầu JSON. Trình định dạng, tập lệnh phản hồi và bước làm sạch văn bản vẫn chạy; JSON cuối cùng được kiểm tra theo yêu cầu của ứng dụng. Phản hồi không hợp lệ sẽ không được tự sửa hay tạo lại.",
     "Reply source settings fell back safely": "Nguồn trả lời đã dùng phương án dự phòng an toàn",
     "Reply sources were validated against client requirements": "Đã kiểm tra nguồn trả lời theo yêu cầu ứng dụng",
     "Reply tool name": "Tên công cụ chứa câu trả lời",

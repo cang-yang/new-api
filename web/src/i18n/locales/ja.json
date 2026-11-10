@@ -5848,6 +5848,8 @@
     "Reply restore failure": "回复恢复失败",
     "Reply script failure": "返信スクリプトのエラー時",
     "Reply source": "返信元",
+    "Convert preset replies to the client's JSON format": "クライアントの JSON 形式にプリセットの返信を変換",
+    "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.": "JSON リクエストで動作を確認してから有効にしてください。既存の整形、返信スクリプト、テキスト処理は引き続き実行され、最後にクライアントの要件に照らして JSON を検証します。不正な返信の修正や再生成は行いません。",
     "Reply source settings fell back safely": "返信元設定に安全な代替処理を適用",
     "Reply sources were validated against client requirements": "返信元とクライアント要件の整合性を確認済み",
     "Reply tool name": "返信を格納するツール名",

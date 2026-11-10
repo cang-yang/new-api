@@ -14,15 +14,96 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSillyTavernInternalReplyProviderGuard(t *testing.T) {
+	service.InitHttpClient()
+	gin.SetMode(gin.TestMode)
+	config := &dto.SillyTavernPresetConfig{
+		Preset: []byte(`{
+			"prompts":[{"identifier":"reply","content":"Use the declared reply format."},{"identifier":"chatHistory","marker":true}],
+			"prompt_order":[{"order":[{"identifier":"reply","enabled":true},{"identifier":"chatHistory","enabled":true}]}],
+			"extensions":{"SPreset":{
+				"ToolBindings":{"reply":{"enabled":true,"code":"return {name:'reply',parameters:{type:'object',properties:{text:{type:'string'}}}};"}},
+				"FinalRequestProcessing":{"enabled":true,"script":"({request}) => { request.tool_choice={type:'function',function:{name:'reply'}}; return request; }"}
+			}}
+		}`),
+		ScriptRuntime: "spreset-v1",
+		ReplyAdapter: &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{
+			{Name: "reply", ArgumentPointer: new("/text"), OutputKind: "text"},
+		}},
+	}
+	for _, field := range []string{"temperature", "tool_choice", "messages"} {
+		t.Run(field, func(t *testing.T) {
+			captured := make(chan []byte, 1)
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err == nil {
+					captured <- body
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"message":"capture only","type":"invalid_request_error"}}`)
+			}))
+			defer provider.Close()
+			request := &dto.GeneralOpenAIRequest{Model: "guard-test", ToolChoice: "none", Messages: []dto.Message{{Role: "user", Content: "When does the library open?"}}}
+			compiled, trace, err := service.CompileSillyTavernPreset(config, request, service.SillyTavernContext{})
+			require.NoError(t, err)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			common.SetContextKey(ctx, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			common.SetContextKey(ctx, constant.ContextKeyChannelBaseUrl, provider.URL)
+			common.SetContextKey(ctx, constant.ContextKeyOriginalModel, "guard-test")
+			value := any(0.4)
+			if field == "tool_choice" {
+				value = "none"
+			} else if field == "messages" {
+				value = []any{}
+			}
+			common.SetContextKey(ctx, constant.ContextKeyChannelParamOverride, map[string]any{
+				"operations": []any{map[string]any{"path": field, "mode": "set", "value": value}},
+			})
+			service.AttachPresetScriptResponse(ctx, trace)
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeChatCompletions,
+				OriginModelName: "guard-test", RequestURLPath: "/v1/chat/completions", Request: compiled}
+			apiErr := TextHelper(ctx, info)
+			require.NotNil(t, apiErr)
+			if field != "temperature" {
+				require.Equal(t, http.StatusBadRequest, apiErr.StatusCode)
+				require.Equal(t, types.ErrorCodeInvalidRequest, apiErr.GetErrorCode())
+				require.True(t, types.IsSkipRetryError(apiErr))
+				require.Contains(t, apiErr.Error(), "parameter overrides changed protected internal generation field")
+				select {
+				case <-captured:
+					t.Fatal("an invalid internal request reached the provider")
+				default:
+				}
+				return
+			}
+			select {
+			case body := <-captured:
+				var wire dto.GeneralOpenAIRequest
+				require.NoError(t, common.Unmarshal(body, &wire))
+				require.Equal(t, compiled.ToolChoice, wire.ToolChoice)
+				require.Equal(t, compiled.Messages, wire.Messages)
+				require.Len(t, wire.Tools, 1)
+				require.Equal(t, "reply", wire.Tools[0].Function.Name)
+				require.Equal(t, 0.4, *wire.Temperature)
+			default:
+				t.Fatal("the valid internal request did not reach the provider")
+			}
+		})
+	}
+}
 
 // This is an opt-in, strict live differential test. It measures every preset
 // in the supplied archive against real SillyTavern captures and fails on any

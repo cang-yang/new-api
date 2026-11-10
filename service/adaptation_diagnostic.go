@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 	"sync"
 
@@ -169,11 +170,8 @@ func BuildAdaptationDiagnostic(trace *PresetCompileTrace) *AdaptationDiagnostic 
 			"has_script":    trace.ScriptResponse != nil,
 		}
 		if response := trace.ScriptResponse; response != nil && response.settings != nil {
-			delivery := "preset"
-			if response.nativeDelivery {
-				delivery = "client"
-			}
-			details["delivery"] = delivery
+			details["delivery"] = "preset"
+			details["client_format_conversion"] = response.protocol != nil && slices.Contains(response.protocol.actions, "client_format_conversion")
 			details["request_script_executed"] = response.requestHookExecuted
 			details["request_messages_changed"] = response.requestMessagesChanged
 			details["request_input_messages"] = response.requestInputMessages

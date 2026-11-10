@@ -25,6 +25,7 @@ var presetDataHostSource string
 type presetDataHost struct {
 	Settings json.RawMessage `json:"settings"`
 	Metadata json.RawMessage `json:"metadata"`
+	Client   json.RawMessage `json:"-"`
 }
 
 func runPresetScript(source string, input any, target any, deadline time.Time) error {

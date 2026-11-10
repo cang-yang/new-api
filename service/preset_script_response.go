@@ -6,12 +6,23 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
-func (p *PresetScriptResponse) restoreTools(body []byte, stream bool, deadline time.Time) ([]byte, error) {
-	if p.nativeDelivery {
-		return body, nil
+func (p *PresetScriptResponse) freezeGenerationContract(original, compiled *dto.GeneralOpenAIRequest) error {
+	request, err := cloneGeneralRequest(compiled)
+	if err != nil {
+		return err
 	}
+	controls, err := clientProtocolControls(original)
+	if err != nil {
+		return err
+	}
+	p.generationRequest, p.generationClientControls = request, controls
+	return nil
+}
+
+func (p *PresetScriptResponse) restoreTools(body []byte, stream bool, deadline time.Time) ([]byte, error) {
 	if p.protocol != nil && p.protocol.audit.Activated {
 		return p.protocol.restoreTerminal(p, body, stream, deadline)
 	}

@@ -5848,6 +5848,8 @@
     "Reply restore failure": "回复恢复失败",
     "Reply script failure": "回复处理脚本出错时",
     "Reply source": "回复来源",
+    "Convert preset replies to the client's JSON format": "客户端需要 JSON 时转换回复",
+    "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.": "请先用该预设测试 JSON 请求，确认可用后再开启。原有的格式整理、回复脚本和文字清理仍会执行，最后检查 JSON 是否符合客户端要求。格式不合格时会报错，不会擅自修补或再次请求模型。",
     "Reply source settings fell back safely": "回复来源设置已使用安全的备用处理",
     "Reply sources were validated against client requirements": "已检查回复来源与客户端格式要求是否兼容",
     "Reply tool name": "承载回复的工具名称",

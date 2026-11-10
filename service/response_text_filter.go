@@ -387,7 +387,7 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 			return nil, newResponseStageError(FailureStageResponseRestore, err)
 		}
 	}
-	if err := w.validateDelivery(prepared, stream); err != nil {
+	if err := w.validateResponseContract(prepared, stream, false); err != nil {
 		return nil, newResponseStageError(FailureStageResponseRestore, err)
 	}
 	w.recordStage(FailureStageResponseRestore, "completed", nil, map[string]any{
@@ -413,18 +413,20 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 	if w.scriptResponse != nil && w.scriptResponse.protocol != nil && w.scriptResponse.protocol.contract == presetProtocolContractJSON {
 		structured = true
 	}
-	w.structured = structured
-	if structured && len(w.config.JSONTextPointers) == 0 {
-		w.recordStage(FailureStageOutputProcessing, "skipped", nil)
-		w.recordStage(FailureStageRegex, "skipped", nil)
-		return prepared, nil
+	if w.scriptResponse != nil && w.scriptResponse.textToClientFormat {
+		// The confirmed reply source produces text. Its formatter, output hook
+		// and text rules must finish before validating the final JSON contract.
+		structured = false
 	}
-	// Stateful output scripts run once per complete text choice. JSON path
-	// transforms are regex-only and cannot re-run an output event per field.
+	w.structured = structured
+	// An output hook's buffer is the complete choice text, even if that text
+	// contains JSON. Never skip a required hook or invoke it once per JSON field.
 	processed := prepared
-	if !structured {
+	if w.scriptResponse != nil {
 		w.onlyOutput = true
+		w.structured = false
 		processed, err = run(prepared)
+		w.structured = structured
 		w.onlyOutput = false
 		if err != nil {
 			if w.stageMode(FailureStageOutputProcessing) != FailurePreserve || w.mandatoryRegex() {
@@ -447,6 +449,13 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 		w.recordStage(FailureStageOutputProcessing, "skipped", nil)
 	}
 	w.checkpoint = processed
+	if structured && len(w.config.JSONTextPointers) == 0 {
+		w.recordStage(FailureStageRegex, "skipped", nil)
+		if err := w.validateDelivery(processed, stream); err != nil {
+			return nil, newResponseStageError(FailureStageResponseValidation, err)
+		}
+		return processed, nil
+	}
 	w.skipOutput = true
 	filtered, err := run(processed)
 	w.skipOutput = false

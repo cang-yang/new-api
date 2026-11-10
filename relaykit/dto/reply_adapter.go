@@ -42,6 +42,9 @@ func (a *ReplyAdapter) Validate() error {
 	if a.Version != 2 || len(a.Containers) > 32 {
 		return fmt.Errorf("unsupported reply adapter version or size")
 	}
+	if a.StructuredOutput && len(a.Containers) == 0 {
+		return fmt.Errorf("structured output conversion requires a declared reply source")
+	}
 	seen := map[string]bool{}
 	for _, c := range a.Containers {
 		if (c.SourcePromptID == "") != (c.SourceFingerprint == "") || len(c.SourcePromptID) > 256 || c.SourceFingerprint != "" && len(c.SourceFingerprint) != 64 {

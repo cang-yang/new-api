@@ -22,8 +22,8 @@ type SillyTavernPresetConfig struct {
 	User               string          `json:"user,omitempty"`
 	Char               string          `json:"char,omitempty"`
 	ParameterPolicy    string          `json:"parameter_policy,omitempty"` // preset (default) or client
-	// Client delivery retains data scripts, but uses the client's native reply
-	// protocol even when it requests plain text without declaring tools.
+	// Deprecated display hint. All modes retain the declared reply transport;
+	// this field never bypasses the preset formatter or other required hooks.
 	DeliveryMode string `json:"delivery_mode,omitempty"` // empty/preset or client
 	// PostProcessing controls the optional final message normalization:
 	// none, merge, semi_strict, strict, or single_user.
@@ -48,6 +48,9 @@ type SillyTavernPresetConfig struct {
 type ReplyAdapter struct {
 	Version    int              `json:"version"`
 	Containers []ReplyContainer `json:"containers"`
+	// StructuredOutput approves text-source conversion, not native provider
+	// schema enforcement. The complete processing chain runs before validation.
+	StructuredOutput bool `json:"structured_output,omitempty"`
 }
 
 type ReplyContainer struct {

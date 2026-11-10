@@ -553,10 +553,14 @@ func TestPresetProtocolTextResponseProjection(t *testing.T) {
 		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{think_nya:{type:"string"},game_content:{type:"string"}},required:["think_nya","game_content"]}, action:async()=>{throw new Error("must not run")}};`},
 	}})
 	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "game_reply", ResponseTarget: "text", ResponseArgument: "game_content"}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}, SillyTavernContext{})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
@@ -575,10 +579,14 @@ func TestPresetProtocolStreamResponseProjection(t *testing.T) {
 		"reply": map[string]any{"enabled": true, "code": `return {name:"game_reply", parameters:{type:"object",properties:{think_nya:{type:"string"},game_content:{type:"string"}},required:["think_nya","game_content"]}, action:async()=>{throw new Error("must not run")}};`},
 	}})
 	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "game_reply", ResponseTarget: "text", ResponseArgument: "game_content"}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}, SillyTavernContext{})
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "go"}}}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
@@ -602,14 +610,18 @@ func TestPresetProtocolJSONResponseProjection(t *testing.T) {
 		"reply": map[string]any{"enabled": true, "code": `return {name:"answer", parameters:{type:"object",properties:{answer:{type:"string"},score:{type:"number"}}}, action:async()=>{throw new Error("must not run")}};`},
 	}})
 	config.ToolProtocol = &dto.SillyTavernToolProtocol{Enabled: true, PresetFinal: "answer", ResponseTarget: "json", ResponseArgument: "payload"}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+	request := &dto.GeneralOpenAIRequest{
 		Model:          "m",
 		ResponseFormat: &dto.ResponseFormat{Type: "json_object"},
 		Messages:       []dto.Message{{Role: "user", Content: "go"}},
-	}, SillyTavernContext{})
+	}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
@@ -631,10 +643,11 @@ func TestPresetProtocolJSONResponseProjectionFromArgument(t *testing.T) {
 		ResponseTarget:   "json",
 		ResponseArgument: "extra",
 	}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+	request := &dto.GeneralOpenAIRequest{
 		Model:    "m",
 		Messages: []dto.Message{{Role: "user", Content: "go"}},
-	}, SillyTavernContext{})
+	}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	require.NotNil(t, trace.Protocol)
 	assert.True(t, trace.Protocol.Activated)
@@ -642,6 +655,9 @@ func TestPresetProtocolJSONResponseProjectionFromArgument(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
@@ -666,16 +682,20 @@ func TestPresetProtocolProjectionRunsBeforeReceiveRegex(t *testing.T) {
 		ResponseTarget:   "text",
 		ResponseArgument: "game_content",
 	}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+	request := &dto.GeneralOpenAIRequest{
 		Model:    "m",
 		Messages: []dto.Message{{Role: "user", Content: "go"}},
-	}, SillyTavernContext{})
+	}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	require.NotNil(t, trace.Protocol)
 	require.True(t, trace.Protocol.Activated)
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, &dto.ResponseTextFilter{
@@ -715,10 +735,11 @@ func TestPresetProtocolProjectsExplicitClientJSONFromOwnedToolArgument(t *testin
 		ResponseTarget:   "json",
 		ResponseArgument: "extra",
 	}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+	request := &dto.GeneralOpenAIRequest{
 		Model:    "m",
 		Messages: []dto.Message{{Role: "user", Content: "go"}},
-	}, SillyTavernContext{})
+	}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	require.NotNil(t, trace.Protocol)
 	assert.True(t, trace.Protocol.Enabled)
@@ -727,6 +748,9 @@ func TestPresetProtocolProjectsExplicitClientJSONFromOwnedToolArgument(t *testin
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
@@ -781,10 +805,11 @@ func TestPresetProtocolProjectsExplicitJSONWithMultipleOwnedTools(t *testing.T) 
 			{Name: "context", ArgumentPointer: new("/query"), OutputKind: "json_object"},
 		}},
 	}
-	_, trace, err := CompileSillyTavernPreset(config, &dto.GeneralOpenAIRequest{
+	request := &dto.GeneralOpenAIRequest{
 		Model:    "m",
 		Messages: []dto.Message{{Role: "user", Content: "go"}},
-	}, SillyTavernContext{})
+	}
+	_, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.NoError(t, err)
 	require.NotNil(t, trace.Protocol)
 	assert.True(t, trace.Protocol.Enabled)
@@ -793,6 +818,9 @@ func TestPresetProtocolProjectsExplicitJSONWithMultipleOwnedTools(t *testing.T) 
 
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
+	requirements, err := SnapshotClientRequirements(request)
+	require.NoError(t, err)
+	context.Set(ClientRequirementsKey, requirements)
 	AttachPresetScriptResponse(context, trace)
 	defer ClosePresetScriptResponse(context)
 	filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
@@ -1094,7 +1122,7 @@ func TestSillyTavernScriptRuntimeRealPreset(t *testing.T) {
 	assert.Contains(t, string(output), "Hello, reader.")
 	assert.NotContains(t, string(output), `"tool_calls":[`)
 	for _, kind := range []string{"tools", "json_object", "json_schema", "tool_history", "name_collision"} {
-		t.Run("native_client_"+kind, func(t *testing.T) {
+		t.Run("reject_unsupported_client_"+kind, func(t *testing.T) {
 			request := &dto.GeneralOpenAIRequest{Model: "example", Messages: []dto.Message{{Role: "user", Content: "CLIENT_CONTEXT_SENTINEL"}}}
 			switch kind {
 			case "json_object", "json_schema":
@@ -1115,29 +1143,9 @@ func TestSillyTavernScriptRuntimeRealPreset(t *testing.T) {
 						dto.Message{Role: "user", Content: "CONTINUATION_SENTINEL"})
 				}
 			}
-			worldbook := &dto.WorldbookConfig{
-				SemanticsVersion: 2, Enabled: true, InjectionMode: dto.WorldbookInjectionBeforeDefinition,
-				Books: []dto.Worldbook{{ID: "native-book", Enabled: true, Entries: []dto.WorldbookEntry{
-					{ID: "native-entry", Enabled: true, Constant: true, Content: "CLIENT_WORLD_BOOK_SENTINEL"},
-				}}},
-			}
-			compiled, trace, err := CompileWorldbook(worldbook, config, request, SillyTavernContext{})
-			require.NoError(t, err)
-			require.NotNil(t, trace.ScriptResponse)
-			require.True(t, trace.ScriptResponse.nativeDelivery)
-			require.NoError(t, validatePresetClientToolContract(request, compiled))
-			encoded, err := common.Marshal(compiled.Messages)
-			require.NoError(t, err)
-			assert.Contains(t, string(encoded), "CLIENT_CONTEXT_SENTINEL")
-			assert.Contains(t, string(encoded), "CLIENT_WORLD_BOOK_SENTINEL")
-			assert.NotContains(t, string(encoded), "<run_tool_replacement>", "the actual request hook, not just static prompts, must execute")
-			assert.Contains(t, string(encoded), "SoliUmbra World Context Registry.", "the actual script-produced context must survive client delivery")
-			assert.Equal(t, request.Tools, compiled.Tools)
-			assert.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
-			if kind == "tool_history" {
-				assert.Equal(t, "user", compiled.Messages[0].Role)
-				assert.Equal(t, request.Messages[1:3], compiled.Messages[1:3])
-			}
+			compiled, _, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.Error(t, err, "incompatible hooks must not bypass the preset's reply transport")
+			require.Nil(t, compiled)
 		})
 	}
 	for _, stream := range []bool{false, true} {
@@ -1226,6 +1234,9 @@ func TestSillyTavernScriptRuntimeResponsePipeline(t *testing.T) {
 		t.Run(strconv.FormatBool(stream), func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			context, _ := gin.CreateTestContext(recorder)
+			requirements, err := SnapshotClientRequirements(request)
+			require.NoError(t, err)
+			context.Set(ClientRequirementsKey, requirements)
 			AttachPresetScriptResponse(context, trace)
 			filter := BeginResponseTextFilterWithPreset(context, nil, config, "m")
 			require.NotNil(t, filter)
@@ -1238,7 +1249,7 @@ func TestSillyTavernScriptRuntimeResponsePipeline(t *testing.T) {
 			} else {
 				context.Writer.Header().Set("Content-Type", "application/json")
 			}
-			_, err := context.Writer.Write([]byte(body))
+			_, err = context.Writer.Write([]byte(body))
 			require.NoError(t, err)
 			require.NoError(t, filter.Finish(context, true))
 			result := recorder.Body.String()

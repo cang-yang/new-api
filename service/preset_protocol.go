@@ -65,84 +65,45 @@ type presetProtocolPlan struct {
 	internal         map[string]bool
 }
 
-// A declared reply adapter distinguishes the preset's delivery mechanism from
-// its data-processing hooks. Native client contracts can then own delivery
-// without turning off those hooks or guessing which business tool is "final".
+// A declared reply adapter identifies the preset's delivery mechanism. It does
+// not authorize replacing that mechanism or bypassing required data hooks.
 func presetSupportsClientDelivery(config *dto.SillyTavernPresetConfig) bool {
 	return config != nil && config.ScriptRuntime != "" && config.ReplyAdapter != nil &&
 		config.ReplyAdapter.Version == 2 && len(config.ReplyAdapter.Containers) > 0 &&
 		(config.ToolText == nil || !config.ToolText.Enabled)
 }
 
-func clientRequiresNativeDelivery(request *dto.GeneralOpenAIRequest) bool {
-	return request != nil && (clientDeclaresToolContract(request) ||
-		request.ResponseFormat != nil && request.ResponseFormat.Type != "" && request.ResponseFormat.Type != "text")
-}
-
-// Scripts receive a context view, not ownership of the client's wire protocol.
-// Protocol-bearing messages are serialized as data in that view; the native
-// tool conversation is retained separately from compiled content. No tool runs here.
-func presetClientContextMessages(messages []dto.Message) ([]dto.Message, error) {
-	result := make([]dto.Message, len(messages))
-	for index, message := range messages {
-		if !clientToolConversationMessage(message) {
-			result[index] = message
-			continue
-		}
-		content, text := message.Content.(string)
-		if !text && message.Content != nil {
-			encoded, err := common.Marshal(message.Content)
-			if err != nil {
-				return nil, err
-			}
-			content = string(encoded)
-		}
-		// Text is already the model-facing representation. Encoding it again
-		// inside a JSON string adds a second escape layer to paths, quotes and
-		// JSON examples. Keep only protocol metadata in the context envelope.
-		message.Content = nil
-		encoded, err := common.Marshal(map[string]any{"context_only": true, "message": message})
-		if err != nil {
-			return nil, err
-		}
-		role := "user"
-		if message.Role == "assistant" {
-			role = "assistant"
-		}
-		result[index] = dto.Message{Role: role, Content: string(encoded) + "\n" + content}
+// A client's no-tool result contract does not disable the preset's private
+// reply transport. Only the registered reply sources may generate calls here;
+// the writer still validates the restored result against the original request.
+func compilePresetWithInternalReply(config *dto.SillyTavernPresetConfig, original *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
+	structured := original.ResponseFormat != nil && original.ResponseFormat.Type != "" && original.ResponseFormat.Type != "text"
+	if structured && !config.ReplyAdapter.StructuredOutput {
+		return nil, PresetCompileTrace{}, newResponseStageError(FailureStagePreflight, fmt.Errorf("client structured output requires a confirmed reply-source format conversion"))
 	}
-	return result, nil
-}
-
-func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, original *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
-	var trace PresetCompileTrace
-	snapshot, err := cloneGeneralRequest(original)
+	// A response format constrains completed text, not genuine business calls.
+	// Keep current business controls for compatible hooks; only explicit none
+	// (or no business tools) makes this an internal-only generation request.
+	internalOnly := clientForbidsToolCalls(original) || len(original.Tools) == 0 && len(original.Functions) == 0
+	if structured {
+		if _, err := SnapshotClientRequirements(original); err != nil {
+			return nil, PresetCompileTrace{}, err
+		}
+	}
+	input, err := cloneGeneralRequest(original)
 	if err != nil {
-		return nil, trace, err
+		return nil, PresetCompileTrace{}, err
 	}
-	input := *snapshot
-	// Only protocol fields are detached. Limits, routing, model parameters,
-	// multimodal parts and message text retain their normal compilation path.
-	input.Tools, input.ToolChoice = nil, nil
-	input.Functions, input.FunctionCall = nil, nil
-	input.ResponseFormat, input.ParallelTooCalls = nil, nil
-	input.Messages, err = presetClientContextMessages(input.Messages)
-	if err != nil {
-		return nil, trace, err
+	if internalOnly {
+		input.Tools, input.ToolChoice = nil, nil
+		input.Functions, input.FunctionCall = nil, nil
 	}
-	explicitHistory := context.ChatHistory
-	if explicitHistory != nil {
-		copied, copyErr := common.DeepCopy(&explicitHistory)
-		if copyErr != nil {
-			return nil, trace, copyErr
-		}
-		explicitHistory = *copied
-		context.ChatHistory, err = presetClientContextMessages(explicitHistory)
-		if err != nil {
-			return nil, trace, err
-		}
+	if structured {
+		input.ResponseFormat = nil
 	}
-	compiled, trace, err := compileSillyTavernPreset(config, &input, context)
+	context.internalReplyOnly = internalOnly
+	context.scriptClient = original
+	compiled, trace, err := compileSillyTavernPreset(config, input, context)
 	if err != nil {
 		return nil, trace, err
 	}
@@ -152,116 +113,100 @@ func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, origin
 			trace.ScriptResponse.tavern.Close()
 		}
 	}()
-	// Keep the complete script-produced context, but never offer its private
-	// reply transport as a client business tool or overwrite a client schema.
-	compiled.Tools, compiled.ToolChoice = snapshot.Tools, snapshot.ToolChoice
-	compiled.Functions, compiled.FunctionCall = snapshot.Functions, snapshot.FunctionCall
-	compiled.ResponseFormat, compiled.ParallelTooCalls = snapshot.ResponseFormat, snapshot.ParallelTooCalls
-	// Internal call/result examples remain context data, not a second live tool
-	// protocol. Providers need not accept history for tools absent from tools[].
-	compiled.Messages, err = presetClientContextMessages(compiled.Messages)
-	if err != nil {
-		return nil, trace, err
+	response := trace.ScriptResponse
+	if response == nil || response.protocol == nil || !response.protocol.audit.Activated {
+		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("internal reply requires a confirmed reply transport"))
 	}
-	// Native calls/results are a protocol obligation, not permission to replay
-	// the entire raw conversation. Place them before the script's current
-	// context so a previous tool result does not become the apparent latest task.
-	history := snapshot.Messages
-	if explicitHistory != nil {
-		history = explicitHistory
-	}
-	var protocolMessages []dto.Message
-	for _, message := range history {
-		if clientToolConversationMessage(message) {
-			protocolMessages = append(protocolMessages, message)
+	if structured {
+		format, err := common.Marshal(original.ResponseFormat)
+		if err != nil {
+			return nil, trace, err
 		}
-	}
-	if len(protocolMessages) > 0 {
-		// Gemini requires a function-call turn to follow a user or function
-		// response turn. Frame history without reviving raw user instructions.
-		protocolMessages = append([]dto.Message{{Role: "user", Content: "The following calls and results are previous client tool history. " +
-			"The compiled preset context after this history contains the current task."}}, protocolMessages...)
-	}
-	compiled.Messages = append(protocolMessages, compiled.Messages...)
-	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Gateway delivery contract: preserve the behavior and current task expressed by the compiled preset context above, including its context records. " +
-		"Complete the latest task represented there; do not restart a historical example or generic opening. " +
-		"Use the client's native response protocol for delivery. " +
-		"Only tools in the current tool/function definitions may be called; respect the current tool choice and parallel-call setting. " +
-		"Private preset reply/context tools shown in earlier examples are context, not tools to call now. " +
-		"When a response format is specified, answer directly in that format without a preset tool wrapper, prose wrapper, or Markdown fence."})
-	if len(compiled.Messages) > 4096 {
-		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("client delivery exceeded the message limit"))
-	}
-	if err := validatePresetClientToolContract(snapshot, compiled); err != nil {
-		return nil, trace, newResponseStageError(FailureStageToolResolution, err)
-	}
-	if explicitHistory != nil {
-		explicit := *snapshot
-		explicit.Messages = explicitHistory
-		if err := validatePresetClientToolContract(&explicit, compiled); err != nil {
-			return nil, trace, newResponseStageError(FailureStageToolResolution, err)
+		if len(compiled.Messages) >= 4096 {
+			return nil, trace, newResponseStageError(FailureStagePreflight, fmt.Errorf("reply format instruction exceeded the message limit"))
 		}
-	}
-	if trace.ScriptResponse != nil {
-		response := trace.ScriptResponse
-		response.nativeDelivery = true
-		// A matching name does not transfer ownership from a client to a preset.
-		for _, tool := range snapshot.Tools {
-			delete(response.ownedTools, tool.Function.Name)
-		}
-		var functions []dto.FunctionRequest
-		_ = common.Unmarshal(snapshot.Functions, &functions)
-		for _, function := range functions {
-			delete(response.ownedTools, function.Name)
-		}
-		previous := response.protocol
-		contract := presetProtocolContractText
-		if snapshot.ResponseFormat != nil && snapshot.ResponseFormat.Type != "" && snapshot.ResponseFormat.Type != "text" {
-			contract = presetProtocolContractJSON
-		}
-		if clientDeclaresToolContract(snapshot) {
-			contract = presetProtocolContractTool
-		}
-		response.protocol = &presetProtocolPlan{
-			audit: PresetProtocolAudit{
-				Enabled: true, Eligible: true, Activated: true, Reason: "client_delivery",
-				Contract: contract, Phase: presetProtocolPhaseFinal, Visibility: presetProtocolVisibilityClientVisible,
-			},
-			contract: contract, phase: presetProtocolPhaseFinal, internal: response.ownedTools,
-		}
-		if previous != nil {
-			response.protocol.containers, response.protocol.contents = previous.containers, previous.contents
-		}
+		// This is the approved conversion contract, not a replay of the raw
+		// business task. The original formatter and processing chain still run.
+		compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "The client requires the following final reply format after the configured preset formatter and cleanup. " +
+			"For a completed text answer, use the preset reply transport as configured. This does not replace any required client business tool call. " +
+			"Put the requested final result in the reply content; do not add Markdown fences around the JSON result. " +
+			"This is a converted format with local validation, not native provider schema enforcement. Final reply format: " + string(format)})
+		trace.Messages = append(trace.Messages, PresetMessageSource{Index: len(compiled.Messages) - 1, Role: "system", Source: "client_format_conversion"})
+		response.textToClientFormat = response.protocol.contract == presetProtocolContractText
+		response.protocol.clientFinal = original.ResponseFormat.Type
+		response.protocol.actions = append(response.protocol.actions, "client_format_conversion")
+		response.protocol.audit.ClientFinal = original.ResponseFormat.Type
+		response.protocol.audit.Actions = append(response.protocol.audit.Actions, "client_format_conversion")
 		response.protocol.audit.Fingerprint = response.protocol.fingerprint()
-		trace.Protocol = &response.protocol.audit
 	}
-	scriptSources := trace.Messages
-	trace.Messages = make([]PresetMessageSource, 0, len(compiled.Messages))
-	for index, message := range compiled.Messages {
-		source := PresetMessageSource{Role: message.Role, Source: "delivery_contract"}
-		switch {
-		case index == 0 && len(protocolMessages) > 0:
-			source.Source = "client_tool_history_context"
-		case index < len(protocolMessages):
-			source.Source = "client_tool_history"
-		case index-len(protocolMessages) < len(scriptSources):
-			source = scriptSources[index-len(protocolMessages)]
+	// Keep history-only definitions when the script selected a reply source.
+	// Some providers require definitions for history; the named selection and
+	// restoration guard keep those tools from becoming callable reply sources.
+	tools := make([]dto.ToolCallRequest, 0, len(response.protocol.containers))
+	for _, tool := range compiled.Tools {
+		if _, declared := response.protocol.containers[tool.Function.Name]; !internalOnly || declared || response.historyTools[tool.Function.Name] {
+			tools = append(tools, tool)
 		}
-		source.Index = index
-		source.Role = message.Role
-		trace.Messages = append(trace.Messages, source)
+	}
+	if len(tools) == 0 {
+		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("internal reply has no callable reply transport"))
+	}
+	compiled.Tools = tools
+	if internalOnly && compiled.ToolChoice == "none" {
+		return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("preset disabled its required reply transport"))
+	}
+	if name := presetToolChoiceName(compiled.ToolChoice); internalOnly && name != "" {
+		if _, declared := response.protocol.containers[name]; !declared {
+			return nil, trace, newResponseStageError(FailureStageToolResolution, fmt.Errorf("preset selected a tool that is not a reply source"))
+		}
+	}
+	if err := response.freezeGenerationContract(original, compiled); err != nil {
+		return nil, trace, err
 	}
 	delivered = true
 	return compiled, trace, nil
 }
 
+func clientForbidsToolCalls(request *dto.GeneralOpenAIRequest) bool {
+	if request.ToolChoice == "none" {
+		return true
+	}
+	var legacy string
+	return len(request.FunctionCall) > 0 && common.Unmarshal(request.FunctionCall, &legacy) == nil && legacy == "none"
+}
+
 // buildPresetProtocolPlan accepts only explicitly declared reply containers.
 // Client business tools and history are protected, not assigned gateway roles.
-func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, config *dto.SillyTavernPresetConfig, response *PresetScriptResponse) (*presetProtocolPlan, int, error) {
+func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, config *dto.SillyTavernPresetConfig, response *PresetScriptResponse, internalReplyOnly bool) (*presetProtocolPlan, int, error) {
 	if original == nil || compiled == nil || config == nil || response == nil {
 		return nil, 0, nil
 	}
-	if err := validatePresetClientToolContractWithMode(original, compiled, 0); err != nil {
+	validationMode := 0
+	clientTools := len(original.Tools) > 0 && !clientForbidsToolCalls(original)
+	if clientTools {
+		// Adding a reply source must not override a business-call decision.
+		// Only hooks that preserve the client's selection can use this branch.
+		beforeChoice, afterChoice := original.ToolChoice, compiled.ToolChoice
+		if beforeChoice == nil {
+			beforeChoice = "auto"
+		}
+		if afterChoice == nil {
+			afterChoice = "auto"
+		}
+		if !samePresetValue(beforeChoice, afterChoice) {
+			return nil, 0, fmt.Errorf("preset conflicts with client tools: tool_choice was changed")
+		}
+		validationMode = 1
+	}
+	if internalReplyOnly {
+		// Only compilePresetWithInternalReply can detach current business
+		// controls. History remains protected even when selection is internal.
+		if len(original.Tools) > 0 || original.ToolChoice != nil || len(original.Functions) > 0 || len(original.FunctionCall) > 0 {
+			return nil, 0, fmt.Errorf("internal reply compilation still contains current client tool controls")
+		}
+		validationMode = 1
+	}
+	if err := validatePresetClientToolContractWithMode(original, compiled, validationMode); err != nil {
 		return nil, 0, err
 	}
 	if err := config.ReplyAdapter.Validate(); err != nil {
@@ -323,8 +268,8 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	if len(candidates) == 0 {
 		return nil, 0, fmt.Errorf("preset generated history tools without a reply source")
 	}
-	if clientDeclaresToolContract(original) {
-		return nil, 0, fmt.Errorf("preset reply transport conflicts with client tools; use plain-chat scope or a preset without internal tools")
+	if !internalReplyOnly && len(original.Functions) > 0 {
+		return nil, 0, fmt.Errorf("legacy client functions cannot be combined with an internal reply transport")
 	}
 	if original.ResponseFormat != nil && original.ResponseFormat.Type == "json_schema" {
 		return nil, 0, fmt.Errorf("reply transport cannot transform a client JSON schema")
@@ -347,12 +292,17 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 			return nil, 0, fmt.Errorf("preset tool %q has no declared reply transport", name)
 		}
 	}
-	if len(response.historyTools) > 0 && compiled.ToolChoice != "none" {
+	if len(response.historyTools) > 0 && compiled.ToolChoice != "none" && !clientTools {
 		if _, exists := declared[presetToolChoiceName(compiled.ToolChoice)]; !exists {
 			return nil, 0, fmt.Errorf("preset must select a reply tool without allowing history-only tools")
 		}
 	}
 	plan := &presetProtocolPlan{phase: presetProtocolPhaseFinal, contents: candidates, internal: map[string]bool{}, visible: map[string]bool{}, containers: declared}
+	if clientTools {
+		for _, tool := range original.Tools {
+			plan.visible[tool.Function.Name] = true
+		}
+	}
 	for _, name := range owned {
 		plan.internal[name] = true
 		if response.historyTools[name] {
@@ -373,7 +323,7 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	}
 	plan.audit = PresetProtocolAudit{Enabled: true, Eligible: true, Activated: true, Reason: "explicit_reply_transport", Contents: candidates, Contract: plan.contract}
 	plan.audit.Fingerprint = plan.fingerprint()
-	return plan, 0, nil
+	return plan, validationMode, nil
 }
 
 func inactivePresetProtocolPlan(enabled, eligible bool, reason string) *presetProtocolPlan {
@@ -523,11 +473,11 @@ func (p *presetProtocolPlan) fingerprint() string {
 		Contents         []string
 		Visibility       string
 		Containers       map[string]dto.ReplyContainer
-		ClientDelivery   bool
+		ClientTools      map[string]bool
 	}{
 		Version:          "reply-adapter-v2",
 		Containers:       p.containers,
-		ClientDelivery:   p.audit.Reason == "client_delivery",
+		ClientTools:      p.visible,
 		Enabled:          p.audit.Enabled,
 		ResponseTarget:   p.responseTarget,
 		ResponseArgument: p.responseArgument,
@@ -573,8 +523,21 @@ func (p *presetProtocolPlan) applyRequest(request *dto.GeneralOpenAIRequest) err
 	if p == nil || !p.audit.Activated || request == nil {
 		return nil
 	}
-	// Request scripts already chose a transport. Never force tool_choice or
-	// remove client definitions here.
+	if len(p.visible) == 0 {
+		return nil
+	}
+	// Required/named means a client business call, never a hidden completion.
+	// Auto may also complete via a declared reply container. Synthetic history
+	// tools are context only and are not offered as callable actions.
+	choice := request.ToolChoice
+	businessOnly := choice == "required" || presetToolChoiceName(choice) != ""
+	request.Tools = slices.DeleteFunc(request.Tools, func(tool dto.ToolCallRequest) bool {
+		if p.visible[tool.Function.Name] {
+			return false
+		}
+		_, reply := p.containers[tool.Function.Name]
+		return businessOnly || !reply
+	})
 	return nil
 }
 
@@ -583,8 +546,19 @@ func (p *presetProtocolPlan) restoreTerminal(response *PresetScriptResponse, bod
 		return body, nil
 	}
 	for _, choice := range mustResponseChoices(body, stream) {
+		if response.generationRequest != nil && len(choice.tools) == 0 && !choice.refused && choice.finish != "length" && choice.finish != "content_filter" {
+			selection := response.generationRequest.ToolChoice
+			if selection == "required" || presetToolChoiceName(selection) != "" {
+				return nil, fmt.Errorf("upstream omitted the required tool call")
+			}
+		}
 		for _, call := range choice.tools {
-			if _, declared := p.containers[call.name.String()]; !declared {
+			if response.generationRequest != nil {
+				if _, offered := findToolByName(response.generationRequest.Tools, call.name.String()); !offered {
+					return nil, fmt.Errorf("upstream called a tool outside the compiled generation contract")
+				}
+			}
+			if _, declared := p.containers[call.name.String()]; !declared && !p.visible[call.name.String()] {
 				return nil, fmt.Errorf("upstream returned an unknown or history-only tool instead of a reply source")
 			}
 		}

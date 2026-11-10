@@ -5848,6 +5848,8 @@
     "Reply restore failure": "回复恢复失败",
     "Reply script failure": "Erreur du script de réponse",
     "Reply source": "Source de réponse",
+    "Convert preset replies to the client's JSON format": "Convertir les réponses du préréglage au format JSON du client",
+    "Enable only after testing this preset with JSON requests. The formatter, output script and text cleanup still run; the final JSON is checked against the client's requirements. Invalid replies are not repaired or retried.": "Activez après avoir testé ce préréglage avec des requêtes JSON. Le formateur, le script de réponse et le nettoyage restent actifs ; le JSON final est validé selon les exigences du client. Les réponses invalides ne sont ni réparées ni régénérées.",
     "Reply source settings fell back safely": "Repli sûr des sources de réponse",
     "Reply sources were validated against client requirements": "Sources vérifiées selon les exigences du client",
     "Reply tool name": "Nom de l’outil de réponse",
