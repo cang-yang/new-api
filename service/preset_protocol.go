@@ -176,6 +176,12 @@ func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, origin
 			protocolMessages = append(protocolMessages, message)
 		}
 	}
+	if len(protocolMessages) > 0 {
+		// Gemini requires a function-call turn to follow a user or function
+		// response turn. Frame history without reviving raw user instructions.
+		protocolMessages = append([]dto.Message{{Role: "user", Content: "The following calls and results are previous client tool history. " +
+			"The compiled preset context after this history contains the current task."}}, protocolMessages...)
+	}
 	compiled.Messages = append(protocolMessages, compiled.Messages...)
 	compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: "Gateway delivery contract: preserve the behavior and current task expressed by the compiled preset context above, including its context records. " +
 		"Complete the latest task represented there; do not restart a historical example or generic opening. " +
@@ -234,6 +240,8 @@ func compilePresetWithClientDelivery(config *dto.SillyTavernPresetConfig, origin
 	for index, message := range compiled.Messages {
 		source := PresetMessageSource{Role: message.Role, Source: "delivery_contract"}
 		switch {
+		case index == 0 && len(protocolMessages) > 0:
+			source.Source = "client_tool_history_context"
 		case index < len(protocolMessages):
 			source.Source = "client_tool_history"
 		case index-len(protocolMessages) < len(scriptSources):

@@ -172,7 +172,7 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 			require.NoError(t, err, "a client protocol must not disable the preset's context script")
 			contextIndex := 0
 			if kind == "history" || kind == "explicit_history" {
-				contextIndex = 2
+				contextIndex = 3
 			}
 			require.Contains(t, compiled.Messages[contextIndex].Content, "SCRIPT_CONTEXT:")
 			require.Contains(t, compiled.Messages[contextIndex].Content, "CLIENT_INPUT")
@@ -189,9 +189,11 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 			withoutRequirements := &ResponseTextFilterWriter{scriptResponse: trace.ScriptResponse}
 			require.ErrorContains(t, withoutRequirements.validateDelivery([]byte(`{"choices":[]}`), false), "saved client requirements")
 			if kind == "history" || kind == "explicit_history" {
-				require.Equal(t, request.Messages[1:3], compiled.Messages[:2],
+				require.Equal(t, "user", compiled.Messages[0].Role,
+					"a native function-call history cannot start with an assistant call on Gemini")
+				require.Equal(t, request.Messages[1:3], compiled.Messages[1:3],
 					"native calls/results must remain intact before the script's current context")
-				require.Contains(t, compiled.Messages[2].Content, "SCRIPT_CONTEXT:")
+				require.Contains(t, compiled.Messages[3].Content, "SCRIPT_CONTEXT:")
 			}
 			after, err := common.Marshal(request)
 			require.NoError(t, err)
@@ -399,16 +401,20 @@ func TestRelayPresetScriptsWithClientDelivery(t *testing.T) {
 				}
 				compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
 				require.NoError(t, err, "completed tool history does not require definitions to be repeated")
-				require.Equal(t, expected, compiled.Messages[:len(expected)])
+				require.Equal(t, "user", compiled.Messages[0].Role)
+				require.NotContains(t, compiled.Messages[0].Content, "LOOKUP_EARLIER",
+					"provider-compatible history framing must not replay raw user input")
+				require.Equal(t, expected, compiled.Messages[1:len(expected)+1])
 				require.Empty(t, compiled.Tools)
 				require.NoError(t, validatePresetClientToolContract(request, compiled))
-				require.Contains(t, compiled.Messages[len(expected)].Content, "LATEST_TASK")
-				require.Contains(t, compiled.Messages[len(expected)].Content, "LATEST_CONSTRAINT")
-				require.Len(t, compiled.Messages, len(expected)+2)
-				for _, source := range trace.Messages[:len(expected)] {
+				require.Contains(t, compiled.Messages[len(expected)+1].Content, "LATEST_TASK")
+				require.Contains(t, compiled.Messages[len(expected)+1].Content, "LATEST_CONSTRAINT")
+				require.Len(t, compiled.Messages, len(expected)+3)
+				for _, source := range trace.Messages[1 : len(expected)+1] {
 					require.Equal(t, "client_tool_history", source.Source)
 				}
-				require.Equal(t, "preset_script", trace.Messages[len(expected)].Source)
+				require.Equal(t, "client_tool_history_context", trace.Messages[0].Source)
+				require.Equal(t, "preset_script", trace.Messages[len(expected)+1].Source)
 				require.Equal(t, "delivery_contract", trace.Messages[len(trace.Messages)-1].Source)
 			})
 		}
