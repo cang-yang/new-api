@@ -51,6 +51,12 @@ type ReplyAdapter struct {
 	// StructuredOutput approves text-source conversion, not native provider
 	// schema enforcement. The complete processing chain runs before validation.
 	StructuredOutput bool `json:"structured_output,omitempty"`
+	// RequireContainer constrains internal generation, not client business calls.
+	// Auto clients may still receive a business call or a restored final answer.
+	RequireContainer bool `json:"require_container,omitempty"`
+	// Client-format output is already formatted text/JSON, not a legacy envelope
+	// that requires whole-text regex extraction before JSON validation.
+	FormattedOutput string `json:"formatted_output,omitempty"` // empty/text or client_format
 }
 
 type ReplyContainer struct {

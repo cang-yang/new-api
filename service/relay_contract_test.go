@@ -17,30 +17,39 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestRelayNativePresetPreservesClientTaskAndDelivery(t *testing.T) {
+func TestRelayCorePresetPreservesClientTaskAndDelivery(t *testing.T) {
 	hook, err := os.ReadFile("../scripts/presets/meowssiah-relay-request.js")
+	require.NoError(t, err)
+	formatter, err := os.ReadFile("../scripts/presets/meowssiah-relay-formatter.js")
 	require.NoError(t, err)
 	preset := map[string]any{
 		"prompts": []any{
 			map[string]any{"identifier": "main", "role": "system", "content": "Preset background: the library opens at nine."},
+			map[string]any{"identifier": "reply", "role": "system", "content": "Use the declared reply transport for final answers."},
 			map[string]any{"identifier": "chatHistory", "marker": true},
 		},
 		"prompt_order": []any{map[string]any{"character_id": 100001, "order": []any{
 			map[string]any{"identifier": "main", "enabled": true},
+			map[string]any{"identifier": "reply", "enabled": true},
 			map[string]any{"identifier": "chatHistory", "enabled": true},
 		}}},
-		"extensions": map[string]any{"SPreset": map[string]any{
+		"extensions": map[string]any{"new_api_relay": map[string]any{"revision": "relay-core-2", "reply_tool": "preset_reply"}, "SPreset": map[string]any{
+			"ToolBindings":           map[string]any{"reply": map[string]any{"enabled": true, "code": `return {name:'preset_reply',parameters:{type:'object'}};`}},
 			"FinalRequestProcessing": map[string]any{"enabled": true, "script": string(hook)},
-			"OutputPreprocessing":    map[string]any{"enabled": true, "script": `({buffer}) => ({output: buffer, hold: ''})`},
+			"OutputPreprocessing": map[string]any{"enabled": true, "script": `({buffer}) => ({output: buffer, hold: ''})`, "consumeToolCalls": true,
+				"toolCallFormatter": map[string]any{"enabled": true, "script": string(formatter)}},
 		}},
 	}
 	encoded, err := common.Marshal(preset)
 	require.NoError(t, err)
-	config := &dto.SillyTavernPresetConfig{Preset: encoded, ScriptRuntime: "spreset-v1", ParameterPolicy: "client"}
-	for _, variant := range []string{"text", "schema", "none", "named", "history"} {
+	config := &dto.SillyTavernPresetConfig{Preset: encoded, ScriptRuntime: "spreset-v1", ParameterPolicy: "client",
+		ReplyAdapter: &dto.ReplyAdapter{Version: 2, StructuredOutput: true, RequireContainer: true, FormattedOutput: "client_format",
+			Containers: []dto.ReplyContainer{{Name: "preset_reply", Formatter: true, OutputKind: "text"}}}}
+	for _, variant := range []string{"text", "schema", "none", "auto", "required", "named", "history"} {
 		t.Run(variant, func(t *testing.T) {
 			request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{
 				{Role: "system", Content: "Only update variables; do not continue the story."},
@@ -49,9 +58,12 @@ func TestRelayNativePresetPreservesClientTaskAndDelivery(t *testing.T) {
 			if variant == "schema" {
 				request.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"patch","schema":{"type":"object","properties":{"json_patch":{"type":"array"}},"required":["json_patch"]}}`)}
 			}
-			if variant == "none" || variant == "named" || variant == "history" {
+			if variant == "none" || variant == "named" || variant == "history" || variant == "auto" || variant == "required" {
 				request.Tools = []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}}}
 				request.ToolChoice = "none"
+				if variant == "auto" || variant == "required" {
+					request.ToolChoice = variant
+				}
 				if variant == "named" {
 					request.ToolChoice = map[string]any{"type": "function", "function": map[string]string{"name": "lookup"}}
 				}
@@ -66,26 +78,65 @@ func TestRelayNativePresetPreservesClientTaskAndDelivery(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, trace.ScriptResponse)
 			require.True(t, trace.ScriptResponse.requestHookExecuted)
-			require.Empty(t, trace.ScriptResponse.ownedTools)
-			require.Nil(t, trace.ScriptResponse.generationRequest, "native schema must not use prompt-only format conversion")
-			require.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
-			require.True(t, samePresetValue(request.ToolChoice, compiled.ToolChoice))
-			require.Equal(t, request.Tools, compiled.Tools)
+			require.True(t, trace.ScriptResponse.ownedTools["preset_reply"])
+			require.NotNil(t, trace.ScriptResponse.generationRequest, "the preset reply transport must remain active")
+			require.Nil(t, compiled.ResponseFormat, "the explicit format is converted and locally validated, not advertised as native enforcement")
+			require.False(t, trace.ScriptResponse.textToClientFormat, "client-format output must not enter legacy whole-text JSON cleanup")
+			if variant == "named" || variant == "required" {
+				require.True(t, samePresetValue(request.ToolChoice, compiled.ToolChoice))
+				require.Equal(t, request.Tools, compiled.Tools)
+			} else if variant == "auto" {
+				require.Equal(t, "required", compiled.ToolChoice, "auto may choose business calls or an internal completion, never bypass a necessary container")
+				require.Len(t, compiled.Tools, 2)
+			} else {
+				require.Equal(t, "preset_reply", presetToolChoiceName(compiled.ToolChoice))
+				require.Len(t, compiled.Tools, 1)
+			}
 			for _, original := range request.Messages {
 				require.Contains(t, compiled.Messages, original, "client task and history must survive whole")
 			}
-			require.Contains(t, compiled.Messages[len(compiled.Messages)-1].StringContent(), "中转站请求规则")
+			require.Contains(t, fmt.Sprint(compiled.Messages), "预设内部回复约定")
 			requirements, err := SnapshotClientRequirements(request)
 			require.NoError(t, err)
-			require.NoError(t, SealClientRequirements(requirements, compiled, nil, trace.ScriptResponse))
+			filter := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "literal-tag", Stage: "receive", Action: "replace", Pattern: `/<game>/g`, Replacement: "CORRUPTED"}}}
+			require.NoError(t, SealClientRequirements(requirements, compiled, filter, trace.ScriptResponse))
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Set(ClientRequirementsKey, requirements)
+			AttachPresetScriptResponse(ctx, trace)
+			writer := BeginResponseTextFilterWithPreset(ctx, filter, config, request.Model)
+			require.NotNil(t, writer)
+			if variant != "named" && variant != "required" {
+				_, err = writer.processResponse([]byte(`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"bare reply"}}]}`), false)
+				require.ErrorContains(t, err, "omitted the required tool call")
+				text := "The library opens at nine."
+				if variant == "schema" {
+					text = `{"json_patch":[{"op":"replace","path":"/value","value":"<game>C:\\notes and literal \\n</game>"}]}`
+				}
+				args, err := common.Marshal(map[string]string{"think_nya": "not the final result", "game_content": text})
+				require.NoError(t, err)
+				body := []byte(fmt.Sprintf(`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"reply","type":"function","function":{"name":"preset_reply","arguments":%q}}]}}]}`, args))
+				result, err := writer.processResponse(body, false)
+				require.NoError(t, err)
+				choices, err := responseChoices(result, false)
+				require.NoError(t, err)
+				require.Equal(t, text, choices["0"].text.String(), "the formatter must deliver final content, not notes or an extra wrapper")
+				require.Empty(t, choices["0"].tools)
+				require.True(t, writer.outputProcessed)
+			} else {
+				body := []byte(`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"lookup","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`)
+				result, err := writer.processResponse(body, false)
+				require.NoError(t, err)
+				require.Equal(t, body, result, "business calls must reach the client unchanged")
+				require.False(t, writer.outputProcessed)
+			}
 		})
 	}
 }
 
-func TestRelayNativeExportedPreset(t *testing.T) {
-	path := os.Getenv("NEW_API_NATIVE_CHANNEL")
+func TestRelayCoreExportedPreset(t *testing.T) {
+	path := os.Getenv("NEW_API_CORE_CHANNEL")
 	if path == "" {
-		t.Skip("set NEW_API_NATIVE_CHANNEL to a locally prepared native channel export")
+		t.Skip("set NEW_API_CORE_CHANNEL to a locally prepared relay-core channel export")
 	}
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -109,11 +160,12 @@ func TestRelayNativeExportedPreset(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, trace.ScriptResponse)
 	require.True(t, trace.ScriptResponse.requestHookExecuted)
-	require.Empty(t, trace.ScriptResponse.ownedTools)
-	require.Nil(t, trace.ScriptResponse.generationRequest)
-	require.Equal(t, before.ResponseFormat, compiled.ResponseFormat)
-	require.True(t, samePresetValue(before.Tools, compiled.Tools))
-	require.True(t, samePresetValue(before.ToolChoice, compiled.ToolChoice))
+	require.NotEmpty(t, trace.ScriptResponse.ownedTools)
+	require.NotNil(t, trace.ScriptResponse.generationRequest)
+	require.True(t, settings.SillyTavernPreset.ReplyAdapter.RequireContainer)
+	require.Equal(t, "client_format", settings.SillyTavernPreset.ReplyAdapter.FormattedOutput)
+	require.True(t, trace.ScriptResponse.settings.OutputPreprocessing.ConsumeToolCalls)
+	require.True(t, trace.ScriptResponse.settings.OutputPreprocessing.ToolCallFormatter.Enabled)
 	requirements, err := SnapshotClientRequirements(before)
 	require.NoError(t, err)
 	require.NoError(t, SealClientRequirements(requirements, compiled, settings.ResponseTextFilter, trace.ScriptResponse))
@@ -121,6 +173,66 @@ func TestRelayNativeExportedPreset(t *testing.T) {
 		for _, message := range before.Messages {
 			require.Contains(t, compiled.Messages, message)
 		}
+	}
+	t.Run("worldbook anchors survive the actual request hook", func(t *testing.T) {
+		client := &dto.GeneralOpenAIRequest{Model: request.Model, Messages: []dto.Message{
+			{Role: "user", Content: "first"}, {Role: "assistant", Content: "reply"}, {Role: "user", Content: "worldbook-position"},
+		}}
+		lore := &dto.WorldbookConfig{Enabled: true, SemanticsVersion: 2, Books: []dto.Worldbook{{ID: "placement", Enabled: true, Entries: []dto.WorldbookEntry{
+			{ID: "prelude", Enabled: true, Constant: true, Content: "prelude-position", InjectionMode: dto.WorldbookInjectionSystemPrelude},
+			{ID: "near-low", Enabled: true, Constant: true, Content: "worldbook-position", Priority: 1, InjectionMode: dto.WorldbookInjectionBeforeLastUser},
+			{ID: "near-high", Enabled: true, Constant: true, Content: "higher-position", Priority: 2, InjectionMode: dto.WorldbookInjectionBeforeLastUser},
+		}}}}
+		compiled, trace, err := CompileWorldbook(lore, settings.SillyTavernPreset, client, SillyTavernContext{})
+		require.NoError(t, err)
+		prelude := slices.IndexFunc(compiled.Messages, func(m dto.Message) bool { return m.Role == "system" && m.Content == "prelude-position" })
+		first := slices.IndexFunc(compiled.Messages, func(m dto.Message) bool { return m.Role == "user" && m.Content == "first" })
+		require.GreaterOrEqual(t, prelude, 0)
+		require.Less(t, prelude, first)
+		last := slices.IndexFunc(compiled.Messages, func(m dto.Message) bool { return m.Role == "user" && m.Content == "worldbook-position" })
+		require.Greater(t, last, 0, "identical client text is not treated as a worldbook duplicate")
+		require.Equal(t, "system", compiled.Messages[last-1].Role)
+		require.Equal(t, "worldbook-position\n\nhigher-position", compiled.Messages[last-1].Content)
+		require.True(t, trace.ScriptResponse.requestHookExecuted)
+	})
+	// Exercise this exact asset's actual output hook and formatter for both
+	// delivery modes. Compilation alone cannot establish that restoration works.
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restore-stream-%t", stream), func(t *testing.T) {
+			client := &dto.GeneralOpenAIRequest{Model: request.Model, Stream: new(stream), ToolChoice: "none",
+				Messages:       []dto.Message{{Role: "user", Content: "Return the exact nested JSON requested by the client."}},
+				ResponseFormat: &dto.ResponseFormat{Type: "json_object"}}
+			compiled, trace, err := CompileWorldbook(settings.Worldbook, settings.SillyTavernPreset, client, SillyTavernContext{})
+			require.NoError(t, err)
+			requirements, err := SnapshotClientRequirements(client)
+			require.NoError(t, err)
+			require.NoError(t, SealClientRequirements(requirements, compiled, settings.ResponseTextFilter, trace.ScriptResponse))
+			expected := `{"nested":[null,{"path":"C:\\notes","literal":"\\n","markup":"<game>keep</game>"}]}`
+			args, err := common.Marshal(map[string]string{"think_nya": "auxiliary, not the result", "game_content": expected})
+			require.NoError(t, err)
+			call := map[string]any{"id": "reply-actual", "type": "function", "function": map[string]string{"name": "soliumbra_reply", "arguments": string(args)}}
+			field := "message"
+			if stream {
+				field, call["index"] = "delta", 0
+			}
+			body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "tool_calls": []any{call}}}}})
+			require.NoError(t, err)
+			if stream {
+				body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+			}
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Set(ClientRequirementsKey, requirements)
+			AttachPresetScriptResponse(ctx, trace)
+			writer := BeginResponseTextFilterWithPreset(ctx, settings.ResponseTextFilter, settings.SillyTavernPreset, client.Model)
+			require.NotNil(t, writer)
+			result, err := writer.processResponse(body, stream)
+			require.NoError(t, err)
+			choices, err := responseChoices(result, stream)
+			require.NoError(t, err)
+			require.Equal(t, expected, choices["0"].text.String())
+			require.Empty(t, choices["0"].tools)
+			require.True(t, writer.outputProcessed)
+		})
 	}
 }
 
@@ -257,8 +369,9 @@ func TestRelayExportedChannelCompilation(t *testing.T) {
 }
 
 // The optional browser bridge keeps authentication in an already logged-in
-// browser. Only this neutral fixture is sent to the model, never private preset
-// prompts. This is live acceptance of the generic contract, not of every preset.
+// browser. By default this uses a neutral fixture. NEW_API_CORE_CHANNEL opts in
+// to the user's locally prepared preset/channel edition; it never updates a
+// production channel or exports authentication through the local bridge.
 func TestRelayLiveContractAcceptance(t *testing.T) {
 	if os.Getenv("NEW_API_ACCEPTANCE_LIVE") != "1" {
 		t.Skip("set NEW_API_ACCEPTANCE_LIVE=1 and connect the authenticated browser bridge")
@@ -298,7 +411,7 @@ func TestRelayLiveContractAcceptance(t *testing.T) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}))
-	defer server.Close()
+	defer func() { cancel(); server.Close() }()
 	t.Logf("LIVE_BRIDGE=%s", server.URL)
 	config := scriptPresetConfig(t, map[string]any{
 		"ToolBindings": map[string]any{"reply": map[string]any{"enabled": true,
@@ -318,12 +431,33 @@ func TestRelayLiveContractAcceptance(t *testing.T) {
 		Entries: []dto.WorldbookEntry{{ID: "code", Enabled: true, Keys: []string{"library"}, Content: "The library access code is MAPLE-7."}}}}}
 	filter := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "answer", Stage: "receive", Action: "extract",
 		Pattern: `/<answer>([\s\S]*?)<\/answer>/g`, Replacement: "$1", MissingMatch: "error"}}}
+	if path := os.Getenv("NEW_API_CORE_CHANNEL"); path != "" {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var channel struct {
+			Settings string `json:"settings"`
+		}
+		require.NoError(t, common.Unmarshal(data, &channel))
+		var settings dto.ChannelOtherSettings
+		require.NoError(t, common.UnmarshalJsonStr(channel.Settings, &settings))
+		config, filter = settings.SillyTavernPreset, settings.ResponseTextFilter
+		require.NotNil(t, config.ReplyAdapter)
+		require.True(t, config.ReplyAdapter.RequireContainer)
+		// Keep the actual channel books, then add a bounded benign fixture for
+		// deterministic activation. No acceptance entry is saved to the channel.
+		if settings.Worldbook != nil && settings.Worldbook.Enabled {
+			settings.Worldbook.Books = append(settings.Worldbook.Books, lore.Books...)
+			lore = settings.Worldbook
+		}
+		t.Logf("actual relay edition acceptance: channel_sha256=%x", sha256.Sum256(data))
+	}
 	run := func(request *dto.GeneralOpenAIRequest) *responseChoice {
 		t.Helper()
 		compiled, trace, err := CompileWorldbook(lore, config, request, SillyTavernContext{})
 		require.NoError(t, err)
 		require.True(t, trace.ScriptResponse.requestHookExecuted)
 		require.True(t, trace.ScriptResponse.requestMessagesChanged)
+		require.NotEmpty(t, trace.ScriptResponse.ownedTools)
 		requirements, err := SnapshotClientRequirements(request)
 		require.NoError(t, err)
 		require.NoError(t, SealClientRequirements(requirements, compiled, filter, trace.ScriptResponse))
@@ -347,6 +481,9 @@ func TestRelayLiveContractAcceptance(t *testing.T) {
 		writer := BeginResponseTextFilterWithPreset(ctx, filter, config, request.Model)
 		require.NotNil(t, writer)
 		stream := request.Stream != nil && *request.Stream
+		upstream, err := responseChoices([]byte(response.Body), stream)
+		require.NoError(t, err)
+		require.NotEmpty(t, upstream["0"].tools, "live acceptance must prove tools were actually used, not just a successful text answer")
 		processed, err := writer.processResponse([]byte(response.Body), stream)
 		require.NoError(t, err)
 		choices, err := responseChoices(processed, stream)
@@ -362,47 +499,64 @@ func TestRelayLiveContractAcceptance(t *testing.T) {
 	newRequest := func(prompt string) *dto.GeneralOpenAIRequest {
 		return &dto.GeneralOpenAIRequest{Model: "gemini-3.8-flash", ToolChoice: "none", Messages: []dto.Message{{Role: "user", Content: prompt}}}
 	}
-	plain := newRequest("At the library, my favorite color is blue. Reply with only the access code.")
-	first := run(plain)
-	require.Equal(t, "MAPLE-7", strings.TrimSpace(first.text.String()))
-	plain.Messages = append(plain.Messages, dto.Message{Role: "assistant", Content: first.text.String()}, dto.Message{Role: "user", Content: "What color did I give you? Reply with one word."})
-	require.Equal(t, "blue", strings.ToLower(strings.TrimSpace(run(plain).text.String())))
-	structured := newRequest(`Return {"opens_at":9,"note":"C:\\notes\\new.txt"} exactly.`)
-	structured.Stream = new(true)
-	structured.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"hours","schema":{"type":"object","properties":{"opens_at":{"const":9},"note":{"const":"C:\\notes\\new.txt"}},"required":["opens_at","note"],"additionalProperties":false}}`)}
-	require.JSONEq(t, `{"opens_at":9,"note":"C:\\notes\\new.txt"}`, run(structured).text.String())
-	variable := newRequest("The client state is {\"count\":2}. Return one JSON Patch replace operation setting count to 3, and nothing else.")
-	variable.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"patch","schema":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object","properties":{"op":{"const":"replace"},"path":{"const":"/count"},"value":{"const":3}},"required":["op","path","value"],"additionalProperties":false}}}`)}
-	var patch []struct {
-		Op    string `json:"op"`
-		Path  string `json:"path"`
-		Value int    `json:"value"`
-	}
-	require.NoError(t, common.Unmarshal([]byte(run(variable).text.String()), &patch))
-	require.Len(t, patch, 1)
-	require.Equal(t, "replace", patch[0].Op)
-	require.Equal(t, "/count", patch[0].Path)
-	clientState := map[string]int{"count": 2}
-	clientState["count"] = patch[0].Value
-	require.Equal(t, 3, clientState["count"], "the client must be able to apply the returned value")
-	for _, selection := range []any{"auto", "required", map[string]any{"type": "function", "function": map[string]string{"name": "lookup"}}} {
-		business := newRequest("Call lookup to get the live library opening hour for place library. Do not answer from memory.")
-		business.Tools = []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Description: "Get the live opening hour for a place.", Parameters: []byte(`{"type":"object","properties":{"place":{"type":"string"}},"required":["place"]}`)}}}
-		business.ToolChoice = selection
-		businessReply := run(business)
-		require.Len(t, businessReply.tools, 1)
-		call := businessReply.tools["0"]
-		require.NotNil(t, call)
-		require.Equal(t, "lookup", call.name.String())
-		require.JSONEq(t, `{"place":"library"}`, call.arguments.String())
-		if selection != "auto" {
-			continue
+	if os.Getenv("NEW_API_ACCEPTANCE_CASES") != "ending" {
+		plain := newRequest("At the library, my favorite color is blue. Reply with only the access code.")
+		first := run(plain)
+		require.Equal(t, "MAPLE-7", strings.TrimSpace(first.text.String()))
+		plain.Messages = append(plain.Messages, dto.Message{Role: "assistant", Content: first.text.String()}, dto.Message{Role: "user", Content: "What color did I give you? Reply with one word."})
+		require.Equal(t, "blue", strings.ToLower(strings.TrimSpace(run(plain).text.String())))
+		structured := newRequest(`Return {"opens_at":9,"note":"C:\\notes\\new.txt"} exactly.`)
+		structured.Stream = new(true)
+		structured.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"hours","schema":{"type":"object","properties":{"opens_at":{"const":9},"note":{"const":"C:\\notes\\new.txt"}},"required":["opens_at","note"],"additionalProperties":false}}`)}
+		require.JSONEq(t, `{"opens_at":9,"note":"C:\\notes\\new.txt"}`, run(structured).text.String())
+		variable := newRequest("The client state is {\"count\":2}. Return one JSON Patch replace operation setting count to 3, and nothing else.")
+		variable.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"patch","schema":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object","properties":{"op":{"const":"replace"},"path":{"const":"/count"},"value":{"const":3}},"required":["op","path","value"],"additionalProperties":false}}}`)}
+		var patch []struct {
+			Op    string `json:"op"`
+			Path  string `json:"path"`
+			Value int    `json:"value"`
 		}
-		calls, err := common.Marshal([]any{map[string]any{"id": call.id, "type": "function", "function": map[string]string{"name": call.name.String(), "arguments": call.arguments.String()}}})
-		require.NoError(t, err)
-		business.Messages = append(business.Messages, dto.Message{Role: "assistant", ToolCalls: calls}, dto.Message{Role: "tool", ToolCallId: call.id, Content: `{"opens_at":11}`}, dto.Message{Role: "user", Content: "Use the tool result. Reply with only its opening-hour integer."})
-		business.ToolChoice = "none"
-		require.Equal(t, "11", strings.TrimSpace(run(business).text.String()))
+		require.NoError(t, common.Unmarshal([]byte(run(variable).text.String()), &patch))
+		require.Len(t, patch, 1)
+		require.Equal(t, "replace", patch[0].Op)
+		require.Equal(t, "/count", patch[0].Path)
+		clientState := map[string]int{"count": 2}
+		clientState["count"] = patch[0].Value
+		require.Equal(t, 3, clientState["count"], "the client must be able to apply the returned value")
+		for _, selection := range []any{"auto", "required", map[string]any{"type": "function", "function": map[string]string{"name": "lookup"}}} {
+			business := newRequest("Call lookup to get the live library opening hour for place library. Do not answer from memory.")
+			business.Tools = []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Description: "Get the live opening hour for a place.", Parameters: []byte(`{"type":"object","properties":{"place":{"type":"string"}},"required":["place"]}`)}}}
+			business.ToolChoice = selection
+			businessReply := run(business)
+			require.Len(t, businessReply.tools, 1)
+			call := businessReply.tools["0"]
+			require.NotNil(t, call)
+			require.Equal(t, "lookup", call.name.String())
+			require.JSONEq(t, `{"place":"library"}`, call.arguments.String())
+			if selection != "auto" {
+				continue
+			}
+			calls, err := common.Marshal([]any{map[string]any{"id": call.id, "type": "function", "function": map[string]string{"name": call.name.String(), "arguments": call.arguments.String()}}})
+			require.NoError(t, err)
+			business.Messages = append(business.Messages, dto.Message{Role: "assistant", ToolCalls: calls}, dto.Message{Role: "tool", ToolCallId: call.id, Content: `{"opens_at":11}`}, dto.Message{Role: "user", Content: "Use the tool result. Reply with only its opening-hour integer."})
+			business.ToolChoice = "none"
+			require.Equal(t, "11", strings.TrimSpace(run(business).text.String()))
+		}
+	}
+	if os.Getenv("NEW_API_CORE_CHANNEL") != "" {
+		literal := newRequest(`Return exactly this text with no explanation: <game>literal \\n C:\notes</game>`)
+		assert.Equal(t, `<game>literal \\n C:\notes</game>`, strings.TrimSpace(run(literal).text.String()), "verbatim model accuracy is checked independently; do not hide this failure or skip the remaining business cases")
+		variable := newRequest(`The client state is {"credits":10,"items":[]}. Spend 2 credits and add "map". Return exactly the resulting state as JSON, not a story or explanation.`)
+		variable.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"state","schema":{"type":"object","properties":{"credits":{"const":8},"items":{"type":"array","items":{"const":"map"},"minItems":1,"maxItems":1}},"required":["credits","items"],"additionalProperties":false}}`)}
+		require.JSONEq(t, `{"credits":8,"items":["map"]}`, run(variable).text.String())
+		unchanged := newRequest(`The client state is {"credits":8,"items":["map"]}. Nothing happened. Return a JSON Patch array describing necessary changes, and nothing else. Do not invent a change.`)
+		unchanged.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"no_changes","schema":{"type":"array","maxItems":0}}`)}
+		require.JSONEq(t, `[]`, run(unchanged).text.String())
+		creative := newRequest("Write two short sentences about SoliUmbra finding a blue door in a library. Only the story, no notes or summary.")
+		story := run(creative).text.String()
+		require.NotEmpty(t, story)
+		require.NotContains(t, story, "<think_nya")
+		require.NotContains(t, story, "<game>")
 	}
 }
 
@@ -724,14 +878,17 @@ func TestRelayUpgradedImportedCoreOffline(t *testing.T) {
 }
 
 func TestPresetRequestHookClientView(t *testing.T) {
-	settings := map[string]any{"FinalRequestProcessing": map[string]any{"enabled": true, "script": `({request,client}) => {
+	settings := map[string]any{"FinalRequestProcessing": map[string]any{"enabled": true, "script": `({request,client,preset}) => {
 		if (!Object.isFrozen(client) || !Object.isFrozen(client.messages) || !Object.isFrozen(client.tools[0].function)) throw Error("mutable client view");
+		if (!Object.isFrozen(preset) || !Object.isFrozen(preset.prompt_order[0].order)) throw Error("mutable preset view");
+		if (preset.prompt_order[0].order.find(p=>p.identifier==="reply").enabled !== false) throw Error("entry override missing");
 		if (client.messages.length !== 1 || client.messages[0].content !== "effective history") throw Error("wrong history");
 		if (client.tools.length !== 1 || client.tools[0].function.name !== "lookup") throw Error("wrong client tools");
-		if (request.messages.length <= client.messages.length) throw Error("preset assembly missing");
+		if (request.messages.length < client.messages.length) throw Error("preset assembly missing");
 		request.messages.push({role:"system",content:"client-view-verified"}); return request;
 	}`}}
 	config := scriptPresetConfig(t, settings)
+	config.EntryOverrides = map[string]bool{"reply": false}
 	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "raw history"}},
 		Tools: []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}}}, ToolChoice: "auto"}
 	before, err := common.Marshal(request)
@@ -743,9 +900,9 @@ func TestPresetRequestHookClientView(t *testing.T) {
 	after, err := common.Marshal(request)
 	require.NoError(t, err)
 	require.Equal(t, before, after)
-	for _, mutation := range []string{`client.messages[0].content="changed"`, `client.tools.push({})`, `client.tools[0].function.name="claimed"`} {
+	for _, mutation := range []string{`client.messages[0].content="changed"`, `client.tools.push({})`, `client.tools[0].function.name="claimed"`, `preset.prompt_order[0].order.push({})`, `preset.prompts[0].content="changed"`} {
 		t.Run(mutation, func(t *testing.T) {
-			settings["FinalRequestProcessing"].(map[string]any)["script"] = `({request,client})=>{` + mutation + `;return request;}`
+			settings["FinalRequestProcessing"].(map[string]any)["script"] = `({request,client,preset})=>{` + mutation + `;return request;}`
 			_, _, err := CompileSillyTavernPreset(scriptPresetConfig(t, settings), request, SillyTavernContext{})
 			require.ErrorContains(t, err, "preset script processing failed")
 			after, err := common.Marshal(request)

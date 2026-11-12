@@ -39,6 +39,8 @@ export const replyAdapterSchema = z
   .object({
     version: z.literal(2),
     structured_output: z.boolean().optional(),
+    require_container: z.boolean().optional(),
+    formatted_output: z.enum(['text', 'client_format']).optional(),
     containers: z
       .array(
         z
@@ -67,7 +69,8 @@ export const replyAdapterSchema = z
     (adapter) =>
       new Set(adapter.containers.map((item) => item.name)).size ===
         adapter.containers.length &&
-      (!adapter.structured_output || adapter.containers.length > 0)
+      (!(adapter.structured_output || adapter.require_container) ||
+        adapter.containers.length > 0)
   )
 
 export function validReplyAdapter(config: Record<string, unknown>): boolean {
@@ -89,6 +92,32 @@ export type ReplyAdapter = {
   version: 2
   containers: ReplyContainer[]
   structured_output?: boolean
+  require_container?: boolean
+  formatted_output?: 'text' | 'client_format'
+}
+
+// Refreshing an unchanged, pinned source must not erase its approved delivery
+// contract. A different source needs fresh approval rather than inheriting it.
+export function adoptDetectedReplySources(
+  config: Record<string, unknown>,
+  sources: ReplyContainer[]
+): ReplyAdapter {
+  const current = migrateReplyAdapter(config).adapter
+  const unchanged =
+    current?.containers.length === sources.length &&
+    sources.every((source) =>
+      current.containers.some(
+        (row) =>
+          !!source.source_fingerprint &&
+          row.name === source.name &&
+          row.source_prompt_id === source.source_prompt_id &&
+          row.source_fingerprint === source.source_fingerprint &&
+          row.argument_pointer === source.argument_pointer &&
+          !!row.formatter === !!source.formatter &&
+          row.output_kind === source.output_kind
+      )
+    )
+  return { ...(unchanged ? current : {}), version: 2, containers: sources }
 }
 export type ReplySampleField = {
   pointer: string

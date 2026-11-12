@@ -41,6 +41,8 @@ test('JSON conversion is explicit and retained when editing a reply source', asy
     reply_adapter: {
       version: 2,
       structured_output: true,
+      require_container: true,
+      formatted_output: 'client_format',
       containers: [{ name: 'reply', formatter: true, output_kind: 'text' }],
     },
   }

@@ -69,7 +69,7 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
-      - name: Test relay-native preset derivative
+      - name: Test relay preset core and delivery contract
         run: node --test scripts/presets/meowssiah-relay.test.mjs
 
       - name: Test frontend

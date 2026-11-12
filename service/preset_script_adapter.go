@@ -428,14 +428,16 @@ func applyPresetRequestScriptWithHost(script string, request *dto.GeneralOpenAIR
 	}
 	var after map[string]json.RawMessage
 	source := strings.TrimRight(strings.TrimSpace(script), "; \r\n\t")
-	source = "input => { if (input.client) freezePresetDataView(input.client); const result = (" + source + ")(input); return result === undefined ? input.request : result; }"
-	var client json.RawMessage
+	source = "input => { if (input.client) freezePresetDataView(input.client); if (input.preset) freezePresetDataView(input.preset); const result = (" + source + ")(input); return result === undefined ? input.request : result; }"
+	var client, preset json.RawMessage
 	if host != nil {
 		client = host.Client
+		preset = host.Settings
 	}
 	err = runPresetScriptWithHost(source, map[string]any{
 		"request": json.RawMessage(encoded), "model": request.Model,
 		"client": client,
+		"preset": preset,
 		"source": "openai", "stream": request.Stream != nil && *request.Stream, "preview": false,
 		"provider": map[string]string{"adapter": "openai", "model": request.Model},
 	}, &after, deadline, host)

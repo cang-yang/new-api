@@ -63,6 +63,7 @@ type presetProtocolPlan struct {
 	visible          map[string]bool
 	containers       map[string]dto.ReplyContainer
 	internal         map[string]bool
+	requireContainer bool
 }
 
 // A declared reply adapter identifies the preset's delivery mechanism. It does
@@ -132,7 +133,7 @@ func compilePresetWithInternalReply(config *dto.SillyTavernPresetConfig, origina
 			"Put the requested final result in the reply content; do not add Markdown fences around the JSON result. " +
 			"This is a converted format with local validation, not native provider schema enforcement. Final reply format: " + string(format)})
 		trace.Messages = append(trace.Messages, PresetMessageSource{Index: len(compiled.Messages) - 1, Role: "system", Source: "client_format_conversion"})
-		response.textToClientFormat = response.protocol.contract == presetProtocolContractText
+		response.textToClientFormat = response.protocol.contract == presetProtocolContractText && config.ReplyAdapter.FormattedOutput != "client_format"
 		response.protocol.clientFinal = original.ResponseFormat.Type
 		response.protocol.actions = append(response.protocol.actions, "client_format_conversion")
 		response.protocol.audit.ClientFinal = original.ResponseFormat.Type
@@ -298,6 +299,7 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 		}
 	}
 	plan := &presetProtocolPlan{phase: presetProtocolPhaseFinal, contents: candidates, internal: map[string]bool{}, visible: map[string]bool{}, containers: declared}
+	plan.requireContainer = config.ReplyAdapter != nil && config.ReplyAdapter.RequireContainer
 	if clientTools {
 		for _, tool := range original.Tools {
 			plan.visible[tool.Function.Name] = true
@@ -474,10 +476,12 @@ func (p *presetProtocolPlan) fingerprint() string {
 		Visibility       string
 		Containers       map[string]dto.ReplyContainer
 		ClientTools      map[string]bool
+		RequireContainer bool
 	}{
 		Version:          "reply-adapter-v2",
 		Containers:       p.containers,
 		ClientTools:      p.visible,
+		RequireContainer: p.requireContainer,
 		Enabled:          p.audit.Enabled,
 		ResponseTarget:   p.responseTarget,
 		ResponseArgument: p.responseArgument,
@@ -523,14 +527,14 @@ func (p *presetProtocolPlan) applyRequest(request *dto.GeneralOpenAIRequest) err
 	if p == nil || !p.audit.Activated || request == nil {
 		return nil
 	}
-	if len(p.visible) == 0 {
+	if len(p.visible) == 0 && !p.requireContainer {
 		return nil
 	}
 	// Required/named means a client business call, never a hidden completion.
 	// Auto may also complete via a declared reply container. Synthetic history
 	// tools are context only and are not offered as callable actions.
 	choice := request.ToolChoice
-	businessOnly := choice == "required" || presetToolChoiceName(choice) != ""
+	businessOnly := len(p.visible) > 0 && (choice == "required" || presetToolChoiceName(choice) != "")
 	request.Tools = slices.DeleteFunc(request.Tools, func(tool dto.ToolCallRequest) bool {
 		if p.visible[tool.Function.Name] {
 			return false
@@ -538,6 +542,18 @@ func (p *presetProtocolPlan) applyRequest(request *dto.GeneralOpenAIRequest) err
 		_, reply := p.containers[tool.Function.Name]
 		return businessOnly || !reply
 	})
+	if p.requireContainer && !businessOnly {
+		// A completed answer must use a confirmed transport. Requiring a call
+		// over the union still lets auto clients choose a genuine business call.
+		// This runs before the internal contract is frozen, never as an override.
+		request.ToolChoice = "required"
+		if len(p.visible) == 0 && len(p.containers) == 1 {
+			for name := range p.containers {
+				request.ToolChoice = map[string]any{"type": "function", "function": map[string]string{"name": name}}
+			}
+		}
+		p.audit.Actions = append(p.audit.Actions, "required_reply_transport")
+	}
 	return nil
 }
 

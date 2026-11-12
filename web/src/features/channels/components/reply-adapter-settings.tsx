@@ -77,7 +77,13 @@ export function ReplyAdapterSettings(props: {
         ...adapter,
         version: 2,
         containers: items,
-        ...(items.length === 0 ? { structured_output: false } : {}),
+        ...(items.length === 0
+          ? {
+              structured_output: false,
+              require_container: false,
+              formatted_output: undefined,
+            }
+          : {}),
       },
     }
     props.onChange(next)

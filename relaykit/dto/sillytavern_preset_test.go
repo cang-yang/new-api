@@ -119,3 +119,33 @@ func TestSillyTavernToolProtocolValidation(t *testing.T) {
 	_, err = invalidFailurePolicy.ParseAndValidate()
 	require.ErrorContains(t, err, "failure_policy.worldbook")
 }
+
+func TestReplyAdapterGenerationCapabilities(t *testing.T) {
+	valid := ReplyAdapter{Version: 2, StructuredOutput: true, RequireContainer: true, FormattedOutput: "client_format",
+		Containers: []ReplyContainer{{Name: "reply", Formatter: true, OutputKind: "text"}}}
+	require.NoError(t, valid.Validate())
+	encoded, err := kitutil.Marshal(valid)
+	require.NoError(t, err)
+	var decoded ReplyAdapter
+	require.NoError(t, kitutil.Unmarshal(encoded, &decoded))
+	require.Equal(t, valid, decoded)
+	for _, tc := range []struct {
+		name string
+		edit func(*ReplyAdapter)
+		want string
+	}{
+		{"missing required source", func(a *ReplyAdapter) { a.StructuredOutput = false; a.FormattedOutput = ""; a.Containers = nil }, "requires a declared reply source"},
+		{"unknown boundary", func(a *ReplyAdapter) { a.FormattedOutput = "guess" }, "unsupported formatted reply output"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := valid
+			tc.edit(&candidate)
+			require.ErrorContains(t, candidate.Validate(), tc.want)
+		})
+	}
+	legacy := valid
+	legacy.RequireContainer, legacy.StructuredOutput, legacy.FormattedOutput = false, false, ""
+	require.NoError(t, legacy.Validate(), "existing optional text adapters remain valid")
+	valid.StructuredOutput = false
+	require.NoError(t, valid.Validate(), "disabling conversion keeps the formatter boundary for later re-enablement")
+}

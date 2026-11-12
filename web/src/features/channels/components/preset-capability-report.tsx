@@ -33,7 +33,10 @@ import {
   type PresetCapabilityReport as CapabilityReport,
 } from '../api'
 import { presetRecord as record } from '../lib/preset-script-preparation'
-import { migrateReplyAdapter } from '../lib/reply-adapter'
+import {
+  adoptDetectedReplySources,
+  migrateReplyAdapter,
+} from '../lib/reply-adapter'
 
 const scenarioKeys: Record<string, string> = {
   text: 'Plain text chat',
@@ -374,10 +377,10 @@ export function PresetCapabilityReportSettings(props: {
                   onClick={() => {
                     props.onChange?.({
                       ...props.config,
-                      reply_adapter: {
-                        version: 2,
-                        containers: report.reply_sources,
-                      },
+                      reply_adapter: adoptDetectedReplySources(
+                        props.config,
+                        report.reply_sources ?? []
+                      ),
                     })
                   }}
                 >

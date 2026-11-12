@@ -45,6 +45,12 @@ func (a *ReplyAdapter) Validate() error {
 	if a.StructuredOutput && len(a.Containers) == 0 {
 		return fmt.Errorf("structured output conversion requires a declared reply source")
 	}
+	if a.RequireContainer && len(a.Containers) == 0 {
+		return fmt.Errorf("required reply transport requires a declared reply source")
+	}
+	if a.FormattedOutput != "" && a.FormattedOutput != "text" && a.FormattedOutput != "client_format" {
+		return fmt.Errorf("unsupported formatted reply output")
+	}
 	seen := map[string]bool{}
 	for _, c := range a.Containers {
 		if (c.SourcePromptID == "") != (c.SourceFingerprint == "") || len(c.SourcePromptID) > 256 || c.SourceFingerprint != "" && len(c.SourceFingerprint) != 64 {
