@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
@@ -115,4 +115,44 @@ test('long request content remains loadable without introducing a second view', 
   await user.click(screen.getByRole('button', { name: 'Load more' }))
   expect(screen.getByText(/END-OF-REQUEST/)).toBeVisible()
   expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+})
+
+test('formatted requests let users inspect escaped strings without changing the JSON or raw copy', async () => {
+  const user = userEvent.setup()
+  const content = JSON.stringify({
+    text: 'First line\nSecond line',
+    literal: String.raw`\n`,
+    path: String.raw`C:\notes\new.txt`,
+  })
+  const body = JSON.stringify({
+    messages: [{ role: 'tool', content }],
+  })
+  const write = vi.spyOn(navigator.clipboard, 'writeText')
+  mount({ body })
+  const formatted = screen
+    .getByRole('region', { name: 'Reading content' })
+    .querySelector('pre')
+  expect(formatted?.textContent).toBe(JSON.stringify(JSON.parse(body), null, 2))
+  await user.click(screen.getByRole('button', { name: 'Read string content' }))
+  const dialog = screen.getByRole('dialog', { name: 'String content' })
+  expect(dialog).toHaveTextContent('First line')
+  expect(dialog).toHaveTextContent(String.raw`C:\notes\new.txt`)
+  expect(dialog).toHaveTextContent(String.raw`\n`)
+  await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+  expect(formatted?.textContent).toBe(JSON.stringify(JSON.parse(body), null, 2))
+  await user.click(screen.getByRole('button', { name: 'Copy raw body' }))
+  expect(write).toHaveBeenCalledWith(body)
+})
+
+test('long escaped values can open before the entire formatted token has been loaded', async () => {
+  const user = userEvent.setup()
+  const content = `First line\n${'x'.repeat(33000)}END-OF-CONTENT`
+  mount({ body: JSON.stringify({ content }) })
+  await user.click(screen.getByRole('button', { name: 'Read string content' }))
+  const dialog = screen.getByRole('dialog', { name: 'String content' })
+  expect(within(dialog).getByText(/First line/)).toBeVisible()
+  await user.click(within(dialog).getByRole('button', { name: 'Load more' }))
+  expect(within(dialog).getByText(/END-OF-CONTENT/)).toBeVisible()
 })

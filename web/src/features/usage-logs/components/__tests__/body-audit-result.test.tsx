@@ -391,3 +391,76 @@ test('tool metadata shares the explanation disclosure instead of adding another 
   expect(container.querySelector('details')).toHaveAttribute('open')
   expect(screen.getByText('Readable')).toBeVisible()
 })
+
+test.each([false, true])(
+  'JSON answers are readable as fields without unescaping literal data (stream: %s)',
+  async (stream) => {
+    const user = userEvent.setup()
+    const content = JSON.stringify({
+      line: 'First line\nSecond line',
+      path: String.raw`C:\notes\new.txt`,
+      literal: String.raw`\n`,
+      html: '<script>display as text</script>',
+    })
+    const message = { choices: [{ message: { content } }] }
+    const body = stream
+      ? `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n\n`
+      : JSON.stringify(message)
+    const write = vi.spyOn(navigator.clipboard, 'writeText')
+    const { container } = mount(
+      <AuditPayload
+        capture={{
+          encoding: 'utf-8',
+          body,
+          contentType: stream ? 'text/event-stream' : 'application/json',
+        }}
+      />
+    )
+    expect(screen.getByText(/First line/).textContent).toBe(
+      'First line\nSecond line'
+    )
+    expect(screen.getByText(String.raw`C:\notes\new.txt`)).toBeVisible()
+    expect(screen.getByText(String.raw`\n`)).toBeVisible()
+    expect(screen.getByText('<script>display as text</script>')).toBeVisible()
+    expect(container.querySelector('script')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Copy raw body' }))
+    expect(write).toHaveBeenCalledWith(body)
+  }
+)
+
+test('nested JSON strings remain navigable and copying retains the selected original string', async () => {
+  const user = userEvent.setup()
+  const nested = JSON.stringify(
+    JSON.stringify({ rows: JSON.stringify([{ text: 'Hello\nworld' }]) })
+  )
+  const write = vi.spyOn(navigator.clipboard, 'writeText')
+  mount(<ValueExplorer value={{ payload: nested }} />)
+  await user.click(screen.getByRole('button', { name: 'Open payload' }))
+  await user.click(screen.getByRole('button', { name: 'Copy current content' }))
+  expect(write).toHaveBeenCalledWith(nested)
+  await user.click(screen.getByRole('button', { name: 'Open rows' }))
+  await user.click(screen.getByRole('button', { name: 'Open #1' }))
+  expect(screen.getByText(/Hello/).textContent).toBe('Hello\nworld')
+  await user.click(screen.getByRole('button', { name: 'Back' }))
+  expect(screen.getByRole('button', { name: 'Open #1' })).toBeVisible()
+})
+
+test.each([
+  '{"unfinished":"keep\\n',
+  String.raw`C:\notes\new.txt`,
+  String.raw`/\w+\n/gi`,
+  '"a quoted sentence"',
+  '"false"',
+  '```json\n{"a":1}\n```',
+  '{"id":9007199254740993}',
+])(
+  'non-container text and unsafe JSON are never guessed or repaired: %s',
+  (value) => {
+    mount(<ValueExplorer value={value} />)
+    expect(
+      screen
+        .getByRole('region', { name: 'Reading content' })
+        .querySelector('pre')?.textContent
+    ).toBe(value)
+  }
+)

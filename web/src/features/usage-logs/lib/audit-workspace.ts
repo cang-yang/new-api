@@ -65,6 +65,98 @@ export function displayValue(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? ''
 }
 
+// Decode complete JSON containers for reading only, never arbitrary escape
+// sequences or scalar strings. Bound work and reject lossy numeric conversions.
+export function structuredText(value: unknown): {
+  value: unknown
+  decoded: boolean
+} {
+  let candidate = value
+  for (let layer = 0; layer < 4; layer++) {
+    if (
+      typeof candidate !== 'string' ||
+      candidate.length > 1024 * 1024 ||
+      !/^\s*[[{"]/.test(candidate)
+    ) {
+      break
+    }
+    try {
+      candidate = JSON.parse(candidate, (_key, item: unknown) => {
+        if (
+          typeof item === 'number' &&
+          (!Number.isFinite(item) ||
+            (Number.isInteger(item) && !Number.isSafeInteger(item)))
+        ) {
+          throw new Error('Lossy JSON number')
+        }
+        return item
+      })
+      if (candidate !== null && typeof candidate === 'object') {
+        return { value: candidate, decoded: true }
+      }
+    } catch {
+      break
+    }
+  }
+  return { value, decoded: false }
+}
+
+// Keep the formatted JSON intact. Only complete value tokens gain a reading
+// action; keys, incomplete tokens and large captures stay ordinary code.
+export function auditStringSegments(
+  text: string,
+  limit: number
+): { text: string; offset: number; stringValue?: string }[] {
+  const visible = text.slice(0, limit)
+  if (text.length > 1024 * 1024) return [{ text: visible, offset: 0 }]
+  const segments: { text: string; offset: number; stringValue?: string }[] = []
+  let cursor = 0
+  let search = 0
+  while (search < visible.length) {
+    const start = text.indexOf('"', search)
+    if (start < 0 || start >= visible.length) break
+    let end = start + 1
+    let complete = false
+    while (end < text.length) {
+      const character = text[end++]
+      if (character === '\\') end++
+      else if (character === '"') {
+        complete = true
+        break
+      }
+    }
+    if (!complete) break
+    search = end
+    if (/^\s*:/.test(text.slice(end, end + 32))) continue
+    const literal = text.slice(start, end)
+    try {
+      const stringValue: unknown = JSON.parse(literal)
+      if (
+        typeof stringValue !== 'string' ||
+        (!literal.includes('\\') && !structuredText(stringValue).decoded)
+      ) {
+        continue
+      }
+      if (start > cursor) {
+        segments.push({ text: text.slice(cursor, start), offset: cursor })
+      }
+      const shownEnd = Math.min(end, visible.length)
+      segments.push({
+        text: text.slice(start, shownEnd),
+        offset: start,
+        stringValue,
+      })
+      cursor = shownEnd
+    } catch {
+      // An invalid token remains visible verbatim.
+    }
+  }
+  if (cursor < visible.length) {
+    segments.push({ text: visible.slice(cursor), offset: cursor })
+  }
+  return segments
+}
+
 export function requestDocuments(value: unknown): AuditDocument[] {
   const root = objectValue(value)
   if (!root) return [{ id: 'data', category: 'data', value }]
@@ -274,6 +366,7 @@ export function formatCapture(body: string): string {
 
 export function valueAtPath(root: unknown, path: string[]): unknown {
   return path.reduce<unknown>((value, key) => {
+    value = structuredText(value).value
     if (
       value === null ||
       typeof value !== 'object' ||

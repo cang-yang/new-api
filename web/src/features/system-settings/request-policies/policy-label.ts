@@ -3,7 +3,11 @@ import type { TFunction } from 'i18next'
 // Labels for the decision events recorded by the backend request policy state
 // (reasons, sources and health), the session behaviors, and the auto-disable
 // sources reported by the channel operations summary.
-export function policyLabel(t: TFunction, value: string): string {
+export function policyLabel(
+  t: TFunction,
+  value: string,
+  source?: string
+): string {
   switch (value) {
     case 'upstream_failure':
       return t('Upstream request failed')
@@ -37,6 +41,9 @@ export function policyLabel(t: TFunction, value: string): string {
     case 'channel_selected':
       return t('Channel selected')
     case 'request_completed':
+      // Upstream accounting is recorded before local reply processing finishes.
+      // It is not proof that a valid response reached the client.
+      if (source === 'upstream') return t('Upstream response received')
       return t('Request completed')
     case 'stream_not_successful':
       return t('Stream did not complete successfully')

@@ -82,8 +82,9 @@ export function run(serialized) {
 		return fmt.Errorf("preset script preparation exceeded its deadline")
 	}
 	interrupted := make(chan struct{})
+	executionTimeout := errors.New("preset execution timeout")
 	timer := time.AfterFunc(budget, func() {
-		runtime.Interrupt(errors.New("preset execution timeout"))
+		runtime.Interrupt(executionTimeout)
 		close(interrupted)
 	})
 	defer func() {
@@ -104,6 +105,12 @@ export function run(serialized) {
 	}
 	result, err := runtime.Call(hook, argument)
 	if err != nil {
+		if errors.Is(err, executionTimeout) {
+			return fmt.Errorf("preset script execution exceeded its deadline")
+		}
+		if errors.Is(err, moejs.ErrMemoryLimit) {
+			return fmt.Errorf("preset script execution exceeded its memory limit")
+		}
 		// Never include the JS exception: a script can throw the whole prompt.
 		return fmt.Errorf("preset script failed, exceeded its limits, or requires an unavailable API")
 	}

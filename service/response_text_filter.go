@@ -61,9 +61,71 @@ type responseStageError struct {
 
 func (e *responseStageError) Error() string {
 	if e.stage == FailureStageScript || e.stage == FailureStageOutputProcessing {
-		return "preset script processing failed"
+		return "preset script processing failed: " + presetScriptFailureSummary(e.err)
 	}
 	return e.err.Error()
+}
+
+// Only host-defined diagnostics may reach the client or ordinary server logs.
+// Never stringify an arbitrary JS exception, schema, script name, or input.
+func presetScriptFailureSummary(err error) string {
+	if err == nil {
+		return "unknown processing failure"
+	}
+	for errors.Unwrap(err) != nil {
+		err = errors.Unwrap(err)
+	}
+	message := err.Error()
+	switch message {
+	case "preset script execution deadline exceeded",
+		"preset script runtime is busy",
+		"preset script input is invalid or exceeds 8 MiB",
+		"preset script could not compile as an isolated function expression",
+		"preset script preparation exceeded its deadline",
+		"preset script initialization failed",
+		"preset script entry point is unavailable",
+		"preset script input conversion failed",
+		"preset script execution exceeded its deadline",
+		"preset script execution exceeded its memory limit",
+		"preset script failed, exceeded its limits, or requires an unavailable API",
+		"preset script output conversion failed",
+		"preset script output is invalid or exceeds 8 MiB",
+		"preset script returned an incompatible result",
+		"preset scripts allow at most 128 tools",
+		"preset scripts cannot modify client tools",
+		"preset scripts cannot remove client tools",
+		"preset scripts returned duplicate tools",
+		"preset scripts must declare named function tools with object parameters",
+		"ToolBindings has a duplicate or conflicting tool name",
+		"FinalRequestProcessing returned invalid request fields",
+		"FinalRequestProcessing must return a request object",
+		"FinalRequestProcessing requires 1 to 4096 messages",
+		"FinalRequestProcessing returned an unsupported message role",
+		"FinalRequestProcessing toolConfig cannot be represented by tool_choice",
+		"FinalRequestProcessing toolConfig contains unsupported options",
+		"FinalRequestProcessing toolConfig conflicts with tool_choice",
+		"FinalRequestProcessing toolConfig references an unknown or duplicate tool",
+		"FinalRequestProcessing restricted toolConfig cannot be represented without changing tool selection",
+		"FinalRequestProcessing custom_include_body only supports a matching reasoning_effort",
+		"preset generated an incomplete tool history block",
+		"preset generated invalid tool history",
+		"preset generated an undeclared or invalid history tool call",
+		"preset generated an unmatched tool result",
+		"preset generated incomplete tool history",
+		"preset generated duplicate tool history IDs":
+		return message
+	}
+	for _, prefix := range []string{
+		"FinalRequestProcessing cannot change request field ",
+		"FinalRequestProcessing returned unsupported request field ",
+		"FinalRequestProcessing contains unsupported nested data in ",
+	} {
+		if strings.HasPrefix(message, prefix) {
+			// A field name can itself contain arbitrary script-provided text.
+			return strings.TrimSpace(prefix) + " (field details withheld)"
+		}
+	}
+	return "script execution or result validation failed"
 }
 func (e *responseStageError) Unwrap() error { return e.err }
 

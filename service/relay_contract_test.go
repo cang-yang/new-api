@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,242 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRelayNativePresetPreservesClientTaskAndDelivery(t *testing.T) {
+	hook, err := os.ReadFile("../scripts/presets/meowssiah-relay-request.js")
+	require.NoError(t, err)
+	preset := map[string]any{
+		"prompts": []any{
+			map[string]any{"identifier": "main", "role": "system", "content": "Preset background: the library opens at nine."},
+			map[string]any{"identifier": "chatHistory", "marker": true},
+		},
+		"prompt_order": []any{map[string]any{"character_id": 100001, "order": []any{
+			map[string]any{"identifier": "main", "enabled": true},
+			map[string]any{"identifier": "chatHistory", "enabled": true},
+		}}},
+		"extensions": map[string]any{"SPreset": map[string]any{
+			"FinalRequestProcessing": map[string]any{"enabled": true, "script": string(hook)},
+			"OutputPreprocessing":    map[string]any{"enabled": true, "script": `({buffer}) => ({output: buffer, hold: ''})`},
+		}},
+	}
+	encoded, err := common.Marshal(preset)
+	require.NoError(t, err)
+	config := &dto.SillyTavernPresetConfig{Preset: encoded, ScriptRuntime: "spreset-v1", ParameterPolicy: "client"}
+	for _, variant := range []string{"text", "schema", "none", "named", "history"} {
+		t.Run(variant, func(t *testing.T) {
+			request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{
+				{Role: "system", Content: "Only update variables; do not continue the story."},
+				{Role: "user", Content: `Keep literal escapes: C:\notes and \n. Return the requested result.`},
+			}}
+			if variant == "schema" {
+				request.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"patch","schema":{"type":"object","properties":{"json_patch":{"type":"array"}},"required":["json_patch"]}}`)}
+			}
+			if variant == "none" || variant == "named" || variant == "history" {
+				request.Tools = []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}}}
+				request.ToolChoice = "none"
+				if variant == "named" {
+					request.ToolChoice = map[string]any{"type": "function", "function": map[string]string{"name": "lookup"}}
+				}
+				if variant == "history" {
+					request.Messages = append(request.Messages,
+						dto.Message{Role: "assistant", ToolCalls: []byte(`[{"id":"lookup_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)},
+						dto.Message{Role: "tool", ToolCallId: "lookup_1", Content: `{"value":"literal \\n"}`},
+						dto.Message{Role: "user", Content: "Use the result; do not continue the story."})
+				}
+			}
+			compiled, trace, err := CompileSillyTavernPreset(config, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.NotNil(t, trace.ScriptResponse)
+			require.True(t, trace.ScriptResponse.requestHookExecuted)
+			require.Empty(t, trace.ScriptResponse.ownedTools)
+			require.Nil(t, trace.ScriptResponse.generationRequest, "native schema must not use prompt-only format conversion")
+			require.Equal(t, request.ResponseFormat, compiled.ResponseFormat)
+			require.True(t, samePresetValue(request.ToolChoice, compiled.ToolChoice))
+			require.Equal(t, request.Tools, compiled.Tools)
+			for _, original := range request.Messages {
+				require.Contains(t, compiled.Messages, original, "client task and history must survive whole")
+			}
+			require.Contains(t, compiled.Messages[len(compiled.Messages)-1].StringContent(), "中转站请求规则")
+			requirements, err := SnapshotClientRequirements(request)
+			require.NoError(t, err)
+			require.NoError(t, SealClientRequirements(requirements, compiled, nil, trace.ScriptResponse))
+		})
+	}
+}
+
+func TestRelayNativeExportedPreset(t *testing.T) {
+	path := os.Getenv("NEW_API_NATIVE_CHANNEL")
+	if path == "" {
+		t.Skip("set NEW_API_NATIVE_CHANNEL to a locally prepared native channel export")
+	}
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var channel struct {
+		Settings string `json:"settings"`
+	}
+	require.NoError(t, common.Unmarshal(data, &channel))
+	var settings dto.ChannelOtherSettings
+	require.NoError(t, common.UnmarshalJsonStr(channel.Settings, &settings))
+	request := &dto.GeneralOpenAIRequest{Model: "gemini-3.8-flash", Messages: []dto.Message{{Role: "user", Content: "What time does the library open?"}}}
+	if path := os.Getenv("NEW_API_EXPORTED_REQUEST"); path != "" {
+		data, err = os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, common.Unmarshal(data, request))
+	}
+	before, err := cloneGeneralRequest(request)
+	require.NoError(t, err)
+	filtered, err := ApplyRequestTextRegex(settings.ResponseTextFilter, settings.SillyTavernPreset, request, request.Model)
+	require.NoError(t, err)
+	compiled, trace, err := CompileWorldbookFrom(settings.Worldbook, settings.SillyTavernPreset, filtered.(*dto.GeneralOpenAIRequest), before, SillyTavernContext{})
+	require.NoError(t, err)
+	require.NotNil(t, trace.ScriptResponse)
+	require.True(t, trace.ScriptResponse.requestHookExecuted)
+	require.Empty(t, trace.ScriptResponse.ownedTools)
+	require.Nil(t, trace.ScriptResponse.generationRequest)
+	require.Equal(t, before.ResponseFormat, compiled.ResponseFormat)
+	require.True(t, samePresetValue(before.Tools, compiled.Tools))
+	require.True(t, samePresetValue(before.ToolChoice, compiled.ToolChoice))
+	requirements, err := SnapshotClientRequirements(before)
+	require.NoError(t, err)
+	require.NoError(t, SealClientRequirements(requirements, compiled, settings.ResponseTextFilter, trace.ScriptResponse))
+	if settings.Worldbook == nil {
+		for _, message := range before.Messages {
+			require.Contains(t, compiled.Messages, message)
+		}
+	}
+}
+
+// Exported channel settings contain no credentials and remain local. This
+// reproduces compilation without transmitting private preset prompts upstream.
+func TestRelayExportedChannelCompilation(t *testing.T) {
+	path := os.Getenv("NEW_API_EXPORTED_CHANNEL_SETTINGS")
+	if path == "" {
+		t.Skip("set NEW_API_EXPORTED_CHANNEL_SETTINGS to a local settings export")
+	}
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var channels map[string]struct {
+		Settings struct {
+			Preset    *dto.SillyTavernPresetConfig `json:"sillytavern_preset"`
+			Worldbook *dto.WorldbookConfig         `json:"worldbook"`
+			Filter    *dto.ResponseTextFilter      `json:"response_text_filter"`
+		} `json:"settings"`
+	}
+	require.NoError(t, common.Unmarshal(data, &channels))
+	for id, channel := range channels {
+		t.Run(id, func(t *testing.T) {
+			request := &dto.GeneralOpenAIRequest{Model: "gemini-3.8-flash", Messages: []dto.Message{{Role: "user", Content: "Hello. Please describe the weather."}}}
+			if requestPath := os.Getenv("NEW_API_EXPORTED_REQUEST"); requestPath != "" {
+				body, readErr := os.ReadFile(requestPath)
+				require.NoError(t, readErr)
+				require.NoError(t, common.Unmarshal(body, request))
+			}
+			variants := []string{"plain"}
+			if selected := os.Getenv("NEW_API_EXPORTED_VARIANTS"); selected != "" {
+				variants = strings.Split(selected, ",")
+			}
+			for _, variant := range variants {
+				t.Run(variant, func(t *testing.T) {
+					candidate, copyErr := cloneGeneralRequest(request)
+					require.NoError(t, copyErr)
+					if slices.Contains([]string{"none", "auto", "required", "named", "history", "history-none"}, variant) {
+						candidate.ToolChoice = variant
+						candidate.Tools = []dto.ToolCallRequest{{Type: "function", Function: dto.FunctionRequest{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}}}
+					}
+					if variant == "named" {
+						candidate.ToolChoice = map[string]any{"type": "function", "function": map[string]string{"name": "lookup"}}
+					}
+					if variant == "schema" {
+						candidate.ToolChoice = "none"
+						candidate.ResponseFormat = &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"hours","strict":true,"schema":{"type":"object","properties":{"opens_at":{"type":"integer","const":9}},"required":["opens_at"],"additionalProperties":false}}`)}
+					}
+					if variant == "history" || variant == "history-none" {
+						candidate.ToolChoice = "auto"
+						if variant == "history-none" {
+							candidate.ToolChoice = "none"
+						}
+						candidate.Messages = append(candidate.Messages, dto.Message{Role: "assistant", ToolCalls: []byte(`[{"id":"lookup_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)}, dto.Message{Role: "tool", ToolCallId: "lookup_1", Content: `{"found":true}`}, dto.Message{Role: "user", Content: "Continue."})
+					}
+					if variant == "parts" {
+						candidate.Messages = []dto.Message{{Role: "user", Content: []any{map[string]any{"type": "text", "text": "Hello."}}}}
+					}
+					if variant == "large" {
+						candidate.Messages = []dto.Message{{Role: "user", Content: strings.Repeat("ordinary text ", 75000)}}
+					}
+					compiled, trace, compileErr := CompileWorldbookFrom(channel.Settings.Worldbook, channel.Settings.Preset, candidate, candidate, SillyTavernContext{})
+					for cause := compileErr; cause != nil; cause = errors.Unwrap(cause) {
+						t.Logf("compilation cause: %v", cause)
+					}
+					require.NoError(t, compileErr)
+					require.NotNil(t, trace.ScriptResponse)
+					require.True(t, trace.ScriptResponse.requestHookExecuted)
+					requirements, err := SnapshotClientRequirements(candidate)
+					require.NoError(t, err)
+					require.NoError(t, SealClientRequirements(requirements, compiled, channel.Settings.Filter, trace.ScriptResponse))
+					if slices.Contains([]string{"auto", "required", "named", "history"}, variant) {
+						require.True(t, samePresetValue(candidate.ToolChoice, compiled.ToolChoice))
+						return
+					}
+					for _, stream := range []bool{false, true} {
+						expected := "The library opens at nine."
+						if variant == "schema" {
+							expected = `{"opens_at":9}`
+						}
+						args, err := common.Marshal(map[string]string{"think_nya": "Ready.", "game_content": expected})
+						require.NoError(t, err)
+						call := map[string]any{"id": "reply_1", "type": "function", "function": map[string]string{"name": trace.ScriptResponse.protocol.contents[0], "arguments": string(args)}}
+						field := "message"
+						if stream {
+							field, call["index"] = "delta", 0
+						}
+						body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "tool_calls": []any{call}}}}})
+						require.NoError(t, err)
+						if responsePath := os.Getenv("NEW_API_EXPORTED_UPSTREAM_RESPONSE"); responsePath != "" {
+							captured, readErr := os.ReadFile(responsePath)
+							require.NoError(t, readErr)
+							var envelope map[string]any
+							require.NoError(t, common.Unmarshal(captured, &envelope))
+							choices := envelope["choices"].([]any)
+							require.Len(t, choices, 1)
+							choice := choices[0].(map[string]any)
+							message := choice["message"].(map[string]any)
+							tools := message["tool_calls"].([]any)
+							require.Len(t, tools, 1)
+							tool := tools[0].(map[string]any)
+							function := tool["function"].(map[string]any)
+							var arguments map[string]string
+							require.NoError(t, common.Unmarshal([]byte(function["arguments"].(string)), &arguments))
+							expected = arguments["game_content"]
+							require.NotEmpty(t, expected)
+							if stream {
+								tool["index"] = 0
+								choice["delta"] = message
+								delete(choice, "message")
+							}
+							body, err = common.Marshal(envelope)
+							require.NoError(t, err)
+						}
+						if stream {
+							body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+						}
+						ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+						ctx.Set(ClientRequirementsKey, requirements)
+						AttachPresetScriptResponse(ctx, trace)
+						writer := BeginResponseTextFilterWithPreset(ctx, channel.Settings.Filter, channel.Settings.Preset, candidate.Model)
+						require.NotNil(t, writer)
+						result, err := writer.processResponse(body, stream)
+						require.NoError(t, err)
+						choices, err := responseChoices(result, stream)
+						require.NoError(t, err)
+						require.Equal(t, expected, strings.TrimSpace(choices["0"].text.String()))
+						require.Empty(t, choices["0"].tools)
+						require.True(t, writer.outputProcessed)
+					}
+				})
+			}
+		})
+	}
+}
 
 // The optional browser bridge keeps authentication in an already logged-in
 // browser. Only this neutral fixture is sent to the model, never private preset
@@ -860,7 +1097,7 @@ func TestRelayClientBusinessCallsKeepPresetPipeline(t *testing.T) {
 						}
 					}
 					body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{
-						"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "tool_calls": []any{
+						"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "content": "ADDITIONAL_TEXT", "tool_calls": []any{
 							map[string]any{"index": 0, "id": "native_1", "type": "function", "function": map[string]any{"name": name, "arguments": args}},
 						}},
 					}}})
@@ -944,14 +1181,20 @@ func TestRelayStructuredReplyRunsCompletePipeline(t *testing.T) {
 				if stream {
 					field = "delta"
 				}
+				finish := any("tool_calls")
+				if stream {
+					finish = nil
+				}
 				body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{
-					"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "tool_calls": []any{
+					"index": 0, "finish_reason": finish, field: map[string]any{"role": "assistant", "content": "SIDE_TEXT_MUST_NOT_BECOME_JSON", "tool_calls": []any{
 						map[string]any{"index": 0, "id": "reply", "type": "function", "function": map[string]any{"name": "preset_reply", "arguments": string(args)}},
 					}},
 				}}})
 				require.NoError(t, err)
 				if stream {
-					body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+					body = []byte("data: " + `{"choices":[{"index":0,"delta":{"content":"PREFIX_MUST_NOT_BECOME_JSON"}}]}` + "\n\n" +
+						"data: " + string(body) + "\n\n" +
+						"data: " + `{"choices":[{"index":0,"delta":{"content":"SUFFIX_MUST_NOT_BECOME_JSON"},"finish_reason":"tool_calls"}]}` + "\n\ndata: [DONE]\n\n")
 				}
 				result, err := writer.processResponse(body, stream)
 				require.True(t, writer.outputProcessed, "the original output hook must actually run")
@@ -1119,6 +1362,150 @@ func TestRelayResponseAdmissionAndCancellationAreAtomic(t *testing.T) {
 	next.Request = httptest.NewRequest("POST", "/", nil)
 	require.NoError(t, extra.Admit(next))
 	writers = append(writers, extra)
+}
+
+func TestRelayReplySourceDoesNotConsumeOtherChoices(t *testing.T) {
+	config := &dto.SillyTavernToolText{Enabled: true, Name: "reply", Argument: "body"}
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			field := "message"
+			if stream {
+				field = "delta"
+			}
+			body := []byte(fmt.Sprintf(`{"id":"response-1","choices":[
+				{"index":0,"%s":{"role":"assistant","content":"SIDE_TEXT","reasoning_content":"separate reasoning","tool_calls":[{"index":0,"id":"r","type":"function","function":{"name":"reply","arguments":"{\"body\":\"selected reply\"}"}}]},"finish_reason":"tool_calls"},
+				{"index":1,"%s":{"role":"assistant","content":"client explanation","tool_calls":[{"index":0,"id":"c","type":"function","function":{"name":"lookup","arguments":"{\"path\":\"C:\\\\notes\"}"}}]},"finish_reason":"tool_calls"},
+				{"index":2,"%s":{"role":"assistant","content":"ordinary reply"},"finish_reason":"stop"}],"provider_metadata":{"retained":true}}`, field, field, field))
+			var envelope map[string]any
+			require.NoError(t, common.Unmarshal(body, &envelope))
+			body, err := common.Marshal(envelope)
+			require.NoError(t, err)
+			if stream {
+				body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+			}
+			result, err := restorePresetToolText(body, stream, config, time.Now().Add(time.Second))
+			require.NoError(t, err)
+			choices, err := responseChoices(result, stream)
+			require.NoError(t, err)
+			require.Len(t, choices, 3)
+			require.Equal(t, "selected reply", choices["0"].text.String())
+			require.Empty(t, choices["0"].tools)
+			require.Equal(t, "stop", choices["0"].finish)
+			require.Equal(t, "client explanation", choices["1"].text.String())
+			require.Equal(t, "c", choices["1"].tools["0"].id)
+			require.Equal(t, "lookup", choices["1"].tools["0"].name.String())
+			require.Equal(t, `{"path":"C:\\notes"}`, choices["1"].tools["0"].arguments.String())
+			require.Equal(t, "tool_calls", choices["1"].finish)
+			require.Equal(t, "ordinary reply", choices["2"].text.String())
+			require.Contains(t, string(result), `"reasoning_content":"separate reasoning"`)
+			require.Contains(t, string(result), `"provider_metadata":{"retained":true}`)
+			require.NotContains(t, string(result), "SIDE_TEXT")
+			require.Contains(t, string(body), "SIDE_TEXT", "the captured upstream bytes remain intact")
+		})
+	}
+}
+
+func TestRelayReplySourceRejectsUnsafeRestoration(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, test := range []struct {
+			name, arguments, finish, wantError string
+		}{
+			{"mixed-client-tool", `{}`, "tool_calls", "cannot mix preset replies with client tools"},
+			{"duplicate-call-id", `{}`, "tool_calls", "duplicate tool call IDs"},
+			{"truncated", `{}`, "length", "requires a complete"},
+			{"filtered", `{}`, "content_filter", "requires a complete"},
+			{"refused", `{}`, "tool_calls", "requires a complete"},
+			{"invalid-arguments", `{"body":`, "tool_calls", "invalid tool text arguments"},
+			{"structured-side-content", `{"body":"reply"}`, "tool_calls", "cannot replace structured content"},
+		} {
+			t.Run(fmt.Sprintf("%s/stream=%v", test.name, stream), func(t *testing.T) {
+				message := map[string]any{"content": "side text", "tool_calls": []any{
+					map[string]any{"index": 0, "id": "r", "type": "function", "function": map[string]any{"name": "reply", "arguments": test.arguments}},
+				}}
+				if test.name == "mixed-client-tool" || test.name == "duplicate-call-id" {
+					name, id := "lookup", "c"
+					if test.name == "duplicate-call-id" {
+						name, id = "reply", "r"
+					}
+					message["tool_calls"] = append(message["tool_calls"].([]any), map[string]any{
+						"index": 1, "id": id, "type": "function", "function": map[string]any{"name": name, "arguments": `{}`},
+					})
+				}
+				if test.name == "refused" {
+					message["refusal"] = "cannot complete"
+				}
+				if test.name == "structured-side-content" {
+					message["content"] = []any{map[string]any{"type": "image", "url": "example"}}
+				}
+				field := "message"
+				if stream {
+					field = "delta"
+				}
+				body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": test.finish, field: message}}})
+				require.NoError(t, err)
+				if stream {
+					body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+				}
+				result, err := restorePresetToolText(body, stream, &dto.SillyTavernToolText{Enabled: true, Name: "reply", Argument: "body"}, time.Now().Add(time.Second))
+				require.ErrorContains(t, err, test.wantError)
+				require.Nil(t, result, "unsafe responses must not be partially rewritten")
+			})
+		}
+	}
+}
+
+func TestRelayReplySourceBatchKeepsCallOrder(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			body := []byte(`{"choices":[{"index":0,"message":{"content":"side text","tool_calls":[{"id":"a","function":{"name":"first","arguments":"{}"}},{"id":"b","function":{"name":"second","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			if stream {
+				// The second call completes first. Formatting still follows the
+				// calls' first appearance, not their completion order.
+				body = []byte("data: " + `{"choices":[{"index":0,"delta":{"content":"side text","tool_calls":[{"index":0,"id":"a","function":{"name":"first","arguments":"{"}},{"index":1,"id":"b","function":{"name":"second","arguments":"{"}}]}}]}` + "\n\n" +
+					"data: " + `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"}"}}]}}]}` + "\n\n" +
+					"data: " + `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\ndata: [DONE]\n\n")
+			}
+			result, err := restorePresetToolCalls(body, stream, map[string]bool{"first": true, "second": true}, true,
+				func(calls []*presetToolTextCall) (string, error) {
+					require.Len(t, calls, 2)
+					require.Equal(t, "first", calls[0].name.String())
+					require.Equal(t, "second", calls[1].name.String())
+					for _, call := range calls {
+						require.Equal(t, "{}", call.arguments.String())
+					}
+					return "first|second", nil
+				}, time.Now().Add(time.Second))
+			require.NoError(t, err)
+			choices, err := responseChoices(result, stream)
+			require.NoError(t, err)
+			require.Equal(t, "first|second", choices["0"].text.String())
+			require.Empty(t, choices["0"].tools)
+		})
+	}
+}
+
+func TestRelayReplySourceValidatesStreamBeforeFormatting(t *testing.T) {
+	call := "data: " + `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"r","function":{"name":"reply","arguments":"{}"}}]}}]}` + "\n\n"
+	finish := "data: " + `{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"
+	media := "data: " + `{"choices":[{"index":0,"delta":{"content":[{"type":"image","url":"example"}]}}]}` + "\n\n"
+	for _, test := range []struct{ name, body, wantError string }{
+		{"missing-finish", call + "data: [DONE]\n\n", "requires a complete"},
+		{"missing-terminator", call + finish, "requires a complete"},
+		{"media-before-call", media + call + finish + "data: [DONE]\n\n", "cannot replace structured content"},
+		{"media-after-call", call + media + finish + "data: [DONE]\n\n", "cannot replace structured content"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			formatted := false
+			result, err := restorePresetToolCalls([]byte(test.body), true, map[string]bool{"reply": true}, true,
+				func([]*presetToolTextCall) (string, error) {
+					formatted = true
+					return "reply", nil
+				}, time.Now().Add(time.Second))
+			require.ErrorContains(t, err, test.wantError)
+			require.Nil(t, result)
+			require.False(t, formatted, "invalid envelopes must not run the preset formatter")
+		})
+	}
 }
 
 func TestRelayFallbackUsesWholePreviousCheckpoint(t *testing.T) {

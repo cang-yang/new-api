@@ -10,8 +10,8 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
-// The transport owns one explicitly configured function only. Client tools,
-// reasoning, usage and choice indexes must survive unchanged.
+// Configured reply tools own the delivered text of their choice. Side text is
+// not part of that reply; client tools, reasoning and other choices are separate.
 type presetToolTextCall struct {
 	name      strings.Builder
 	arguments strings.Builder
@@ -49,6 +49,10 @@ func restorePresetToolText(body []byte, stream bool, config *dto.SillyTavernTool
 // Batch formatters see all owned calls in a choice, in first-appearance order.
 // Non-batched declarative transports retain their original emission behavior.
 func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, batch bool, format func([]*presetToolTextCall) (string, error), deadline time.Time) ([]byte, error) {
+	states, done, err := parseResponseChoices(body, stream)
+	if err != nil {
+		return nil, err
+	}
 	var frames []presetToolTextFrame
 	if !stream {
 		var payload map[string]any
@@ -146,16 +150,37 @@ func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, bat
 			}
 		}
 	}
-	for _, state := range mustResponseChoices(body, stream) {
-		targeted := 0
+	targetedCalls := map[string]int{}
+	for _, call := range calls {
+		if owned[call.name.String()] {
+			targetedCalls[call.choice]++
+		}
+	}
+	for choiceKey, state := range states {
+		targeted := targetedCalls[choiceKey]
+		ids := map[string]bool{}
 		for _, call := range state.tools {
-			if owned[call.name.String()] {
-				targeted++
+			if call.id != "" && ids[call.id] {
+				return nil, fmt.Errorf("response contains duplicate tool call IDs")
+			}
+			ids[call.id] = true
+			if state.legacy && owned[call.name.String()] {
+				return nil, fmt.Errorf("reply transport requires modern tool calls")
 			}
 		}
-		if targeted > 0 && (targeted != 1 || len(state.tools) != 1 || state.text.Len() > 0 || state.finish == "length" || state.refused) {
-			return nil, fmt.Errorf("reply transport requires one complete call without mixed content or client tools")
+		if targeted == 0 {
+			continue
 		}
+		if len(state.tools) != targeted {
+			return nil, fmt.Errorf("reply transport cannot mix preset replies with client tools")
+		}
+		if !batch && targeted != 1 {
+			return nil, fmt.Errorf("reply transport requires exactly one configured call")
+		}
+		if state.finish == "length" || state.finish == "content_filter" || state.refused || stream && (!done || state.finish == "") {
+			return nil, fmt.Errorf("reply transport requires a complete, non-refused response")
+		}
+		choiceHasTransport[choiceKey] = true
 	}
 	changed := false
 	// Decode all targeted calls before changing any payload. A malformed transport
@@ -170,11 +195,6 @@ func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, bat
 		if !owned[call.name.String()] {
 			continue
 		}
-		if content, exists := call.last["content"]; exists && content != nil {
-			if _, ok := content.(string); !ok {
-				return nil, fmt.Errorf("tool text cannot replace structured content")
-			}
-		}
 		groupKey := key
 		if batch {
 			groupKey = call.choice
@@ -187,6 +207,27 @@ func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, bat
 	}
 	if !changed {
 		return body, nil
+	}
+	// Reject unsupported side payloads before invoking any formatter. Only plain
+	// text can be superseded by the configured source; never discard media.
+	for _, frame := range frames {
+		choices, _ := frame.payload["choices"].([]any)
+		for position, value := range choices {
+			choice, _ := value.(map[string]any)
+			if !choiceHasTransport[presetToolTextChoiceKey(choice, position)] {
+				continue
+			}
+			field := "message"
+			if stream {
+				field = "delta"
+			}
+			message, _ := choice[field].(map[string]any)
+			if content := message["content"]; content != nil {
+				if _, ok := content.(string); !ok {
+					return nil, fmt.Errorf("tool text cannot replace structured content")
+				}
+			}
+		}
 	}
 	for _, key := range groupOrder {
 		group := groups[key]
@@ -220,6 +261,12 @@ func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, bat
 				field = "delta"
 			}
 			message, _ := choice[field].(map[string]any)
+			if choiceHasTransport[choiceKey] {
+				// The explicitly configured reply source is authoritative. Clear
+				// side text from every event, including before/after tool deltas;
+				// otherwise it can leak into JSON or duplicate the final reply.
+				delete(message, "content")
+			}
 			tools, _ := message["tool_calls"].([]any)
 			retained := make([]any, 0, len(tools))
 			for position, toolValue := range tools {
@@ -234,8 +281,7 @@ func restorePresetToolCalls(body []byte, stream bool, owned map[string]bool, bat
 				choiceHasTransport[choiceKey] = true
 				// Emit at the final fragment, after the complete arguments exist.
 				if !emitted[key] && call.lastFrame == frameIndex {
-					content, _ := message["content"].(string)
-					message["content"] = content + call.text
+					message["content"] = call.text
 					emitted[key] = true
 				}
 			}

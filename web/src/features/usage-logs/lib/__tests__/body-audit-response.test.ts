@@ -19,13 +19,55 @@ For commercial licensing, please contact support@quantumnous.com
 import { describe, expect, test } from 'vitest'
 
 import {
+  auditStringSegments,
   displayValue,
   requestDocuments,
   responseDocuments,
+  structuredText,
+  valueAtPath,
 } from '../audit-workspace'
 import { parseBodyAuditResponse } from '../body-audit-response'
 
 describe('body audit readable response parsing', () => {
+  test('embedded JSON parsing is bounded and does not partially decode excessive wrapping', () => {
+    let value = '{"content":"readable"}'
+    for (let layer = 0; layer < 4; layer++) value = JSON.stringify(value)
+    expect(structuredText(value)).toEqual({ value, decoded: false })
+    const large = JSON.stringify({ text: 'x'.repeat(1024 * 1024) })
+    expect(structuredText(large)).toEqual({ value: large, decoded: false })
+    expect(
+      valueAtPath(
+        { payload: '{"__proto__":{"a.b":"literal"},"constructor":"own"}' },
+        ['payload', '__proto__', 'a.b']
+      )
+    ).toBe('literal')
+    expect(
+      valueAtPath({ payload: '{}' }, ['payload', 'toString'])
+    ).toBeUndefined()
+  })
+
+  test('formatted previews keep exact code and never interpret keys or incomplete string tokens', () => {
+    const body = JSON.stringify(
+      { 'a"key': 'Hello\nworld', nested: '{"ok":true}' },
+      null,
+      2
+    )
+    const segments = auditStringSegments(body, body.length)
+    expect(segments.map((segment) => segment.text).join('')).toBe(body)
+    expect(segments.flatMap((segment) => segment.stringValue ?? [])).toEqual([
+      'Hello\nworld',
+      '{"ok":true}',
+    ])
+    const partial = body.slice(0, body.indexOf('world'))
+    const incomplete = auditStringSegments(partial, partial.length)
+    expect(incomplete.map((segment) => segment.text).join('')).toBe(
+      body.slice(0, body.indexOf('world'))
+    )
+    expect(
+      incomplete.some((segment) => segment.stringValue !== undefined)
+    ).toBe(false)
+  })
+
   test('non-string roles remain in message metadata without being guessed', () => {
     const docs = requestDocuments({
       messages: [{ role: false, content: 'content' }],

@@ -15,6 +15,42 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestPresetScriptFailureDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name, cause, want string
+	}{
+		{"memory", "preset script execution exceeded its memory limit", "memory limit"},
+		{"deadline", "preset script execution exceeded its deadline", "deadline"},
+		{"conflict", "ToolBindings has a duplicate or conflicting tool name", "conflicting tool name"},
+		{"nested", `FinalRequestProcessing contains unsupported nested data in "credential"`, "field details withheld"},
+		{"untrusted", "private prompt credential https://secret.invalid", "script execution or result validation failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := newResponseStageError(FailureStageScript, errors.New(tc.cause))
+			require.ErrorContains(t, err, "preset script processing failed")
+			require.ErrorContains(t, err, tc.want)
+			require.NotContains(t, err.Error(), "credential")
+			require.NotContains(t, err.Error(), "private prompt")
+			require.NotContains(t, err.Error(), "secret.invalid")
+			require.Equal(t, FailureStageScript, AdaptationErrorStage(err))
+			require.EqualError(t, errors.Unwrap(err), tc.cause)
+		})
+	}
+	t.Run("JS exception remains private", func(t *testing.T) {
+		var output any
+		err := runPresetScript(`() => { throw new Error("credential private prompt"); }`, nil, &output, time.Time{})
+		require.Error(t, err)
+		staged := newResponseStageError(FailureStageScript, err)
+		require.NotContains(t, staged.Error(), "credential")
+		require.NotContains(t, staged.Error(), "private prompt")
+	})
+	t.Run("execution timeout is distinguished", func(t *testing.T) {
+		var output any
+		err := runPresetScript(`() => { while (true) {} }`, nil, &output, time.Time{})
+		require.ErrorContains(t, err, "execution exceeded its deadline")
+	})
+}
+
 func TestSillyTavernNativeToolTextJSONAndStream(t *testing.T) {
 	var preset dto.SillyTavernPresetConfig
 	require.NoError(t, common.Unmarshal([]byte(`{

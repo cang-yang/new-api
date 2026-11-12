@@ -15,6 +15,7 @@ on:
       - 'service/preset_tavern_host.js'
       - 'service/preset_data_host.js'
       - 'relaykit/**'
+      - 'scripts/presets/**'
       - 'web/**'
 
 concurrency:
@@ -68,6 +69,9 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
+      - name: Test relay-native preset derivative
+        run: node --test scripts/presets/meowssiah-relay.test.mjs
+
       - name: Test frontend
         working-directory: web
         run: >-
@@ -94,6 +98,7 @@ jobs:
           src/features/channels/lib/__tests__/worldbook.test.ts
           src/features/channels/components/__tests__/worldbook-settings.test.tsx
           src/features/usage-logs/components/__tests__/audit-diagnostics.test.tsx
+          src/features/system-settings/request-policies/__tests__/decision-record.test.tsx
 
       - name: Typecheck frontend
         working-directory: web

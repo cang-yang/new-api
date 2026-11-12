@@ -72,7 +72,7 @@ function DocumentBody(props: {
       )}
     </div>
   )
-  if (!doc.media && doc.value !== null && typeof doc.value === 'object') {
+  if (!doc.media && !(typeof doc.value === 'string' && !doc.value.trim())) {
     return <ValueExplorer value={doc.value} notice={notice} />
   }
   return (

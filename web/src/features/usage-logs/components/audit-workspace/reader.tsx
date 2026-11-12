@@ -17,17 +17,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { ArrowLeft, ChevronRight } from 'lucide-react'
-import { useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 import {
+  auditStringSegments,
   displayValue,
   objectValue,
+  structuredText,
   valueAtPath,
 } from '../../lib/audit-workspace'
 
@@ -35,10 +44,19 @@ export function TextBlock(props: {
   text: string
   code?: boolean
   compact?: boolean
+  inspectStrings?: boolean
 }) {
   const { t } = useTranslation()
   const step = props.compact ? 4096 : 32768
   const [limit, setLimit] = useState(step)
+  const [selected, setSelected] = useState<string | null>(null)
+  const segments = useMemo(
+    () =>
+      props.inspectStrings
+        ? auditStringSegments(props.text, limit)
+        : [{ text: props.text.slice(0, limit), offset: 0 }],
+    [props.inspectStrings, props.text, limit]
+  )
   return (
     <div className='min-w-0'>
       <pre
@@ -48,7 +66,25 @@ export function TextBlock(props: {
             : 'font-sans text-sm leading-6 font-normal [overflow-wrap:anywhere] whitespace-pre-wrap'
         }
       >
-        {props.text.slice(0, limit) || '""'}
+        {props.text
+          ? segments.map((segment) =>
+              segment.stringValue !== undefined ? (
+                <Button
+                  key={segment.offset}
+                  variant='link'
+                  aria-label={t('Read string content')}
+                  title={t('Read string content')}
+                  aria-haspopup='dialog'
+                  className='inline h-auto max-w-full p-0 text-left align-baseline font-mono text-xs leading-6 font-normal [overflow-wrap:anywhere] whitespace-pre-wrap underline decoration-dotted underline-offset-4'
+                  onClick={() => setSelected(segment.stringValue ?? null)}
+                >
+                  {segment.text}
+                </Button>
+              ) : (
+                segment.text
+              )
+            )
+          : '""'}
       </pre>
       {props.text.length > limit && (
         <Button
@@ -59,6 +95,25 @@ export function TextBlock(props: {
         >
           {t('Load more')}
         </Button>
+      )}
+      {selected !== null && (
+        <Dialog open onOpenChange={(open) => !open && setSelected(null)}>
+          <DialogContent className='flex max-h-[min(36rem,calc(100dvh-2rem))] flex-col overflow-hidden sm:max-w-3xl'>
+            <DialogHeader className='shrink-0 pr-8'>
+              <DialogTitle>{t('String content')}</DialogTitle>
+              <DialogDescription>
+                {t('Formatted for inspection; raw data is unchanged.')}
+              </DialogDescription>
+            </DialogHeader>
+            <div className='flex shrink-0 justify-end'>
+              <CopyButton
+                value={selected}
+                tooltip={t('Copy current content')}
+              />
+            </div>
+            <ValueExplorer value={selected} />
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )
@@ -84,13 +139,30 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
   const [path, setPath] = useState<string[]>([])
   const [page, setPage] = useState(0)
   const locationRef = useRef<HTMLInputElement>(null)
-  const value = valueAtPath(props.value, path)
+  const rawValue = useMemo(
+    () => valueAtPath(props.value, path),
+    [props.value, path]
+  )
+  const { value, decoded } = useMemo(() => structuredText(rawValue), [rawValue])
   const structured = value !== null && typeof value === 'object'
-  const entries = structured ? Object.entries(value) : []
+  const entries = useMemo(
+    () =>
+      value !== null && typeof value === 'object' ? Object.entries(value) : [],
+    [value]
+  )
+  const pageSize = 40
+  const visibleEntries = useMemo(
+    () =>
+      entries
+        .slice(page * pageSize, (page + 1) * pageSize)
+        .map(([key, child]) => ({ key, ...structuredText(child) })),
+    [entries, page]
+  )
   const hasNavigation =
     path.length > 0 ||
-    entries.some(([, child]) => child !== null && typeof child === 'object')
-  const pageSize = 40
+    visibleEntries.some(
+      ({ value: child }) => child !== null && typeof child === 'object'
+    )
   const pages = Math.max(1, Math.ceil(entries.length / pageSize))
   const navigate = (next: string[]) => {
     setPath(next)
@@ -136,7 +208,7 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
             ]}
           />
           <CopyButton
-            value={displayValue(value)}
+            value={displayValue(rawValue)}
             size='sm'
             tooltip={t('Copy current content')}
           />
@@ -144,6 +216,11 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
       )}
       <ReadingViewport key={`${JSON.stringify(path)}:${page}`}>
         {props.notice}
+        {decoded && (
+          <p className='text-muted-foreground mb-3 text-xs leading-5'>
+            {t('Showing embedded JSON; original data is unchanged.')}
+          </p>
+        )}
         {!structured && (
           <TextBlock
             text={displayValue(value)}
@@ -153,79 +230,75 @@ export function ValueExplorer(props: { value: unknown; notice?: ReactNode }) {
         {structured && !entries.length && (
           <code className='text-sm'>{Array.isArray(value) ? '[]' : '{}'}</code>
         )}
-        {entries
-          .slice(page * pageSize, (page + 1) * pageSize)
-          .map(([key, child]) => {
-            const nested = child !== null && typeof child === 'object'
-            const label = Array.isArray(value)
-              ? `#${Number(key) + 1}`
-              : key || '""'
-            const record = objectValue(child)
-            const title =
-              record &&
-              [record.title, record.name, record.id].find(
-                (item) => typeof item === 'string'
-              )
-            if (nested) {
-              return (
-                <Button
-                  key={key}
-                  variant='ghost'
-                  className='h-auto w-full justify-start gap-3 rounded-none border-b px-0 py-4 text-left whitespace-normal'
-                  onClick={() => navigate([...path, key])}
-                  aria-label={`${t('Open')} ${label}`}
-                >
-                  <span className='min-w-0 flex-1'>
-                    <span className='block truncate font-medium'>{label}</span>
-                    {typeof title === 'string' && (
-                      <span className='text-muted-foreground mt-1 block truncate text-xs'>
-                        {title.slice(0, 120)}
-                      </span>
-                    )}
-                  </span>
-                  <span className='text-muted-foreground shrink-0 text-xs'>
-                    {Array.isArray(child) ? t('Array') : t('Object')} ·{' '}
-                    {Object.keys(child).length}
-                  </span>
-                  <ChevronRight
-                    className='size-4 shrink-0'
-                    aria-hidden='true'
-                  />
-                </Button>
-              )
-            }
-            const prose =
-              typeof child === 'string' &&
-              (child.length > 160 || /[\r\n]/.test(child))
-            return (
-              <div
-                key={key}
-                data-field-layout={prose ? 'prose' : 'compact'}
-                className={cn(
-                  'grid min-w-0 border-b last:border-b-0',
-                  prose
-                    ? 'gap-2 py-3 first:pt-0'
-                    : 'grid-cols-[minmax(0,8rem)_minmax(0,1fr)] items-start gap-3 py-2.5'
-                )}
-              >
-                <div className='text-muted-foreground text-xs leading-6 [overflow-wrap:anywhere]'>
-                  {label}
-                </div>
-                <TextBlock
-                  compact
-                  text={
-                    typeof child === 'string' &&
-                    /^(?:null|true|false|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$/.test(
-                      child
-                    )
-                      ? JSON.stringify(child)
-                      : displayValue(child)
-                  }
-                  code={typeof child !== 'string'}
-                />
-              </div>
+        {visibleEntries.map(({ key, value: child, decoded: embedded }) => {
+          const nested = child !== null && typeof child === 'object'
+          const label = Array.isArray(value)
+            ? `#${Number(key) + 1}`
+            : key || '""'
+          const record = objectValue(child)
+          const title =
+            record &&
+            [record.title, record.name, record.id].find(
+              (item) => typeof item === 'string'
             )
-          })}
+          if (nested) {
+            return (
+              <Button
+                key={key}
+                variant='ghost'
+                className='h-auto w-full justify-start gap-3 rounded-none border-b px-0 py-4 text-left whitespace-normal'
+                onClick={() => navigate([...path, key])}
+                aria-label={`${t('Open')} ${label}`}
+              >
+                <span className='min-w-0 flex-1'>
+                  <span className='block truncate font-medium'>{label}</span>
+                  {typeof title === 'string' && (
+                    <span className='text-muted-foreground mt-1 block truncate text-xs'>
+                      {title.slice(0, 120)}
+                    </span>
+                  )}
+                </span>
+                <span className='text-muted-foreground shrink-0 text-xs'>
+                  {embedded && <>{t('Embedded JSON')} · </>}
+                  {Array.isArray(child) ? t('Array') : t('Object')} ·{' '}
+                  {Object.keys(child).length}
+                </span>
+                <ChevronRight className='size-4 shrink-0' aria-hidden='true' />
+              </Button>
+            )
+          }
+          const prose =
+            typeof child === 'string' &&
+            (child.length > 160 || /[\r\n]/.test(child))
+          return (
+            <div
+              key={key}
+              data-field-layout={prose ? 'prose' : 'compact'}
+              className={cn(
+                'grid min-w-0 border-b last:border-b-0',
+                prose
+                  ? 'gap-2 py-3 first:pt-0'
+                  : 'grid-cols-[minmax(0,8rem)_minmax(0,1fr)] items-start gap-3 py-2.5'
+              )}
+            >
+              <div className='text-muted-foreground text-xs leading-6 [overflow-wrap:anywhere]'>
+                {label}
+              </div>
+              <TextBlock
+                compact
+                text={
+                  typeof child === 'string' &&
+                  /^(?:null|true|false|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$/.test(
+                    child
+                  )
+                    ? JSON.stringify(child)
+                    : displayValue(child)
+                }
+                code={typeof child !== 'string'}
+              />
+            </div>
+          )
+        })}
       </ReadingViewport>
       {pages > 1 && (
         <div className='flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2'>

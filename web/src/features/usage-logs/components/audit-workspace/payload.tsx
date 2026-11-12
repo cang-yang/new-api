@@ -202,7 +202,13 @@ export function AuditPayload(props: {
         </div>
         <ReadingViewport>
           {notice}
-          <TextBlock text={formatted} code />
+          <TextBlock
+            text={formatted}
+            code
+            inspectStrings={
+              props.capture.encoding === 'utf-8' && !invalidRequest
+            }
+          />
         </ReadingViewport>
       </div>
     )
@@ -229,6 +235,10 @@ export function AuditPayload(props: {
             <TextBlock
               text={props.fixedView === 'raw' ? props.capture.body : formatted}
               code
+              inspectStrings={
+                props.fixedView === 'formatted' &&
+                props.capture.encoding === 'utf-8'
+              }
             />
           </ReadingViewport>
         )}
@@ -294,6 +304,9 @@ export function AuditPayload(props: {
               <TextBlock
                 text={view === 'raw' ? props.capture.body : formatted}
                 code
+                inspectStrings={
+                  view === 'formatted' && props.capture.encoding === 'utf-8'
+                }
               />
             </ReadingViewport>
           </>

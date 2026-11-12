@@ -28,7 +28,7 @@ export function PolicyDecisionRecord(props: {
                 : 'font-medium'
             }
           >
-            {policyLabel(t, event.decision.reason)}
+            {policyLabel(t, event.decision.reason, event.decision.source)}
             {event.channel_id
               ? ` · ${props.channelNames?.[event.channel_id] ?? `#${event.channel_id}`}`
               : ''}

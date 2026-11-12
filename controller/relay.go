@@ -217,6 +217,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		compiled, trace, compileErr := compileSelectedSillyTavernPreset(c, originalRequest, matchedMessages, profile)
 		if compileErr != nil {
+			logger.LogError(c, fmt.Sprintf("request adaptation stopped before provider (channel=%d, stage=%s): %s",
+				common.GetContextKeyInt(c, constant.ContextKeyChannelId), service.AdaptationErrorStage(compileErr), common.LocalLogPreview(compileErr.Error())))
 			newAPIError = types.NewErrorWithStatusCode(compileErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			return
 		}
