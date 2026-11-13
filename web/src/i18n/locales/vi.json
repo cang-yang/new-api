@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Required background": "Bối cảnh bắt buộc",
+    "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.": "Các mục khớp trong sách này được ưu tiên trong giới hạn ký tự. Nếu không thể đưa vào, dừng yêu cầu thay vì âm thầm bỏ qua.",
+    "Effective failure handling": "Cách xử lý thực tế khi có lỗi",
+    "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.": "Bước này cần thiết để trả lời đúng. Với cấu hình hiện tại, không thể bỏ qua bước này khi có lỗi.",
+    "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.": "Khôi phục kết quả hợp lệ trước đó rồi tiếp tục các bước còn lại. Chỉ dừng nếu không thể trả lời đúng yêu cầu của ứng dụng khách.",
+    "Worldbook failed and was skipped; the preset still runs.": "Xử lý sách thế giới bị lỗi nên đã được bỏ qua; bộ thiết lập sẵn vẫn tiếp tục chạy.",
+    "Positions are before script processing. A script changed the messages, so final positions are not claimed.": "Đây là vị trí trước khi chạy tập lệnh. Tập lệnh đã thay đổi tin nhắn nên vị trí cuối cùng có thể khác.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

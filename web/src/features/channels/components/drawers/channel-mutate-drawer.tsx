@@ -207,7 +207,10 @@ import {
   collectPresetRegexScripts,
   mergePresetRegexScripts,
 } from '../../lib/regex-rules'
-import { parsePresetEditor } from '../../lib/sillytavern-editor'
+import {
+  importPresetConfiguration,
+  parsePresetEditor,
+} from '../../lib/sillytavern-editor'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
@@ -636,7 +639,7 @@ export function ChannelMutateDrawer({
       return
     }
     try {
-      const preset = JSON.parse(await file.text()) as Record<string, unknown>
+      const imported: unknown = JSON.parse(await file.text())
       if (
         presetImportScope.current !== importScope ||
         !importScope.open ||
@@ -644,36 +647,11 @@ export function ChannelMutateDrawer({
       ) {
         return
       }
-      if (
-        !Array.isArray(preset.prompts) ||
-        !Array.isArray(preset.prompt_order)
-      ) {
-        throw new Error('Invalid preset')
-      }
-      let config: Record<string, unknown> = {
-        preset,
-        source_preset_id: [
-          ...new Uint8Array(
-            await crypto.subtle.digest(
-              'SHA-256',
-              new TextEncoder().encode(JSON.stringify(preset))
-            )
-          ),
-        ]
-          .map((byte) => byte.toString(16).padStart(2, '0'))
-          .join(''),
-        parameter_policy: 'preset',
-        source_file_name: file.name,
-        enable_embedded_regex: false,
-        enable_send_regex: false,
-      }
-      collectPresetRegexScripts(config.preset)
-      if (!parsePresetEditor(config)) throw new Error('Invalid preset')
-      const previousConfig = parsePresetEditor(previousValue || '')?.config
-      if (previousConfig && Object.hasOwn(previousConfig, 'script_runtime')) {
-        config.script_runtime = previousConfig.script_runtime
-      }
-      if (previousConfig?.tool_text) config.tool_text = previousConfig.tool_text
+      let config = await importPresetConfiguration(
+        imported,
+        previousValue || '',
+        file.name
+      )
       if (discoverPresetScripts(config).some((script) => script.enabled)) {
         setPreparingPreset(true)
         const controller = new AbortController()
@@ -681,7 +659,12 @@ export function ChannelMutateDrawer({
         try {
           const result = await preparePresetScripts(config, controller.signal)
           if (controller.signal.aborted) return
-          config = applyScriptPreparation(config, result, true)
+          config = applyScriptPreparation(
+            config,
+            result,
+            !previousValue &&
+              !Object.hasOwn(imported as Record<string, unknown>, 'preset')
+          )
         } catch (error) {
           if (controller.signal.aborted) return
           if (
@@ -702,7 +685,7 @@ export function ChannelMutateDrawer({
       }
       const presetValue = JSON.stringify(config)
       onChange(presetValue)
-      const scripts = collectPresetRegexScripts(preset)
+      const scripts = collectPresetRegexScripts(config.preset)
       setPendingPresetRegex(
         Array.isArray(scripts) && scripts.length > 0
           ? { presetValue, scripts }

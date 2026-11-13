@@ -157,7 +157,13 @@ func BuildAdaptationDiagnostic(trace *PresetCompileTrace) *AdaptationDiagnostic 
 		})
 	}
 	if trace.Worldbook != nil {
-		diagnostic.Record("worldbook", worldbookDiagnosticStatus(trace.Worldbook), "worldbook matching completed", worldbookDiagnosticDetails(trace.Worldbook))
+		summary := "worldbook matching completed"
+		if trace.Worldbook.BypassReason == "failure_policy" {
+			summary = "worldbook failed and was skipped by the configured policy"
+		} else if trace.Worldbook.Phase == "skipped" {
+			summary = "worldbook was not applied to this request"
+		}
+		diagnostic.Record("worldbook", worldbookDiagnosticStatus(trace.Worldbook), summary, worldbookDiagnosticDetails(trace.Worldbook))
 	} else {
 		diagnostic.Record("worldbook", "skipped", "worldbook is not configured for this request", nil)
 	}
@@ -201,10 +207,11 @@ func worldbookDiagnosticStatus(preview *WorldbookPreview) string {
 	if preview == nil {
 		return "skipped"
 	}
-	for _, entry := range preview.Entries {
-		if entry.Status == "matched" {
-			return "completed"
-		}
+	if preview.BypassReason == "failure_policy" {
+		return "fallback"
+	}
+	if preview.Phase == "skipped" {
+		return "skipped"
 	}
 	return "completed"
 }
@@ -251,6 +258,12 @@ func worldbookDiagnosticDetails(preview *WorldbookPreview) map[string]any {
 		"disabled": disabled,
 		"invalid":  invalid,
 		"entries":  entries,
+	}
+	if preview.PlacementPhase != "" {
+		details["placement_phase"] = preview.PlacementPhase
+	}
+	if preview.BypassReason != "" {
+		details["bypass_reason"] = preview.BypassReason
 	}
 	if preview.Placement != nil {
 		details["placement"] = map[string]any{

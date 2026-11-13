@@ -27,6 +27,29 @@ func TestPresetAuditDoesNotSerializePreviewOrRequestBodies(t *testing.T) {
 	assert.Equal(t, "SECRET_WORLDBOOK_BODY", trace.Worldbook.Text, "audit serialization must not mutate a live preview")
 }
 
+func TestAdaptationDiagnosticDistinguishesWorldbookFallback(t *testing.T) {
+	for _, test := range []struct{ phase, reason, status string }{
+		{"skipped", "failure_policy", "fallback"},
+		{"skipped", "body_passthrough", "skipped"},
+		{"final_request", "", "completed"},
+	} {
+		t.Run(test.reason+test.status, func(t *testing.T) {
+			diagnostic := BuildAdaptationDiagnostic(&PresetCompileTrace{Worldbook: &WorldbookPreview{
+				Phase: test.phase, BypassReason: test.reason, PlacementPhase: "before_scripts",
+			}})
+			require.NotNil(t, diagnostic)
+			stage := diagnostic.Stages[0]
+			assert.Equal(t, "worldbook", stage.Stage)
+			assert.Equal(t, test.status, stage.Status)
+			assert.Equal(t, "before_scripts", stage.Details["placement_phase"])
+			if test.reason != "" {
+				assert.NotContains(t, stage.Summary, "completed")
+				assert.Equal(t, test.reason, stage.Details["bypass_reason"])
+			}
+		})
+	}
+}
+
 func TestBuildAdaptationDiagnosticRecordsDecisionStagesWithoutBodies(t *testing.T) {
 	trace := &PresetCompileTrace{
 		Name: "fixture preset",

@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Required background": "不可缺少的背景",
+    "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.": "仅在这本书承载任务必需规则时开启。命中的条目优先占用字数额度；如果放不下或处理失败，会停止请求，不会悄悄删掉这些内容。",
+    "Effective failure handling": "出错后实际会怎么处理",
+    "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.": "这一步负责生成或提取客户端需要的回复，不能直接跳过。因此，当前配置下即使选择了继续，仍必须停止请求。",
+    "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.": "撤销这一步的改动，继续完成后续处理；只有最终仍无法得到符合客户端要求的回复时，才停止请求。",
+    "Worldbook failed and was skipped; the preset still runs.": "世界书处理失败，已按设置跳过；预设仍会继续运行。",
+    "Positions are before script processing. A script changed the messages, so final positions are not claimed.": "以下是脚本处理前的位置。脚本重新整理了消息，因此这里不能代表最终发送位置。",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

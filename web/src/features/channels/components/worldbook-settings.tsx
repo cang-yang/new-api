@@ -88,6 +88,7 @@ function ScopedWorldbookSettings(props: Props) {
         ...refreshed,
         id: book.id,
         enabled: book.enabled,
+        required: book.required,
         entries: refreshed.entries.map((entry, index) => ({
           ...entry,
           id: book.entries[index].id,
@@ -363,6 +364,19 @@ function ScopedWorldbookSettings(props: Props) {
                             }
                           />
                         </Label>
+                        <div className='flex h-8 items-center gap-3'>
+                          <Label htmlFor='worldbook-required'>
+                            {t('Required background')}
+                          </Label>
+                          <Switch
+                            id='worldbook-required'
+                            disabled={locked || !book.enabled}
+                            checked={book.required === true}
+                            onCheckedChange={(required) =>
+                              updateBook({ ...book, required })
+                            }
+                          />
+                        </div>
                         <Button
                           type='button'
                           variant='outline'
@@ -382,6 +396,13 @@ function ScopedWorldbookSettings(props: Props) {
                           {t('Remove book')}
                         </Button>
                       </div>
+                      {book.required && (
+                        <p className='text-muted-foreground text-xs'>
+                          {t(
+                            'Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.'
+                          )}
+                        </p>
+                      )}
                       <div
                         className={
                           entry

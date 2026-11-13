@@ -63,6 +63,7 @@ export const worldbookBookSchema = z
     id: z.string().min(1),
     name: z.string(),
     enabled: z.boolean(),
+    required: z.boolean().optional(),
     entries: z.array(worldbookEntrySchema).max(1000),
     warnings: z.array(z.string()).optional(),
   })
@@ -254,6 +255,7 @@ export type WorldbookPreviewResult = {
   fingerprint?: string
   draft_revision?: string
   phase?: string
+  placement_phase?: string
   bypass_reason?: string
   final_request?: unknown
   text: string

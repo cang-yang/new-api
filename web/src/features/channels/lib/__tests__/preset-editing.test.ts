@@ -24,6 +24,7 @@ import {
 } from '../channel-form'
 import {
   editPresetEntry,
+  importPresetConfiguration,
   migratePresetPatches,
   movePresetEntry,
   parsePresetEditor,
@@ -55,6 +56,45 @@ const config = {
     ],
   },
 }
+
+test('reimporting a preset preserves the complete channel delivery configuration', async () => {
+  const previous = {
+    ...config,
+    parameter_policy: 'client',
+    script_runtime: 'spreset-v1',
+    reply_adapter: {
+      version: 2,
+      structured_output: true,
+      require_container: true,
+      formatted_output: 'client_format',
+      containers: [],
+    },
+    failure_policy: { worldbook: 'skip', regex: 'preserve' },
+    entry_overrides: { first: false },
+    models: ['test-model'],
+    user: 'Example',
+  }
+  const imported = await importPresetConfiguration(
+    config.preset,
+    JSON.stringify(previous),
+    'updated.json'
+  )
+  expect(imported).toMatchObject(previous)
+  expect(imported.source_file_name).toBe('updated.json')
+  expect(imported.source_preset_id).toMatch(/^[a-f0-9]{64}$/)
+  expect(previous).not.toHaveProperty('source_preset_id')
+})
+
+test('importing an adaptation configuration preserves its contract instead of previous settings', async () => {
+  const bundle = { ...config, parameter_policy: 'client', script_runtime: '' }
+  const imported = await importPresetConfiguration(
+    bundle,
+    JSON.stringify({ ...config, script_runtime: 'spreset-v1' }),
+    'bundle.json'
+  )
+  expect(imported.script_runtime).toBe('')
+  expect(imported.parameter_policy).toBe('client')
+})
 
 test('dragging an entry across multiple rows preserves unknown data and unrelated orders', () => {
   const original = {

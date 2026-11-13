@@ -52,10 +52,51 @@ type AdaptationScenario struct {
 }
 
 type AdaptationScopeReport struct {
-	Fingerprint string               `json:"fingerprint"`
-	Model       string               `json:"model"`
-	Scenarios   []AdaptationScenario `json:"scenarios"`
-	Buffered    bool                 `json:"buffered"`
+	Fingerprint string                      `json:"fingerprint"`
+	Model       string                      `json:"model"`
+	Scenarios   []AdaptationScenario        `json:"scenarios"`
+	Buffered    bool                        `json:"buffered"`
+	FailurePlan []AdaptationFailureDecision `json:"failure_plan"`
+}
+
+type AdaptationFailureDecision struct {
+	Stage      FailureStage `json:"stage"`
+	Configured FailureMode  `json:"configured"`
+	Effective  FailureMode  `json:"effective"`
+	Reason     string       `json:"reason,omitempty"`
+}
+
+// Uses the same policy resolution and cancellation guard as the relay. This
+// reports constraints without executing scripts or claiming model verification.
+func effectiveAdaptationFailurePlan(preset *dto.SillyTavernPresetConfig, worldbook *dto.WorldbookConfig, filter *dto.ResponseTextFilter, model string) []AdaptationFailureDecision {
+	profile := NewAdaptationProfile(preset, worldbook, filter, filter)
+	configured := profile.FailurePolicy()
+	resolved := responseFailurePolicy(preset, filter, model, false)
+	var result []AdaptationFailureDecision
+	for _, stage := range []FailureStage{FailureStageWorldbook, FailureStagePreset, FailureStageScript, FailureStageResponseRestore, FailureStageOutputProcessing, FailureStageRegex, FailureStageResponseValidation} {
+		decision := AdaptationFailureDecision{Stage: stage, Configured: configured.Mode(stage), Effective: resolved.Mode(stage)}
+		if stage == FailureStageWorldbook && worldbookHasRequiredContent(worldbook) {
+			decision.Effective, decision.Reason = FailureFail, "required_cleanup"
+		}
+		if (stage == FailureStagePreset || stage == FailureStageScript) &&
+			decision.Effective == FailureRequestPassthrough && !profile.CanCancelBeforeProvider(model) {
+			decision.Effective, decision.Reason = FailureFail, "required_reply_pipeline"
+		}
+		if stage == FailureStageRegex {
+			writer := &ResponseTextFilterWriter{policy: resolved, hasFilter: filter != nil}
+			if filter != nil {
+				writer.config = *filter
+			}
+			if writer.mandatoryRegex() {
+				decision.Effective, decision.Reason = FailureFail, "required_cleanup"
+			}
+		}
+		if decision.Effective == FailurePreserve || decision.Effective == FailureSafeRaw {
+			decision.Reason = "validated_checkpoint"
+		}
+		result = append(result, decision)
+	}
+	return result
 }
 
 // InspectAdaptationScope uses the relay's protocol classifier, not a model or
@@ -86,6 +127,11 @@ func InspectAdaptationScope(scope, model string, preset *dto.SillyTavernPresetCo
 	if preset != nil && len(preset.Models) > 0 && !slices.Contains(preset.Models, model) {
 		activePreset = nil
 	}
+	activeFilter := filter
+	if filter != nil && len(filter.Models) > 0 && !slices.Contains(filter.Models, model) {
+		activeFilter = nil
+	}
+	report.FailurePlan = effectiveAdaptationFailurePlan(activePreset, worldbook, activeFilter, model)
 	internal := activePreset != nil && (activePreset.ToolText != nil && activePreset.ToolText.Enabled ||
 		activePreset.ReplyAdapter != nil && len(activePreset.ReplyAdapter.Containers) > 0)
 	if activePreset != nil && activePreset.ScriptRuntime == "spreset-v1" {
@@ -221,7 +267,9 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 	if err != nil {
 		return nil, err
 	}
-	_, trace, err := CompileSillyTavernPreset(config, probe, SillyTavernContext{})
+	// Discover the candidate's actual sources without validating old approvals.
+	// Live compilation still checks the pinned fingerprint and delivery contract.
+	compiled, trace, err := CompileSillyTavernPreset(config, probe, SillyTavernContext{discoverSources: true})
 	if err != nil {
 		return nil, err
 	}
@@ -267,9 +315,9 @@ func buildPresetCapabilityReport(config *dto.SillyTavernPresetConfig, request *d
 			report.HistoryTools = append(report.HistoryTools, name)
 		}
 		sort.Strings(report.HistoryTools)
-		if response.protocol != nil && response.protocol.audit.Activated {
-			for _, name := range response.protocol.contents {
-				report.ReplySources = append(report.ReplySources, response.protocol.containers[name])
+		for _, name := range orderedOwnedToolNames(compiled, response.ownedTools) {
+			if source, ok := response.replySources[name]; ok && !response.historyTools[name] {
+				report.ReplySources = append(report.ReplySources, source)
 			}
 		}
 		for name := range trace.ScriptResponse.ownedTools {

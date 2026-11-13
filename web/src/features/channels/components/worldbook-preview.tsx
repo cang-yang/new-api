@@ -185,10 +185,23 @@ export function WorldbookPreview(props: {
       </Button>
       {result && (
         <div className='space-y-4' aria-live='polite'>
-          {result.bypass_reason && (
+          {result.bypass_reason &&
+            result.bypass_reason !== 'failure_policy' && (
+              <p role='status' className='rounded-lg border p-3 text-sm'>
+                {t(
+                  'This request is outside the selected processing scope. Presets, worldbooks and regex rules do not run.'
+                )}
+              </p>
+            )}
+          {result.bypass_reason === 'failure_policy' && (
+            <p role='status' className='rounded-lg border p-3 text-sm'>
+              {t('Worldbook failed and was skipped; the preset still runs.')}
+            </p>
+          )}
+          {result.placement_phase === 'before_scripts' && (
             <p role='status' className='rounded-lg border p-3 text-sm'>
               {t(
-                'This request is outside the selected processing scope. Presets, worldbooks and regex rules do not run.'
+                'Positions are before script processing. A script changed the messages, so final positions are not claimed.'
               )}
             </p>
           )}

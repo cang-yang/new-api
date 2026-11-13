@@ -19,9 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -42,6 +44,9 @@ export function AuditResponse(props: {
   const { t } = useTranslation()
   const [view, setView] = useState('readable')
   const [mobileSource, setMobileSource] = useState('client')
+  const [comparisonView, setComparisonView] = useState<'readable' | 'raw'>(
+    'readable'
+  )
   const complete =
     !!props.client &&
     !props.client.incomplete &&
@@ -131,12 +136,32 @@ export function AuditResponse(props: {
                   'Compares captured bodies, content types and HTTP status. Formatting differences also count.'
                 )}
               </p>
+              <div className='mt-2 flex gap-2'>
+                <Button
+                  size='sm'
+                  variant={
+                    comparisonView === 'readable' ? 'secondary' : 'ghost'
+                  }
+                  aria-pressed={comparisonView === 'readable'}
+                  onClick={() => setComparisonView('readable')}
+                >
+                  {t('Readable content')}
+                </Button>
+                <Button
+                  size='sm'
+                  variant={comparisonView === 'raw' ? 'secondary' : 'ghost'}
+                  aria-pressed={comparisonView === 'raw'}
+                  onClick={() => setComparisonView('raw')}
+                >
+                  {t('Raw data')}
+                </Button>
+              </div>
             </div>
             {identical ? (
               <AuditPayload
                 capture={props.upstream}
                 requestPath={props.requestPath}
-                fixedView='formatted'
+                fixedView={comparisonView}
               />
             ) : (
               <>
@@ -157,11 +182,13 @@ export function AuditResponse(props: {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {sources.map((source) => (
-                      <SelectItem key={source.id} value={source.id}>
-                        {source.title}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      {sources.map((source) => (
+                        <SelectItem key={source.id} value={source.id}>
+                          {source.title}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
                 <div className='flex min-h-0 min-w-0 flex-1 overflow-hidden lg:divide-x'>
@@ -183,7 +210,7 @@ export function AuditResponse(props: {
                         <AuditPayload
                           capture={source.capture}
                           requestPath={props.requestPath}
-                          fixedView='formatted'
+                          fixedView={comparisonView}
                         />
                       ) : (
                         <ReadingViewport>

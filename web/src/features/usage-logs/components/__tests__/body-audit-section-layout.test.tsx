@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
@@ -168,6 +168,48 @@ test('missing client capture explicitly marks the upstream fallback', async () =
   ).toBeVisible()
   await user.click(screen.getByRole('tab', { name: 'Raw data' }))
   expect(screen.getByText(/legacy record/)).toBeVisible()
+})
+test('comparison decodes nested tool arguments without changing copied upstream bytes', async () => {
+  const raw = JSON.stringify({
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: 'reply-1',
+              type: 'function',
+              function: {
+                name: 'reply',
+                arguments: JSON.stringify({
+                  body: '第一行\n第二行 <game> C:\\notes\\new.txt',
+                }),
+              },
+            },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      },
+    ],
+  })
+  audit.response_body = raw
+  const user = userEvent.setup()
+  mount()
+  await user.click(
+    await screen.findByRole('tab', { name: 'Compare with upstream' })
+  )
+  const upstream = screen.getByRole('region', {
+    name: 'Before processing · Upstream',
+  })
+  expect(upstream).toHaveTextContent('第一行 第二行 <game> C:\\notes\\new.txt')
+  expect(upstream.textContent).not.toContain('\\"body\\"')
+  await user.click(
+    within(upstream).getByRole('button', { name: 'Copy raw body' })
+  )
+  expect(await navigator.clipboard.readText()).toBe(raw)
+  await user.click(screen.getByRole('button', { name: 'Raw data' }))
+  expect(upstream).toHaveTextContent(raw)
 })
 test('identical complete captures show one shared payload with an explicit comparison result', async () => {
   audit.response_body = audit.client_response_body

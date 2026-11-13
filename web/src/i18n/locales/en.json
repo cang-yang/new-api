@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Required background": "Required background",
+    "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.": "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.",
+    "Effective failure handling": "What actually happens on failure",
+    "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.": "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.",
+    "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.": "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.",
+    "Worldbook failed and was skipped; the preset still runs.": "Worldbook failed and was skipped; the preset still runs.",
+    "Positions are before script processing. A script changed the messages, so final positions are not claimed.": "Positions are before script processing. A script changed the messages, so final positions are not claimed.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

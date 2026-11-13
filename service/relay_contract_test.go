@@ -1253,8 +1253,14 @@ func TestRelayClientBusinessCallsKeepPresetPipeline(t *testing.T) {
 							wantText = `{"answer":"processed-reply"}`
 						}
 					}
+					sideText := "ADDITIONAL_TEXT"
+					if name == "lookup" {
+						// Mixed business replies still contain preset-authored
+						// text. It must pass through the required output hook.
+						sideText = "<answer>raw-reply</answer>"
+					}
 					body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{
-						"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "content": "ADDITIONAL_TEXT", "tool_calls": []any{
+						"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "content": sideText, "tool_calls": []any{
 							map[string]any{"index": 0, "id": "native_1", "type": "function", "function": map[string]any{"name": name, "arguments": args}},
 						}},
 					}}})
@@ -1271,8 +1277,12 @@ func TestRelayClientBusinessCallsKeepPresetPipeline(t *testing.T) {
 						require.Empty(t, choices["0"].tools)
 						require.True(t, writer.outputProcessed)
 					} else {
-						require.Equal(t, string(body), string(result), "business arguments and IDs must never be rewritten by text processing")
-						require.False(t, writer.outputProcessed)
+						require.Equal(t, "processed-reply", choices["0"].text.String())
+						require.Equal(t, "native_1", choices["0"].tools["0"].id)
+						require.Equal(t, "lookup", choices["0"].tools["0"].name.String())
+						require.Equal(t, "{}", choices["0"].tools["0"].arguments.String())
+						require.Equal(t, "tool_calls", choices["0"].finish)
+						require.True(t, writer.outputProcessed)
 					}
 					if round == 0 {
 						request.Messages = append(request.Messages,
@@ -1521,6 +1531,27 @@ func TestRelayResponseAdmissionAndCancellationAreAtomic(t *testing.T) {
 	writers = append(writers, extra)
 }
 
+func TestRelayOverflowCancelsOnlyCurrentProviderAttempt(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/", nil)
+	parent := ctx.Request.Context()
+	writer := BeginResponseTextFilter(ctx, &dto.ResponseTextFilter{Mode: "regex_extract", Pattern: "(.*)"}, "m")
+	require.NoError(t, writer.Admit(ctx))
+	defer func() {
+		if writer.admitted {
+			_ = writer.Finish(ctx, false)
+		}
+	}()
+	provider := ctx.Request.Context()
+	_, err := writer.Write(make([]byte, maxFilteredResponseBytes+1))
+	require.Error(t, err)
+	require.ErrorIs(t, provider.Err(), context.Canceled)
+	require.NoError(t, parent.Err())
+	require.Error(t, writer.Finish(ctx, false))
+	require.Equal(t, parent, ctx.Request.Context(), "retry must not inherit a canceled attempt context")
+	require.False(t, writer.admitted)
+}
+
 func TestRelayReplySourceDoesNotConsumeOtherChoices(t *testing.T) {
 	config := &dto.SillyTavernToolText{Enabled: true, Name: "reply", Argument: "body"}
 	for _, stream := range []bool{false, true} {
@@ -1684,7 +1715,7 @@ func TestRelayFallbackUsesWholePreviousCheckpoint(t *testing.T) {
 					{ID: "second", Stage: "receive", Action: "replace", Pattern: "/two/g", Replacement: strings.Repeat("x", 65536)},
 				}}
 				if outputFails {
-					// P failure preserves R and stops; F must not run afterward.
+					// P failure restores R, then independent F still runs.
 					filter.Rules = filter.Rules[:1]
 				}
 				writer := BeginResponseTextFilterWithPreset(ctx, filter, preset, "m")
@@ -1701,7 +1732,7 @@ func TestRelayFallbackUsesWholePreviousCheckpoint(t *testing.T) {
 				choices, err := responseChoices(result, stream)
 				require.NoError(t, err)
 				if outputFails {
-					require.Equal(t, "one", choices["0"].text.String())
+					require.Equal(t, "changed", choices["0"].text.String())
 					require.Equal(t, second, choices["1"].text.String())
 				} else {
 					require.Equal(t, "one-processed", choices["0"].text.String())
@@ -1709,5 +1740,74 @@ func TestRelayFallbackUsesWholePreviousCheckpoint(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRelayOptionalProcessingCannotInvalidateDeliveredSchema(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, outputHook := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%v/outputHook=%v", stream, outputHook), func(t *testing.T) {
+				requirements, err := SnapshotClientRequirements(&dto.GeneralOpenAIRequest{
+					ResponseFormat: &dto.ResponseFormat{Type: "json_schema", JsonSchema: []byte(`{"name":"answer","schema":{"type":"object","properties":{"body":{"const":"valid"}},"required":["body"]}}`)},
+				})
+				require.NoError(t, err)
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Set(ClientRequirementsKey, requirements)
+				var preset *dto.SillyTavernPresetConfig
+				filter := &dto.ResponseTextFilter{Mode: "rules", FailurePolicy: "passthrough", JSONTextPointers: []string{"/body"}, Rules: []dto.TextRegexRule{
+					{ID: "change", Stage: "receive", Action: "replace", Pattern: "valid", Replacement: "invalid"},
+				}}
+				if outputHook {
+					preset = scriptPresetConfig(t, map[string]any{"OutputPreprocessing": map[string]any{"enabled": true, "script": `() => ({output: "not JSON"})`}})
+					preset.FailurePolicy = &dto.SillyTavernFailurePolicy{OutputProcessing: "preserve"}
+					_, trace, err := CompileSillyTavernPreset(preset, &dto.GeneralOpenAIRequest{Model: "m"}, SillyTavernContext{})
+					require.NoError(t, err)
+					AttachPresetScriptResponse(ctx, trace)
+					filter = nil
+				}
+				writer := BeginResponseTextFilterWithPreset(ctx, filter, preset, "m")
+				body := []byte(`{"choices":[{"index":0,"message":{"content":"{\"body\":\"valid\"}"},"finish_reason":"stop"}]}`)
+				if stream {
+					body = []byte("data: " + strings.Replace(string(body), `"message"`, `"delta"`, 1) + "\n\ndata: [DONE]\n\n")
+				}
+				result, err := writer.processResponse(body, stream)
+				require.NoError(t, err)
+				require.Equal(t, body, result, "optional transformations must roll back to the valid checkpoint")
+			})
+		}
+	}
+}
+
+func TestRelayOutputFailureStillRunsMandatoryCleanup(t *testing.T) {
+	preset := scriptPresetConfig(t, map[string]any{"OutputPreprocessing": map[string]any{"enabled": true, "script": `() => { throw new Error("failure"); }`}})
+	preset.FailurePolicy = &dto.SillyTavernFailurePolicy{OutputProcessing: "preserve"}
+	_, trace, err := CompileSillyTavernPreset(preset, &dto.GeneralOpenAIRequest{Model: "m"}, SillyTavernContext{})
+	require.NoError(t, err)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	AttachPresetScriptResponse(ctx, trace)
+	writer := BeginResponseTextFilterWithPreset(ctx, &dto.ResponseTextFilter{Mode: "regex_extract", Pattern: "<body>(.*?)</body>", MissingMatch: "error"}, preset, "m")
+	result, err := writer.processResponse([]byte(`{"choices":[{"index":0,"message":{"content":"private <body>answer</body>"},"finish_reason":"stop"}]}`), false)
+	require.NoError(t, err)
+	choices, err := responseChoices(result, false)
+	require.NoError(t, err)
+	require.Equal(t, "answer", choices["0"].text.String())
+}
+
+func TestRelayMixedBusinessToolsStillCleanText(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		writer := BeginResponseTextFilter(ctx, &dto.ResponseTextFilter{Mode: "regex_extract", Pattern: "<body>(.*?)</body>", MissingMatch: "error"}, "m")
+		body := []byte(`{"choices":[{"index":0,"message":{"content":"private <body>answer</body>","tool_calls":[{"index":0,"id":"business-1","type":"function","function":{"name":"lookup","arguments":"{\"path\":\"C:\\\\notes\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		if stream {
+			body = []byte("data: " + strings.Replace(string(body), `"message"`, `"delta"`, 1) + "\n\ndata: [DONE]\n\n")
+		}
+		result, err := writer.processResponse(body, stream)
+		require.NoError(t, err)
+		choices, err := responseChoices(result, stream)
+		require.NoError(t, err)
+		require.Equal(t, "answer", choices["0"].text.String())
+		require.Equal(t, "business-1", choices["0"].tools["0"].id)
+		require.Equal(t, `{"path":"C:\\notes"}`, choices["0"].tools["0"].arguments.String())
+		require.Equal(t, "tool_calls", choices["0"].finish)
 	}
 }

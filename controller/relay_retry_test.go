@@ -256,6 +256,10 @@ func TestWorldbookFailureHonorsSkipPolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, request, compiled)
 	assert.NotEmpty(t, trace.Warnings)
+
+	config.Books[0].Required = true
+	_, _, err = compileSelectedSillyTavernPreset(c, request, request)
+	require.Error(t, err, "required background must not silently disappear under the skip policy")
 }
 
 func TestInvalidPresetCannotBeBypassedByRequestPassthroughPolicy(t *testing.T) {

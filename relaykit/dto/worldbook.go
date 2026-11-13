@@ -37,6 +37,7 @@ type Worldbook struct {
 	ID       string           `json:"id"`
 	Name     string           `json:"name"`
 	Enabled  bool             `json:"enabled"`
+	Required bool             `json:"required,omitempty"`
 	Entries  []WorldbookEntry `json:"entries"`
 	Warnings []string         `json:"warnings,omitempty"`
 }

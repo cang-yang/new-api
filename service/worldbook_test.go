@@ -43,6 +43,84 @@ func TestWorldbookAbsentWithPresetMarkersPreservesChat(t *testing.T) {
 	assert.Nil(t, trace.Worldbook)
 }
 
+func TestWorldbookFormatFailureRollsBackWholeStageWhenSkipped(t *testing.T) {
+	raw, err := common.Marshal(map[string]any{
+		"wi_format": strings.Repeat("{0}", 1024),
+		"prompts": []map[string]any{
+			{"identifier": "worldInfoBefore", "marker": true},
+			{"identifier": "chatHistory", "marker": true},
+		},
+		"prompt_order": []map[string]any{{"order": []map[string]any{
+			{"identifier": "worldInfoBefore", "enabled": true},
+			{"identifier": "chatHistory", "enabled": true},
+		}}},
+	})
+	require.NoError(t, err)
+	preset := &dto.SillyTavernPresetConfig{Preset: raw, FailurePolicy: &dto.SillyTavernFailurePolicy{Worldbook: "skip"}}
+	book := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, MaxChars: 20000, Books: []dto.Worldbook{{
+		ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{{
+			ID: "e", Enabled: true, Constant: true, Content: strings.Repeat("x", 10000),
+		}},
+	}}}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	compiled, trace, err := CompileWorldbook(book, preset, request, SillyTavernContext{})
+	require.NoError(t, err)
+	assert.Equal(t, request.Messages, compiled.Messages)
+	assert.Contains(t, trace.Warnings, "worldbook skipped by the configured failure policy")
+	preset.FailurePolicy.Worldbook = "fail"
+	_, _, err = CompileWorldbook(book, preset, request, SillyTavernContext{})
+	require.ErrorContains(t, err, "worldbook format exceeded its limit")
+}
+
+func TestWorldbookPositionsFollowKnownMessageTransforms(t *testing.T) {
+	for _, mode := range []string{"merge", "semi_strict", "strict", "single_user"} {
+		t.Run(mode, func(t *testing.T) {
+			preset := &dto.SillyTavernPresetConfig{PostProcessing: mode, Preset: []byte(`{"squash_system_messages":true,"prompts":[{"identifier":"main","role":"system","content":"instructions"},{"identifier":"worldInfoBefore","marker":true},{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"main","enabled":true},{"identifier":"worldInfoBefore","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}`)}
+			book := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+				{ID: "a", Enabled: true, Constant: true, Content: "LORE_A"},
+				{ID: "b", Enabled: true, Constant: true, Content: "LORE_B", InjectionMode: "before_last_user"},
+			}}}}
+			request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "assistant", Content: "history"}, {Role: "user", Content: "question"}}}
+			compiled, trace, err := CompileWorldbook(book, preset, request, SillyTavernContext{})
+			require.NoError(t, err)
+			require.Equal(t, "final_request", trace.Worldbook.PlacementPhase)
+			for _, entry := range trace.Worldbook.Entries {
+				require.NotNil(t, entry.Placement)
+				require.Less(t, entry.Placement.Index, len(compiled.Messages))
+				message := compiled.Messages[entry.Placement.Index]
+				require.Contains(t, message.Content, "LORE_"+strings.ToUpper(entry.ID))
+				require.Equal(t, message.Role, entry.Placement.Role)
+			}
+		})
+	}
+}
+
+func TestWorldbookRequiredBudgetAndFailurePolicy(t *testing.T) {
+	book := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, MaxChars: 256, Books: []dto.Worldbook{
+		{ID: "optional", Enabled: true, Entries: []dto.WorldbookEntry{{ID: "a", Enabled: true, Constant: true, Priority: 100, Content: strings.Repeat("a", 200)}}},
+		{ID: "required", Enabled: true, Required: true, Entries: []dto.WorldbookEntry{{ID: "b", Enabled: true, Constant: true, Content: strings.Repeat("b", 100)}}},
+	}}
+	request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	preview, err := MatchWorldbook(book, request)
+	require.NoError(t, err)
+	require.Equal(t, strings.Repeat("b", 100), preview.Text)
+	require.Equal(t, "budget", preview.Entries[0].Reason)
+	book.Books[1].Entries[0].Content = strings.Repeat("b", 257)
+	preset := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"chatHistory","marker":true}],"prompt_order":[{"order":[{"identifier":"chatHistory","enabled":true}]}]}`), FailurePolicy: &dto.SillyTavernFailurePolicy{Worldbook: "skip"}}
+	_, _, err = CompileWorldbook(book, preset, request, SillyTavernContext{})
+	require.ErrorContains(t, err, "required worldbook content exceeds")
+	book.Books[1].Entries[0].Constant = false
+	book.Books[1].Entries[0].Keys = []string{"not-matched"}
+	_, _, err = CompileWorldbook(book, preset, request, SillyTavernContext{})
+	require.NoError(t, err, "required does not force an unmatched entry to trigger")
+	raw, err := common.Marshal(book.Books[1])
+	require.NoError(t, err)
+	imported, err := ImportWorldbook("required", raw)
+	require.NoError(t, err)
+	require.True(t, imported.Required)
+	require.Empty(t, imported.Warnings)
+}
+
 func TestWorldbookBudgetRecursionAndImport(t *testing.T) {
 	config := &dto.WorldbookConfig{Enabled: true, MaxChars: 256, Recursive: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
 		{ID: "a", Enabled: true, Constant: true, Content: "silver", Priority: 9},
@@ -498,6 +576,7 @@ func TestWorldbookPerEntryPlacementRunsBeforePresetScripts(t *testing.T) {
 		return message.Role == "system" && message.Content == "LATEST"
 	}), "the preset script must process a per-entry before-last-user block")
 	require.NotNil(t, trace.Worldbook)
+	require.Equal(t, "before_scripts", trace.Worldbook.PlacementPhase)
 	for _, decision := range trace.Worldbook.Entries {
 		require.NotNil(t, decision.Placement)
 		assert.Contains(t, fmt.Sprint(compiled.Messages[decision.Placement.Index].Content), strings.ToUpper(decision.ID))

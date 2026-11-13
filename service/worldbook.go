@@ -32,11 +32,12 @@ type WorldbookDecision struct {
 }
 
 type WorldbookPreview struct {
-	Fingerprint   string                    `json:"fingerprint,omitempty"`
-	DraftRevision string                    `json:"draft_revision,omitempty"`
-	Phase         string                    `json:"phase,omitempty"`
-	BypassReason  string                    `json:"bypass_reason,omitempty"`
-	FinalRequest  *dto.GeneralOpenAIRequest `json:"final_request,omitempty"`
+	Fingerprint    string                    `json:"fingerprint,omitempty"`
+	DraftRevision  string                    `json:"draft_revision,omitempty"`
+	Phase          string                    `json:"phase,omitempty"`
+	PlacementPhase string                    `json:"placement_phase,omitempty"`
+	BypassReason   string                    `json:"bypass_reason,omitempty"`
+	FinalRequest   *dto.GeneralOpenAIRequest `json:"final_request,omitempty"`
 
 	Text      string                  `json:"text"`
 	Entries   []WorldbookDecision     `json:"entries"`
@@ -55,8 +56,19 @@ type worldbookInjectionGroup struct {
 }
 
 type worldbookCandidate struct {
-	entry dto.WorldbookEntry
-	index int
+	entry    dto.WorldbookEntry
+	index    int
+	required bool
+}
+
+func worldbookHasRequiredContent(config *dto.WorldbookConfig) bool {
+	return config != nil && config.Enabled && slices.ContainsFunc(config.Books, func(book dto.Worldbook) bool {
+		return book.Enabled && book.Required && slices.ContainsFunc(book.Entries, func(entry dto.WorldbookEntry) bool { return entry.Enabled })
+	})
+}
+
+func CanSkipWorldbook(config *dto.WorldbookConfig, preset *dto.SillyTavernPresetConfig) bool {
+	return AdaptationFailureMode(preset, FailureStageWorldbook) == FailureSkip && !worldbookHasRequiredContent(config)
 }
 
 type worldbookMatchBudget struct {
@@ -81,6 +93,62 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 type worldbookMatchOptions struct {
 	expand func(string) string
 	anchor func(string, int) string
+}
+
+// assemblePresetWorldbook commits no caller-owned messages or macro state.
+// Matching, insertion and wrapper expansion share one working transaction.
+func assemblePresetWorldbook(context SillyTavernContext, preset *dto.SillyTavernPreset, original []presetMessage, marker string, macro *presetMacroContext) ([]presetMessage, *WorldbookPreview, error) {
+	final := slices.Clone(original)
+	preview := context.worldbookPreview
+	if context.worldbookSource != nil {
+		matched, err := matchWorldbookWith(context.worldbookConfig, context.worldbookSource, worldbookMatchOptions{
+			expand: func(text string) string { return macro.expand(text, 0) },
+			anchor: func(mode string, depth int) string {
+				placement, isMarker := worldbookGroupPlacement(context.worldbookConfig, mode, depth, final, -1)
+				return fmt.Sprintf("%d:%t", placement.Index, isMarker)
+			},
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		preview = &matched
+	}
+	if macro.warnings["macro expansion limit reached"] {
+		return nil, nil, fmt.Errorf("worldbook macro expansion exceeded its limit")
+	}
+	if preview != nil && preview.Text != "" {
+		// Do not mutate a legacy preview supplied by the caller on failure.
+		copy, err := common.DeepCopy(preview)
+		if err != nil {
+			return nil, nil, err
+		}
+		copy.groups, copy.expanded = preview.groups, preview.expanded
+		preview = copy
+		markerIndex := slices.IndexFunc(final, func(item presetMessage) bool {
+			return marker != "" && slices.Contains(strings.Split(item.id, ","), marker)
+		})
+		final, err = injectWorldbookGroups(context.worldbookConfig, preview, final, markerIndex, macro)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if context.worldbookConfig.SemanticsVersion >= 2 {
+		for index := range final {
+			item := &final[index]
+			if item.id != "worldInfoBefore" && item.id != "worldInfoAfter" {
+				continue
+			}
+			if content, ok := item.message.Content.(string); ok && strings.TrimSpace(content) != "" && strings.TrimSpace(preset.WorldInfoFormat) != "" {
+				wrapper := macro.expand(preset.WorldInfoFormat, 0)
+				size := int64(len(wrapper)) + int64(strings.Count(wrapper, "{0}"))*int64(len(content)-3)
+				if macro.warnings["macro expansion limit reached"] || size > maxSillyTavernExpansionBytes {
+					return nil, nil, fmt.Errorf("worldbook format exceeded its limit")
+				}
+				item.message.Content = strings.ReplaceAll(wrapper, "{0}", content)
+			}
+		}
+	}
+	return final, preview, nil
 }
 
 func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIRequest, options worldbookMatchOptions) (WorldbookPreview, error) {
@@ -128,14 +196,25 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 				decision.Reason = "needs_review"
 			}
 			decision.Eligible = decision.Reason == "no_match"
+			if book.Required && (decision.Reason == "invalid" || decision.Reason == "needs_review") {
+				return result, fmt.Errorf("required worldbook contains an entry that needs correction or review")
+			}
 			index := len(result.Entries)
 			result.Entries = append(result.Entries, decision)
 			if decision.Reason == "no_match" {
-				candidates = append(candidates, worldbookCandidate{entry: entry, index: index})
+				candidates = append(candidates, worldbookCandidate{entry: entry, index: index, required: book.Required})
 			}
 		}
 	}
-	slices.SortStableFunc(candidates, func(a, b worldbookCandidate) int { return cmp.Compare(b.entry.Priority, a.entry.Priority) })
+	slices.SortStableFunc(candidates, func(a, b worldbookCandidate) int {
+		if a.required != b.required {
+			if a.required {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(b.entry.Priority, a.entry.Priority)
+	})
 	seenIDs, seenContent := map[string]bool{}, map[string]bool{}
 	work := worldbookMatchBudget{remaining: 32 << 20}
 	var included []string
@@ -170,6 +249,9 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 			}
 			cost := utf8.RuneCountInString(entry.Content)
 			if cost == 0 {
+				if candidate.required {
+					return result, fmt.Errorf("triggered required worldbook entry expanded to empty content")
+				}
 				decision.Reason = "empty"
 				continue
 			}
@@ -188,6 +270,9 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 				cost += 2
 			}
 			if cost == 0 || used+cost > budget {
+				if candidate.required {
+					return result, fmt.Errorf("required worldbook content exceeds the configured character budget")
+				}
 				decision.Reason = "budget"
 				continue
 			}
@@ -225,7 +310,7 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 		}
 	}
 	slices.SortStableFunc(orderedIncluded, func(a, b worldbookCandidate) int {
-		return cmp.Compare(a.entry.Priority, b.entry.Priority)
+		return cmp.Or(cmp.Compare(a.entry.Priority, b.entry.Priority), cmp.Compare(a.index, b.index))
 	})
 	included = included[:0]
 	for index, candidate := range orderedIncluded {
@@ -260,6 +345,9 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 	placement := resolveWorldbookPlacement(config, request.Messages)
 	result.Placement = &placement
 	if work.exhausted {
+		if worldbookHasRequiredContent(config) {
+			return result, fmt.Errorf("required worldbook matching exceeded its work limit")
+		}
 		result.Warnings = append(result.Warnings, "Worldbook matching stopped after its work limit")
 	}
 	return result, nil
@@ -521,20 +609,21 @@ func CompileWorldbookFrom(config *dto.WorldbookConfig, preset *dto.SillyTavernPr
 		return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
 	}
 	preview, err := matchWorldbook(config, source, func(text string) string { return macro.expand(text, 0) })
+	if err == nil && macro.warnings["macro expansion limit reached"] {
+		err = fmt.Errorf("worldbook macro expansion exceeded its limit")
+	}
 	if err != nil {
-		if AdaptationFailureMode(preset, FailureStageWorldbook) == FailureSkip {
+		if CanSkipWorldbook(config, preset) {
 			compiled, trace, compileErr := CompileSillyTavernPreset(preset, base, context)
 			trace.Warnings = append(trace.Warnings, "worldbook skipped by the configured failure policy")
+			trace.Worldbook = &WorldbookPreview{Phase: "skipped", BypassReason: "failure_policy", Entries: []WorldbookDecision{}, Warnings: []string{}}
 			return compiled, trace, compileErr
 		}
 		return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
 	}
-	if macro.warnings["macro expansion limit reached"] {
-		return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, fmt.Errorf("worldbook macro expansion exceeded its limit"))
-	}
 	context.worldbookConfig, context.worldbookPreview = config, &preview
 	compiled, trace, err := CompileSillyTavernPreset(preset, base, context)
-	if config != nil {
+	if config != nil && trace.Worldbook == nil {
 		trace.Worldbook = &preview
 	}
 	return compiled, trace, err
@@ -627,6 +716,7 @@ func PreviewWorldbookDraft(config *dto.WorldbookConfig, preset *dto.SillyTavernP
 			preview.Phase = "final_request"
 		}
 		if !finalRequest && originalPreset != nil && originalPreset.ScriptRuntime != "" {
+			preview.PlacementPhase = "before_scripts"
 			preview.Warnings = append(preview.Warnings, "Positions shown before preset scripts; scripts were not executed")
 		}
 		return preview, nil
@@ -759,6 +849,7 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 				actual.Index = placement.Index
 				preview.Entries[index].Placement = &actual
 				preview.Entries[index].Inserted = true
+				final[placement.Index].worldbookEntries = append(final[placement.Index].worldbookEntries, index)
 			}
 		}
 		start = end

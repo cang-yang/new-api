@@ -57,6 +57,22 @@ const scopeReasonKeys: Record<string, string> = {
   chat_completions_only:
     'This processing setup supports Chat Completions only.',
 }
+const failureStageKeys: Record<string, string> = {
+  worldbook: 'Worldbook failure',
+  preset: 'Preset or script failure',
+  script: 'Script runtime',
+  response_restore: 'Reply source',
+  output_processing: 'Reply script failure',
+  regex: 'Receive regex failure',
+  response_validation: 'Check the preset and client output requirements.',
+}
+const failureModeKeys: Record<string, string> = {
+  skip: 'Skip the worldbook and continue',
+  request_passthrough: 'Send the original request unchanged',
+  preserve: 'Keep the previous valid result',
+  safe_raw: 'Keep the previous valid result',
+  fail: 'Fail the request',
+}
 
 export function AdaptationScopeCheck(props: {
   scope?: string
@@ -177,6 +193,47 @@ export function AdaptationScopeCheck(props: {
               )
             })}
           </ul>
+          {!!report.failure_plan?.length && (
+            <section
+              className='space-y-2 rounded-md border p-3'
+              aria-label={t('Effective failure handling')}
+            >
+              <h4 className='text-sm font-medium'>
+                {t('Effective failure handling')}
+              </h4>
+              <ul className='divide-y text-sm'>
+                {report.failure_plan.map((item) => (
+                  <li key={item.stage} className='space-y-1 py-2'>
+                    <div className='flex flex-wrap justify-between gap-2'>
+                      <span>
+                        {t(failureStageKeys[item.stage] ?? 'Failure handling')}
+                      </span>
+                      <span>
+                        {t(
+                          failureModeKeys[item.effective] ?? 'Fail the request'
+                        )}
+                      </span>
+                    </div>
+                    {(item.reason === 'required_reply_pipeline' ||
+                      item.reason === 'required_cleanup') && (
+                      <p className='text-destructive text-xs'>
+                        {t(
+                          'This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.'
+                        )}
+                      </p>
+                    )}
+                    {item.reason === 'validated_checkpoint' && (
+                      <p className='text-muted-foreground text-xs'>
+                        {t(
+                          'Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.'
+                        )}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <p className='text-muted-foreground text-xs'>
             {report.buffered
               ? t(

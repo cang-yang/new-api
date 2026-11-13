@@ -81,6 +81,9 @@ test('worldbook edits apply only on confirmation and preserve other entries', as
   const onChange = mount()
   await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
   const dialog = screen.getByRole('dialog', { name: 'Manage worldbooks' })
+  await user.click(
+    within(dialog).getByRole('switch', { name: 'Required background' })
+  )
   await user.click(within(dialog).getByRole('button', { name: 'Edit City' }))
   await user.clear(within(dialog).getByLabelText('Entry content'))
   await user.type(
@@ -91,6 +94,7 @@ test('worldbook edits apply only on confirmation and preserve other entries', as
   await user.click(
     within(dialog).getByRole('button', { name: 'Apply changes' })
   )
+  expect(JSON.parse(onChange.mock.lastCall?.[0]).books[0].required).toBe(true)
   expect(
     JSON.parse(onChange.mock.lastCall?.[0]).books[0].entries[0]
   ).toMatchObject({ content: 'Edited background', keys: ['city'] })

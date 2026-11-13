@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Required background": "Contexte indispensable",
+    "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.": "Les entrées correspondantes de ce livre sont prioritaires dans le budget. Si elles ne peuvent pas être incluses, arrêter au lieu de les omettre silencieusement.",
+    "Effective failure handling": "Comportement réel en cas d’échec",
+    "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.": "Cette étape est indispensable pour fournir une réponse correcte. Cette configuration ne permet pas de l’ignorer en cas d’échec.",
+    "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.": "Reprendre le dernier résultat valide et poursuivre les étapes restantes. Arrêter uniquement si aucune réponse valide ne peut être transmise au client.",
+    "Worldbook failed and was skipped; the preset still runs.": "Le livre de monde a échoué et a été ignoré ; le préréglage continue.",
+    "Positions are before script processing. A script changed the messages, so final positions are not claimed.": "Ces positions précèdent les scripts. Un script a modifié les messages ; elles ne représentent donc pas les positions finales.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

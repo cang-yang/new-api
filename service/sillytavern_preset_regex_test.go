@@ -388,7 +388,7 @@ func TestTextRegexOverflowPolicyAndStrictSourcePrecedence(t *testing.T) {
 		require.NotNil(t, w)
 		body := strings.Repeat("x", maxFilteredResponseBytes+1)
 		_, err := w.WriteString(body)
-		require.NoError(t, err)
+		require.Error(t, err, "stop reading an oversized response immediately")
 		err = w.Finish(ctx, true)
 		require.Error(t, err, "overflow cannot bypass response validation")
 		assert.Empty(t, recorder.Body.String())

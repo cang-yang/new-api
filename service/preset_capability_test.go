@@ -9,6 +9,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestEffectiveFailurePlanMatchesRequiredPipelineAndOptionalCleanup(t *testing.T) {
+	preset := &dto.SillyTavernPresetConfig{
+		ToolText:      &dto.SillyTavernToolText{Enabled: true, Name: "reply", Argument: "text"},
+		FailurePolicy: &dto.SillyTavernFailurePolicy{Preset: "request_passthrough", Script: "request_passthrough", OutputProcessing: "preserve", Regex: "preserve"},
+	}
+	filter := &dto.ResponseTextFilter{Mode: "regex_extract", Pattern: "(.*)", MissingMatch: "error"}
+	plan := effectiveAdaptationFailurePlan(preset, nil, filter, "m")
+	for _, item := range plan {
+		switch item.Stage {
+		case FailureStagePreset, FailureStageScript:
+			require.Equal(t, FailureRequestPassthrough, item.Configured)
+			require.Equal(t, FailureFail, item.Effective)
+			require.Equal(t, "required_reply_pipeline", item.Reason)
+		case FailureStageRegex:
+			require.Equal(t, FailureFail, item.Effective)
+			require.Equal(t, "required_cleanup", item.Reason)
+		case FailureStageOutputProcessing:
+			require.Equal(t, FailurePreserve, item.Effective, "mandatory host cleanup must not disable optional output rollback")
+		}
+	}
+	require.NotEmpty(t, effectiveAdaptationFailurePlan(nil, nil, nil, "m"), "empty profiles must remain inspectable")
+}
+
 func TestBuildPresetCapabilityReportIncludesStaticAndObservedTools(t *testing.T) {
 	config := protocolScriptPresetConfig(t, map[string]any{
 		"ToolBindings": map[string]any{
@@ -40,6 +63,35 @@ func TestBuildPresetCapabilityReportRejectsMalformedPreset(t *testing.T) {
 		Preset: json.RawMessage(`{"prompts":[}`),
 	}, &dto.GeneralOpenAIRequest{Model: "m"})
 	require.Error(t, err)
+}
+
+func TestPresetCapabilityDiscoveryDoesNotApproveOrRejectStaleReplySource(t *testing.T) {
+	config := protocolScriptPresetConfig(t, map[string]any{
+		"ToolBindings": map[string]any{
+			"context": map[string]any{
+				"enabled": true,
+				"code":    `return {name:"new_reply",parameters:{type:"object",properties:{text:{type:"string"}}}};`,
+			},
+		},
+		"OutputPreprocessing": map[string]any{
+			"consumeToolCalls":  true,
+			"toolCallFormatter": map[string]any{"enabled": true, "script": `(name,args)=>args.text`},
+		},
+	})
+	config.ToolProtocol = nil
+	config.ReplyAdapter = &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{{
+		Name: "old_reply", Formatter: true, OutputKind: "text", SourcePromptID: "context",
+		SourceFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}}}
+	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "probe"}}}
+	report, err := BuildPresetCapabilityReport(config, request)
+	require.NoError(t, err)
+	require.Len(t, report.ReplySources, 1)
+	assert.Equal(t, "new_reply", report.ReplySources[0].Name)
+	assert.NotEmpty(t, report.ReplySources[0].SourceFingerprint)
+	assert.Equal(t, "old_reply", config.ReplyAdapter.Containers[0].Name)
+	_, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
+	require.Error(t, err, "discovery must not authorize a changed source for live requests")
 }
 
 func TestBuildPresetCapabilityReportCacheReturnsIndependentCopies(t *testing.T) {

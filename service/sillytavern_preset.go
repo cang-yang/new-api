@@ -27,6 +27,7 @@ import (
 // chat history and are never guessed to be a particular SillyTavern marker.
 type SillyTavernContext struct {
 	internalReplyOnly bool // compiler-owned; never decoded from client context
+	discoverSources   bool // inspection only; never grants runtime approval
 	scriptClient      *dto.GeneralOpenAIRequest
 	worldbookConfig   *dto.WorldbookConfig
 	worldbookPreview  *WorldbookPreview
@@ -85,10 +86,11 @@ func (trace PresetCompileTrace) MarshalJSON() ([]byte, error) {
 }
 
 type presetMessage struct {
-	message   dto.Message
-	source    string
-	id        string
-	historyID string
+	message          dto.Message
+	source           string
+	id               string
+	historyID        string
+	worldbookEntries []int
 }
 
 type presetMacroContext struct {
@@ -122,7 +124,7 @@ const maxSillyTavernExpansionBytes = 8 << 20
 // conversion. Original message objects (including multimodal and tool fields)
 // are retained as whole objects; only preset-created messages contain strings.
 func CompileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.GeneralOpenAIRequest, context SillyTavernContext) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
-	if request != nil && presetSupportsClientDelivery(config) && (clientForbidsToolCalls(request) ||
+	if !context.discoverSources && request != nil && presetSupportsClientDelivery(config) && (clientForbidsToolCalls(request) ||
 		request.ResponseFormat != nil && request.ResponseFormat.Type != "" && request.ResponseFormat.Type != "text") &&
 		(len(config.Models) == 0 || slices.Contains(config.Models, request.Model)) {
 		return compilePresetWithInternalReply(config, request, context)
@@ -438,61 +440,25 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		final = append(final, history...)
 		trace.Warnings = append(trace.Warnings, "chatHistory marker absent; client history appended for compatibility")
 	}
-	if context.worldbookSource != nil {
+	if context.worldbookConfig != nil {
 		checkpoint := macro
 		checkpoint.vars = maps.Clone(macro.vars)
 		checkpoint.globalVars = maps.Clone(macro.globalVars)
 		checkpoint.values = maps.Clone(macro.values)
 		checkpoint.warnings = maps.Clone(macro.warnings)
 		checkpoint.manual = maps.Clone(macro.manual)
-		preview, matchErr := matchWorldbookWith(context.worldbookConfig, context.worldbookSource, worldbookMatchOptions{
-			expand: func(text string) string { return macro.expand(text, 0) },
-			anchor: func(mode string, depth int) string {
-				placement, marker := worldbookGroupPlacement(context.worldbookConfig, mode, depth, final, -1)
-				return fmt.Sprintf("%d:%t", placement.Index, marker)
-			},
-		})
-		if matchErr == nil && macro.warnings["macro expansion limit reached"] {
-			matchErr = fmt.Errorf("worldbook macro expansion exceeded its limit")
-		}
-		if matchErr != nil {
-			if AdaptationFailureMode(config, FailureStageWorldbook) != FailureSkip {
-				return nil, trace, newResponseStageError(FailureStageWorldbook, matchErr)
+		assembled, preview, worldbookErr := assemblePresetWorldbook(context, preset, final, worldbookMarker, &checkpoint)
+		if worldbookErr != nil {
+			if !CanSkipWorldbook(context.worldbookConfig, config) {
+				return nil, trace, newResponseStageError(FailureStageWorldbook, worldbookErr)
 			}
 			trace.Warnings = append(trace.Warnings, "worldbook skipped by the configured failure policy")
-			macro = checkpoint
+			trace.Worldbook = &WorldbookPreview{Phase: "skipped", BypassReason: "failure_policy", Entries: []WorldbookDecision{}, Warnings: []string{}}
+			final = slices.DeleteFunc(final, func(item presetMessage) bool {
+				return (item.id == "worldInfoBefore" || item.id == "worldInfoAfter") && item.message.Content == ""
+			})
 		} else {
-			context.worldbookPreview = &preview
-			trace.Worldbook = &preview
-		}
-	}
-	if context.worldbookPreview != nil && context.worldbookPreview.Text != "" {
-		preview := context.worldbookPreview
-		markerIndex := slices.IndexFunc(final, func(item presetMessage) bool {
-			return worldbookMarker != "" && slices.Contains(strings.Split(item.id, ","), worldbookMarker)
-		})
-		final, err = injectWorldbookGroups(context.worldbookConfig, preview, final, markerIndex, &macro)
-		if err != nil {
-			return nil, trace, newResponseStageError(FailureStageWorldbook, err)
-		}
-		trace.Worldbook = preview
-	}
-	if context.worldbookConfig != nil && context.worldbookConfig.SemanticsVersion >= 2 {
-		for index := range final {
-			item := &final[index]
-			if item.id != "worldInfoBefore" && item.id != "worldInfoAfter" {
-				continue
-			}
-			if content, ok := item.message.Content.(string); ok && strings.TrimSpace(content) != "" && strings.TrimSpace(preset.WorldInfoFormat) != "" {
-				// Expand the wrapper, not the already-expanded worldbook text.
-				wrapper := macro.expand(preset.WorldInfoFormat, 0)
-				count := strings.Count(wrapper, "{0}")
-				size := int64(len(wrapper)) + int64(count)*int64(len(content)-3)
-				if macro.warnings["macro expansion limit reached"] || size > maxSillyTavernExpansionBytes {
-					return nil, trace, newResponseStageError(FailureStageWorldbook, fmt.Errorf("worldbook format exceeded its limit"))
-				}
-				item.message.Content = strings.ReplaceAll(wrapper, "{0}", content)
-			}
+			final, macro, trace.Worldbook = assembled, checkpoint, preview
 		}
 	}
 	if preset.SquashSystemMessages {
@@ -506,6 +472,7 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 				if previous, ok := squashed[len(squashed)-1].message.Content.(string); ok {
 					squashed[len(squashed)-1].message.Content = previous + "\n" + content
 					squashed[len(squashed)-1].id += "," + item.id
+					squashed[len(squashed)-1].worldbookEntries = append(squashed[len(squashed)-1].worldbookEntries, item.worldbookEntries...)
 					continue
 				}
 			}
@@ -528,6 +495,27 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	}
 	if err != nil {
 		return nil, trace, err
+	}
+	if trace.Worldbook != nil && trace.Worldbook.Phase != "skipped" {
+		trace.Worldbook.PlacementPhase = "final_request"
+		globalIndex := -1
+		if trace.Worldbook.Placement != nil {
+			globalIndex = trace.Worldbook.Placement.Index
+		}
+		var finalGlobal *dto.WorldbookPlacement
+		for index, item := range final {
+			for _, entry := range item.worldbookEntries {
+				if placement := trace.Worldbook.Entries[entry].Placement; placement != nil {
+					if placement.Index == globalIndex && finalGlobal == nil {
+						copy := *trace.Worldbook.Placement
+						copy.Index, copy.Role = index, item.message.Role
+						finalGlobal = &copy
+					}
+					placement.Index, placement.Role = index, item.message.Role
+				}
+			}
+		}
+		trace.Worldbook.Placement = finalGlobal
 	}
 	compiled.Messages = make([]dto.Message, 0, len(final))
 	createdTextBytes := 0
@@ -565,9 +553,14 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		}
 		trace.ScriptResponse = response
 		trace.Warnings = append(trace.Warnings, warnings...)
-		trace.Messages = nil
-		for index, message := range compiled.Messages {
-			trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: message.Role, Source: "preset_script"})
+		if response != nil && response.requestMessagesChanged {
+			if trace.Worldbook != nil && trace.Worldbook.Phase != "skipped" {
+				trace.Worldbook.PlacementPhase = "before_scripts"
+			}
+			trace.Messages = nil
+			for index, message := range compiled.Messages {
+				trace.Messages = append(trace.Messages, PresetMessageSource{Index: index, Role: message.Role, Source: "preset_script"})
+			}
 		}
 	}
 	if config.ToolText != nil && config.ToolText.Enabled {
@@ -600,7 +593,7 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 	}
 	validationMode := 0
 	var protocolPlan *presetProtocolPlan
-	if config.ScriptRuntime != "" && trace.ScriptResponse != nil {
+	if config.ScriptRuntime != "" && trace.ScriptResponse != nil && !context.discoverSources {
 		protocolRequest := request
 		if context.ChatHistory != nil {
 			explicit := *request
@@ -681,6 +674,7 @@ func mergeAdjacentSillyTavernRoles(items []presetMessage) []presetMessage {
 				previous.message.Content = previousContent + "\n\n" + content
 				previous.id += "," + item.id
 				previous.source = "post_processing"
+				previous.worldbookEntries = append(previous.worldbookEntries, item.worldbookEntries...)
 				continue
 			}
 		}
@@ -741,7 +735,9 @@ func singleUserSillyTavernPostProcess(items []presetMessage, user, char string) 
 		return nil, err
 	}
 	parts := make([]string, 0, len(items))
+	var worldbookEntries []int
 	for _, item := range items {
+		worldbookEntries = append(worldbookEntries, item.worldbookEntries...)
 		if content := item.message.Content.(string); content != "" {
 			name := ""
 			if item.message.Role == "user" {
@@ -759,9 +755,10 @@ func singleUserSillyTavernPostProcess(items []presetMessage, user, char string) 
 		parts = append(parts, "[Start a new chat]")
 	}
 	return []presetMessage{{
-		message: dto.Message{Role: "user", Content: strings.Join(parts, "\n\n")},
-		source:  "post_processing",
-		id:      "single_user",
+		message:          dto.Message{Role: "user", Content: strings.Join(parts, "\n\n")},
+		source:           "post_processing",
+		id:               "single_user",
+		worldbookEntries: worldbookEntries,
 	}}, nil
 }
 

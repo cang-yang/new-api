@@ -2,9 +2,11 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"strconv"
@@ -28,6 +30,8 @@ var responseProcessingSlots = make(chan struct{}, 16)
 type ResponseTextFilterWriter struct {
 	gin.ResponseWriter
 	admitted        bool
+	providerCancel  context.CancelFunc
+	parentContext   context.Context
 	requirements    *ClientRequirements
 	structured      bool
 	checkpoint      []byte
@@ -267,7 +271,6 @@ func responseFailurePolicy(preset *dto.SillyTavernPresetConfig, config *dto.Resp
 	if textRegexRequiresStrictFailure(config, preset, model, send) {
 		policy.responseValidation = FailureFail
 		policy.responseRestore = FailureFail
-		policy.outputProcessing = FailureFail
 		if preset == nil || preset.RegexFailurePolicy == "" {
 			policy.regex = FailureFail
 		}
@@ -330,7 +333,7 @@ func (w *ResponseTextFilterWriter) Written() bool {
 
 func (w *ResponseTextFilterWriter) Write(data []byte) (int, error) {
 	if w.blocked {
-		return len(data), nil
+		return 0, fmt.Errorf("response text filter exceeded %d bytes", maxFilteredResponseBytes)
 	}
 	if bytes.Equal(data, []byte(": PING\n\n")) {
 		return len(data), nil
@@ -338,7 +341,10 @@ func (w *ResponseTextFilterWriter) Write(data []byte) (int, error) {
 	if w.buffer.Len()+len(data) > maxFilteredResponseBytes {
 		w.blocked = true
 		w.buffer.Reset()
-		return len(data), nil
+		if w.providerCancel != nil {
+			w.providerCancel()
+		}
+		return 0, fmt.Errorf("response text filter exceeded %d bytes", maxFilteredResponseBytes)
 	}
 
 	return w.buffer.Write(data)
@@ -352,6 +358,9 @@ func (w *ResponseTextFilterWriter) WriteString(data string) (int, error) {
 func (w *ResponseTextFilterWriter) Flush() {}
 
 func (w *ResponseTextFilterWriter) Admit(c *gin.Context) error {
+	if w.admitted {
+		return nil
+	}
 	if w.transformErr != nil {
 		return w.transformErr
 	}
@@ -361,6 +370,12 @@ func (w *ResponseTextFilterWriter) Admit(c *gin.Context) error {
 	select {
 	case responseProcessingSlots <- struct{}{}:
 		w.admitted = true
+		if c.Request != nil {
+			w.parentContext = c.Request.Context()
+			var providerContext context.Context
+			providerContext, w.providerCancel = context.WithCancel(w.parentContext)
+			c.Request = c.Request.WithContext(providerContext)
+		}
 		return nil
 	default:
 		return fmt.Errorf("reply processing is busy; retry later")
@@ -375,6 +390,18 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		defer func() { <-responseProcessingSlots; w.admitted = false }()
 	}
 	c.Writer = w.ResponseWriter
+	if w.providerCancel != nil {
+		defer w.providerCancel()
+		defer func() {
+			if c.Request != nil {
+				c.Request = c.Request.WithContext(w.parentContext)
+			}
+		}()
+	}
+	if w.blocked {
+		w.Header().Del("Content-Length")
+		return fmt.Errorf("response text filter exceeded %d bytes", maxFilteredResponseBytes)
+	}
 	if c.Request != nil && c.Request.Context().Err() != nil {
 		w.buffer.Reset()
 		return c.Request.Context().Err()
@@ -384,10 +411,6 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		// attempt with a later successful response or the controller's error JSON.
 		w.buffer.Reset()
 		return nil
-	}
-	if w.blocked {
-		w.Header().Del("Content-Length")
-		return fmt.Errorf("response text filter exceeded %d bytes", maxFilteredResponseBytes)
 	}
 	body := w.buffer.Bytes()
 	if len(body) == 0 {
@@ -412,7 +435,13 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 	}
 	w.Header().Del("Content-Length")
 	w.ResponseWriter.WriteHeader(w.status)
-	_, err := w.ResponseWriter.Write(body)
+	written, err := w.ResponseWriter.Write(body)
+	if err == nil && written != len(body) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.recordStage(FailureStageResponseStarted, "failed", err, map[string]any{"body_bytes": written, "delivery_incomplete": true})
+	}
 	if err == nil {
 		w.recordStage(FailureStageResponseStarted, "completed", nil, map[string]any{
 			"body_bytes": len(body),
@@ -463,7 +492,7 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 	}
 	w.skipChoices = map[string]bool{}
 	for key, state := range states {
-		if len(state.tools) > 0 || state.refused || state.finish == "length" || state.finish == "content_filter" {
+		if len(state.tools) > 0 && state.text.Len() == 0 || state.refused || state.finish == "length" || state.finish == "content_filter" {
 			w.skipChoices["choice:"+key] = true
 		}
 	}
@@ -491,21 +520,27 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 		w.structured = structured
 		w.onlyOutput = false
 		if err != nil {
-			if w.stageMode(FailureStageOutputProcessing) != FailurePreserve || w.mandatoryRegex() {
+			if w.stageMode(FailureStageOutputProcessing) != FailurePreserve {
 				return nil, err
 			}
 			w.transformErr = nil
 			w.recordStage(FailureStageOutputProcessing, "fallback", nil)
-			if err := w.validateDelivery(prepared, stream); err != nil {
-				return nil, newResponseStageError(FailureStageResponseValidation, err)
-			}
-			return prepared, nil
+			// Roll back the entire failed output stage, not the remaining
+			// pipeline. Independent host cleanup may still be mandatory.
+			processed = prepared
 		} else {
-			status := "skipped"
-			if w.outputProcessed {
-				status = "completed"
+			if w.stageMode(FailureStageOutputProcessing) == FailurePreserve &&
+				!bytes.Equal(processed, prepared) && w.validateDelivery(prepared, stream) == nil &&
+				w.validateDelivery(processed, stream) != nil {
+				processed = prepared
+				w.recordStage(FailureStageOutputProcessing, "fallback", nil, map[string]any{"reason": "result_contract_invalid"})
+			} else {
+				status := "skipped"
+				if w.outputProcessed {
+					status = "completed"
+				}
+				w.recordStage(FailureStageOutputProcessing, status, nil)
 			}
-			w.recordStage(FailureStageOutputProcessing, status, nil)
 		}
 	} else {
 		w.recordStage(FailureStageOutputProcessing, "skipped", nil)
@@ -542,6 +577,13 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 		w.recordStage(FailureStageRegex, regexDiagnosticStatus(w), nil)
 	}
 	if err := w.validateDelivery(filtered, stream); err != nil {
+		if w.stageMode(FailureStageRegex) == FailurePreserve && !w.mandatoryRegex() &&
+			!bytes.Equal(filtered, processed) && w.validateDelivery(processed, stream) == nil {
+			// A successful transform can still break the client's contract.
+			// Only a validated checkpoint may be delivered as fallback.
+			w.recordStage(FailureStageRegex, "fallback", nil, map[string]any{"reason": "result_contract_invalid"})
+			return processed, nil
+		}
 		return nil, newResponseStageError(FailureStageResponseValidation, err)
 	}
 	return filtered, nil

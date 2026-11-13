@@ -139,6 +139,12 @@ export type AdaptationScopeReport = {
   model: string
   buffered: boolean
   scenarios: { kind: string; status: string; reason: string }[]
+  failure_plan?: {
+    stage: string
+    configured: string
+    effective: string
+    reason?: string
+  }[]
 }
 
 export async function inspectAdaptationScope(input: {

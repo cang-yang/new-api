@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Required background": "Обязательный контекст",
+    "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.": "Совпавшие записи этой книги получают приоритет в лимите символов. Если включить их нельзя, запрос останавливается, а не теряет их незаметно.",
+    "Effective failure handling": "Фактическое поведение при ошибке",
+    "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.": "Этот этап необходим для корректного ответа. При текущих настройках его нельзя пропустить в случае ошибки.",
+    "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.": "Вернуться к предыдущему корректному результату и продолжить обработку. Остановиться, только если клиенту нельзя передать корректный ответ.",
+    "Worldbook failed and was skipped; the preset still runs.": "Ошибка книги мира: этап пропущен, обработка пресета продолжается.",
+    "Positions are before script processing. A script changed the messages, so final positions are not claimed.": "Показаны позиции до обработки скриптом. Скрипт изменил сообщения, поэтому итоговые позиции могут отличаться.",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

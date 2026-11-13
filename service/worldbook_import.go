@@ -38,10 +38,15 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 			return book, fmt.Errorf("invalid worldbook enabled flag")
 		}
 	}
+	if value := root["required"]; value != nil {
+		if err := common.Unmarshal(value, &book.Required); err != nil {
+			return book, fmt.Errorf("invalid worldbook required flag")
+		}
+	}
 	var bookRestrictions []dto.WorldbookNormalizedRule
 	for field, value := range root {
 		switch field {
-		case "id", "name", "description", "enabled", "entries", "warnings":
+		case "id", "name", "description", "enabled", "required", "entries", "warnings":
 		case "extensions":
 			var extensions map[string]json.RawMessage
 			if err := common.Unmarshal(value, &extensions); err != nil {

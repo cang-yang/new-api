@@ -45,6 +45,46 @@ export type PresetRegex = {
   generatesHtml: boolean
 }
 
+// Raw preset updates preserve channel decisions. A complete adaptation config
+// is a replacement candidate, never a merge of approvals from different packs.
+export async function importPresetConfiguration(
+  input: unknown,
+  previousValue: string,
+  fileName: string
+): Promise<Record<string, unknown>> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid preset')
+  }
+  const source = input as Record<string, unknown>
+  const bundle = Object.hasOwn(source, 'preset')
+  const previous = parsePresetEditor(previousValue)?.config
+  const candidate = structuredClone(
+    bundle
+      ? source
+      : {
+          parameter_policy: 'preset',
+          enable_embedded_regex: false,
+          enable_send_regex: false,
+          ...previous,
+          preset: source,
+        }
+  )
+  if (!parsePresetEditor(candidate)) throw new Error('Invalid preset')
+  collectPresetRegexScripts(candidate.preset)
+  candidate.source_preset_id = [
+    ...new Uint8Array(
+      await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(JSON.stringify(candidate.preset))
+      )
+    ),
+  ]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  candidate.source_file_name = fileName
+  return candidate
+}
+
 export function parsePresetEditor(value: string | Record<string, unknown>): {
   config: Record<string, unknown>
   entries: PresetEntry[]

@@ -1,5 +1,12 @@
 {
   "translation": {
+    "Required background": "必須の背景情報",
+    "Matched entries in this book get budget priority. If they cannot be included, stop instead of silently omitting them.": "この本の一致した項目を文字数枠に優先して含めます。含められない場合は、黙って省略せずにリクエストを停止します。",
+    "Effective failure handling": "エラー時の実際の動作",
+    "This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.": "正しい応答を返すために必要な処理です。この設定では、失敗時にスキップできません。",
+    "Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.": "直前の有効な結果に戻して残りの処理を続けます。クライアントの要件を満たす応答を返せない場合のみ停止します。",
+    "Worldbook failed and was skipped; the preset still runs.": "ワールドブックの処理に失敗したためスキップしました。プリセットの処理は続行します。",
+    "Positions are before script processing. A script changed the messages, so final positions are not claimed.": "表示位置はスクリプト処理前のものです。スクリプトがメッセージを変更したため、最終送信位置とは限りません。",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

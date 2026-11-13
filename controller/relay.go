@@ -560,8 +560,8 @@ func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request, wo
 		}
 	}
 	if channelSetting.PassThroughBodyEnabled || model_setting.GetGlobalSettings().PassThroughRequestEnabled {
-		if preset == nil && failurePolicy.Mode(service.FailureStageWorldbook) == service.FailureSkip {
-			return request, service.PresetCompileTrace{Worldbook: &service.WorldbookPreview{Entries: []service.WorldbookDecision{}, Warnings: []string{"Worldbook was skipped because body passthrough is enabled"}}}, nil
+		if preset == nil && service.CanSkipWorldbook(settings.Worldbook, settings.SillyTavernPreset) {
+			return request, service.PresetCompileTrace{Worldbook: &service.WorldbookPreview{Phase: "skipped", BypassReason: "body_passthrough", Entries: []service.WorldbookDecision{}, Warnings: []string{"Worldbook was skipped because body passthrough is enabled"}}}, nil
 		}
 		return nil, zero, fmt.Errorf("preset or worldbook requires request conversion; disable body passthrough")
 	}
@@ -586,15 +586,18 @@ func compileSelectedSillyTavernPreset(c *gin.Context, request kitdto.Request, wo
 		}
 	}
 	scanRequest := chatRequest
-	if preset == nil && settings.Worldbook != nil && service.AdaptationFailureMode(settings.SillyTavernPreset, service.FailureStageWorldbook) == service.FailureSkip {
+	if preset == nil && settings.Worldbook != nil && service.CanSkipWorldbook(settings.Worldbook, settings.SillyTavernPreset) {
 		if err := settings.Worldbook.Validate(); err != nil {
-			return request, service.PresetCompileTrace{Warnings: []string{"worldbook skipped by the configured failure policy"}}, nil
+			return request, service.PresetCompileTrace{Worldbook: &service.WorldbookPreview{Phase: "skipped", BypassReason: "failure_policy", Entries: []service.WorldbookDecision{}, Warnings: []string{}}, Warnings: []string{"worldbook skipped by the configured failure policy"}}, nil
 		}
 	}
 
 	compiled, trace, err := service.CompileWorldbookFrom(settings.Worldbook, preset, scanRequest, chatRequest, context)
 	if err != nil {
 		stage := service.AdaptationErrorStage(err)
+		if preset == nil && stage == service.FailureStageWorldbook && service.CanSkipWorldbook(settings.Worldbook, settings.SillyTavernPreset) {
+			return request, service.PresetCompileTrace{Worldbook: &service.WorldbookPreview{Phase: "skipped", BypassReason: "failure_policy", Entries: []service.WorldbookDecision{}, Warnings: []string{}}, Warnings: []string{"worldbook skipped by the configured failure policy"}}, nil
+		}
 		if stage != service.FailureStagePreflight && stage != service.FailureStageToolResolution && failurePolicy.Mode(stage) == service.FailureRequestPassthrough && profile.CanCancelBeforeProvider(chatRequest.Model) {
 			service.ClosePresetScriptResponse(c)
 			settings.SillyTavernPreset = nil

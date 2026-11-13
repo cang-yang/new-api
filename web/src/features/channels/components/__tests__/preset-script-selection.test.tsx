@@ -142,6 +142,20 @@ test('request-type checks are local previews and become stale when processing sc
         fingerprint: 'version',
         model: 'example',
         buffered: false,
+        failure_plan: [
+          {
+            stage: 'preset',
+            configured: 'request_passthrough',
+            effective: 'fail',
+            reason: 'required_reply_pipeline',
+          },
+          {
+            stage: 'output_processing',
+            configured: 'preserve',
+            effective: 'preserve',
+            reason: 'validated_checkpoint',
+          },
+        ],
         scenarios: [
           {
             kind: 'text',
@@ -161,6 +175,17 @@ test('request-type checks are local previews and become stale when processing sc
     await screen.findByText('Uses processing; model not verified')
   ).toBeVisible()
   expect(screen.getByText('No preset processing')).toBeVisible()
+  expect(screen.getByText('Effective failure handling')).toBeVisible()
+  expect(
+    screen.getByText(
+      'This step is required to deliver the correct reply. Its failure cannot be skipped with this configuration.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByText(
+      'Continue from the previous valid result and run the remaining steps. Stop only if no valid client reply can be delivered.'
+    )
+  ).toBeVisible()
   expect(post).toHaveBeenCalledWith(
     '/api/channel/sillytavern/inspect',
     expect.objectContaining({
@@ -173,6 +198,7 @@ test('request-type checks are local previews and become stale when processing sc
     <AdaptationScopeCheck scope='all_supported' defaultModel='example' />
   )
   expect(screen.queryByText('No preset processing')).toBeNull()
+  expect(screen.queryByText('Effective failure handling')).toBeNull()
 })
 const config = {
   preset: {
