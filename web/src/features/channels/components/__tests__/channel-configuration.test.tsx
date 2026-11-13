@@ -161,6 +161,20 @@ beforeEach(() => {
     },
   })
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === `/api/channel/${editingChannel.id}/adaptation`) {
+      return {
+        data: {
+          success: true,
+          data: {
+            revision: 0,
+            active_revision: 0,
+            active: {},
+            checked: false,
+            base_digest: 'test',
+          },
+        },
+      }
+    }
     if (url === `/api/channel/${editingChannel.id}`) {
       return { data: { success: true, data: editingChannel } }
     }
@@ -208,6 +222,34 @@ afterEach(() => {
     value: 1024,
   })
 })
+
+async function saveAdaptationDraft(user: ReturnType<typeof userEvent.setup>) {
+  let bundle: unknown
+  vi.spyOn(api, 'post').mockImplementationOnce(async (url, data) => {
+    expect(url).toBe(`/api/channel/${editingChannel.id}/adaptation`)
+    const change = data as { action: string; bundle: unknown }
+    expect(change.action).toBe('save_draft')
+    bundle = change.bundle
+    return {
+      data: {
+        success: true,
+        data: {
+          revision: 1,
+          active_revision: 0,
+          active: {},
+          draft: bundle,
+          checked: false,
+          base_digest: 'test',
+        },
+      },
+    }
+  })
+  await user.click(
+    screen.getByRole('button', { name: 'Save adaptation draft' })
+  )
+  await screen.findByText('Draft saved; not checked')
+  return JSON.parse(JSON.stringify(bundle))
+}
 
 // Editing opens the sheet on the left, so the sheet spans x = 0..900 and the
 // free space for the floating panel is on its right.
@@ -634,6 +676,9 @@ test('configuration navigation retains its height when the form content overflow
   })
   expect(navigation.parentElement).toHaveClass('shrink-0')
   expect(screen.getByRole('dialog')).toHaveClass('sm:max-w-7xl')
+  // Focus/scrollIntoView must scroll the selected panel, never the whole
+  // sheet (which would move the header/footer out of the viewport).
+  expect(screen.getByRole('dialog')).toHaveClass('overflow-clip')
 })
 
 test('without plugin binding permission only built-in providers are offered', () => {
@@ -1262,12 +1307,11 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
-test('channel regex rules save without an extraction template and disable editing while saving', async () => {
+test('channel regex rules save to a draft without changing the running channel', async () => {
   editingChannel.settings = JSON.stringify({
     upstream_model_update_check_enabled: true,
   })
-  const reply = deferredResponse<{ data: { success: boolean } }>()
-  const put = vi.spyOn(api, 'put').mockReturnValue(reply.promise)
+  const put = vi.spyOn(api, 'put')
   const user = userEvent.setup()
   render(<ConfigurationHarness currentRow={editingChannel} />)
   await screen.findByDisplayValue('Existing channel')
@@ -1280,21 +1324,14 @@ test('channel regex rules save without an extraction template and disable editin
   await user.click(screen.getByRole('button', { name: 'Add regex rule' }))
   await user.type(screen.getByLabelText('Find pattern'), 'secret')
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
-  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
-  await waitFor(() => expect(put).toHaveBeenCalled())
-  expect(screen.getByRole('button', { name: 'Edit regex' })).toBeDisabled()
+  const draft = await saveAdaptationDraft(user)
+  expect(put).not.toHaveBeenCalled()
   expect(screen.queryByRole('button', { name: 'Add regex rule' })).toBeNull()
-  const payload = put.mock.calls[0]?.[1] as { settings: string }
-  expect(JSON.parse(payload.settings)).toMatchObject({
-    upstream_model_update_check_enabled: true,
+  expect(draft).toMatchObject({
     response_text_filter: {
       mode: 'rules',
       rules: [{ pattern: 'secret', replacement: '', stage: 'receive' }],
     },
-  })
-  await act(async () => {
-    reply.resolve({ data: { success: true } })
-    await reply.promise
   })
 })
 
@@ -1348,7 +1385,7 @@ test.each([
   }
 )
 
-test('importing a SillyTavern preset saves it with the existing channel settings', async () => {
+test('importing a SillyTavern preset saves a complete draft without changing unrelated running settings', async () => {
   editingChannel.settings = JSON.stringify({
     upstream_model_update_check_enabled: true,
   })
@@ -1436,11 +1473,12 @@ test('importing a SillyTavern preset saves it with the existing channel settings
   expect(put).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   expect(put).not.toHaveBeenCalled()
-  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
-  await waitFor(() => expect(put).toHaveBeenCalled())
-  const payload = put.mock.calls[0]?.[1] as { settings: string }
-  expect(JSON.parse(payload.settings)).toMatchObject({
+  const draft = await saveAdaptationDraft(user)
+  expect(put).not.toHaveBeenCalled()
+  expect(JSON.parse(editingChannel.settings)).toEqual({
     upstream_model_update_check_enabled: true,
+  })
+  expect(draft).toMatchObject({
     sillytavern_preset: {
       preset: {
         ...preset,
@@ -1519,12 +1557,9 @@ test('importing scripts automatically prepares snapshots and enables only the pr
       expect.any(Object)
     )
   )
-  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
-  await waitFor(() => expect(put).toHaveBeenCalled())
-  expect(
-    JSON.parse((put.mock.calls[0][1] as { settings: string }).settings)
-      .sillytavern_preset
-  ).toMatchObject({
+  const draft = await saveAdaptationDraft(user)
+  expect(put).not.toHaveBeenCalled()
+  expect(draft.sillytavern_preset).toMatchObject({
     script_runtime: 'tavern-v1',
     script_modules: { helper: 'export const value = 1' },
   })
@@ -1740,11 +1775,8 @@ test('confirming embedded regex import adds receive rules without enabling send 
   ).toBeInTheDocument()
   expect(put).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: 'Import regex rules' }))
-  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
-  await waitFor(() => expect(put).toHaveBeenCalled())
-  const settings = JSON.parse(
-    (put.mock.calls[0][1] as { settings: string }).settings
-  )
+  const settings = await saveAdaptationDraft(user)
+  expect(put).not.toHaveBeenCalled()
   expect(settings.sillytavern_preset.preset).toEqual(preset)
   expect(settings.sillytavern_preset.enable_embedded_regex).toBe(false)
   expect(settings.response_text_filter).toMatchObject({
@@ -1823,11 +1855,8 @@ test('unnamed imported preset uses its filename and keeps that identity when sav
     )
   )
   expect(await screen.findByText('silver-moon.json')).toBeVisible()
-  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
-  await waitFor(() => expect(put).toHaveBeenCalled())
-  const settings = JSON.parse(
-    (put.mock.calls[0][1] as { settings: string }).settings
-  )
+  const settings = await saveAdaptationDraft(user)
+  expect(put).not.toHaveBeenCalled()
   expect(settings.sillytavern_preset.source_file_name).toBe('silver-moon.json')
 })
 
@@ -1947,11 +1976,8 @@ test('preset regex import separates send-side choice and carries the HTML warnin
   await user.click(
     within(dialog).getByRole('button', { name: 'Import regex rules' })
   )
-  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
-  await waitFor(() => expect(put).toHaveBeenCalled())
-  const settings = JSON.parse(
-    (put.mock.calls[0][1] as { settings: string }).settings
-  )
+  const settings = await saveAdaptationDraft(user)
+  expect(put).not.toHaveBeenCalled()
   expect(settings.response_text_filter.rules).toMatchObject([{ stage: 'send' }])
   expect(settings.response_text_filter.enable_send).toBe(true)
 })

@@ -669,6 +669,59 @@ function ScopedWorldbookSettings(props: Props) {
                       </p>
                     </div>
                   )}
+                  <div className='space-y-2'>
+                    <Label htmlFor='worldbook-placement-fallback'>
+                      {t('When the insertion position is unavailable')}
+                    </Label>
+                    <Select
+                      value={draft.placement_fallback || 'legacy'}
+                      disabled={locked || draft.semantics_version !== 2}
+                      onValueChange={(value) =>
+                        setDraft({
+                          ...draft,
+                          placement_fallback:
+                            value === 'legacy'
+                              ? undefined
+                              : (value as WorldbookConfig['placement_fallback']),
+                        })
+                      }
+                    >
+                      <SelectTrigger
+                        id='worldbook-placement-fallback'
+                        className='w-full'
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value='legacy'>
+                            {t('Keep existing placement behavior')}
+                          </SelectItem>
+                          <SelectItem value='system_prelude'>
+                            {t('Place background before the conversation')}
+                          </SelectItem>
+                          <SelectItem value='skip'>
+                            {t('Skip entries without an available position')}
+                          </SelectItem>
+                          <SelectItem value='fail'>
+                            {t('Stop and report the missing position')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Used when a preset marker or user message is missing, or the requested history depth is unavailable. Required background cannot be silently skipped.'
+                      )}
+                    </p>
+                    {draft.semantics_version !== 2 && (
+                      <p className='text-muted-foreground text-xs'>
+                        {t(
+                          'Switch to stable history positions above before choosing a fallback.'
+                        )}
+                      </p>
+                    )}
+                  </div>
                 </fieldset>
               )}
               {tab === 'preview' && (

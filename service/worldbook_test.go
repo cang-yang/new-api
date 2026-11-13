@@ -34,6 +34,43 @@ func TestWorldbookMatchingAndIsolation(t *testing.T) {
 	assert.Len(t, second.Messages, 3, "retry accumulated injection")
 }
 
+func TestWorldbookExplicitMissingPositionPolicies(t *testing.T) {
+	for _, mode := range []string{"before_definition", "after_definition", "before_last_user", "at_depth"} {
+		for _, policy := range []string{"skip", "fail", "system_prelude"} {
+			t.Run(mode+"/"+policy, func(t *testing.T) {
+				book := &dto.WorldbookConfig{SemanticsVersion: 2, Enabled: true, Recursive: true,
+					InjectionMode: mode, InjectionDepth: 20, PlacementFallback: policy,
+					Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
+						{ID: "missing", Enabled: true, Constant: true, Content: "trigger-related"},
+						{ID: "related", Enabled: true, Keys: []string{"trigger-related"}, Content: "should-not-appear", InjectionMode: "system_prelude"},
+					}}},
+				}
+				request := &dto.GeneralOpenAIRequest{Messages: []dto.Message{{Role: "assistant", Content: "history"}}}
+				result, trace, err := CompileWorldbook(book, nil, request, SillyTavernContext{})
+				if policy == "fail" {
+					require.ErrorContains(t, err, "insertion position is unavailable")
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, trace.Worldbook)
+				if policy == "skip" {
+					require.Equal(t, request.Messages, result.Messages)
+					require.Empty(t, trace.Worldbook.Text)
+					require.Equal(t, "position_unavailable", trace.Worldbook.Entries[0].Reason)
+					require.False(t, trace.Worldbook.Entries[1].Triggered, "skipped lore must not trigger associated entries")
+					book.Books[0].Required = true
+					_, _, err = CompileWorldbook(book, nil, request, SillyTavernContext{})
+					require.ErrorContains(t, err, "required worldbook insertion position")
+				} else {
+					require.Contains(t, result.Messages[0].Content, "trigger-related")
+					require.True(t, trace.Worldbook.Entries[0].Placement.Fallback)
+					require.Equal(t, "system_prelude", trace.Worldbook.Entries[0].Placement.Mode)
+				}
+			})
+		}
+	}
+}
+
 func TestWorldbookAbsentWithPresetMarkersPreservesChat(t *testing.T) {
 	preset := &dto.SillyTavernPresetConfig{Preset: []byte(`{"prompts":[{"identifier":"worldInfoBefore","marker":true},{"identifier":"chatHistory","marker":true},{"identifier":"worldInfoAfter","marker":true}],"prompt_order":[{"order":[{"identifier":"worldInfoBefore","enabled":true},{"identifier":"chatHistory","enabled":true},{"identifier":"worldInfoAfter","enabled":true}]}]}`)}
 	request := &dto.GeneralOpenAIRequest{Model: "m", Messages: []dto.Message{{Role: "user", Content: "hello"}}}

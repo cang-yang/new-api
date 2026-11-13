@@ -23,14 +23,17 @@ const (
 )
 
 type WorldbookConfig struct {
-	SemanticsVersion int         `json:"semantics_version,omitempty"`
-	Enabled          bool        `json:"enabled"`
-	ScanDepth        int         `json:"scan_depth"`
-	MaxChars         int         `json:"max_chars"`
-	Recursive        bool        `json:"recursive"`
-	InjectionMode    string      `json:"injection_mode,omitempty"`
-	InjectionDepth   int         `json:"injection_depth,omitempty"`
-	Books            []Worldbook `json:"books"`
+	SemanticsVersion int    `json:"semantics_version,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	ScanDepth        int    `json:"scan_depth"`
+	MaxChars         int    `json:"max_chars"`
+	Recursive        bool   `json:"recursive"`
+	InjectionMode    string `json:"injection_mode,omitempty"`
+	InjectionDepth   int    `json:"injection_depth,omitempty"`
+	// Empty preserves existing placement behavior. Explicit policies never
+	// silently clamp an unavailable history depth.
+	PlacementFallback string      `json:"placement_fallback,omitempty"`
+	Books             []Worldbook `json:"books"`
 }
 
 type Worldbook struct {
@@ -107,6 +110,14 @@ func (c *WorldbookConfig) Validate() error {
 	}
 	if c.InjectionDepth < 0 || c.InjectionDepth > 20 {
 		return fmt.Errorf("worldbook injection depth must be between 0 and 20")
+	}
+	switch c.PlacementFallback {
+	case "", "system_prelude", "skip", "fail":
+	default:
+		return fmt.Errorf("invalid worldbook placement fallback")
+	}
+	if c.PlacementFallback != "" && c.SemanticsVersion < 2 {
+		return fmt.Errorf("explicit placement fallback requires stable history positions")
 	}
 	count := 0
 	bookIDs := map[string]bool{}

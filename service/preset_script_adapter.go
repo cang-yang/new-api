@@ -129,6 +129,7 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 		"messages": clientRequest.Messages, "tools": clientRequest.Tools, "tool_choice": clientRequest.ToolChoice,
 		"functions": clientRequest.Functions, "function_call": clientRequest.FunctionCall,
 		"parallel_tool_calls": clientRequest.ParallelTooCalls, "response_format": clientRequest.ResponseFormat,
+		"default_output": config.DefaultOutput,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -200,7 +201,17 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 			return nil, nil, err
 		}
 		sum := sha256.Sum256(data)
+		source.LegacySourceFingerprint = hex.EncodeToString(sum[:])
+		// Approve the implementation and pinned dependencies, not the generated
+		// schema: its descriptions/enums may legitimately depend on this request.
+		data, err = common.Marshal([]any{"reply-source-v2", source.SourcePromptID, source.Name,
+			source.OutputKind, settings, config.ScriptModules, config.EntryOverrides, config.MacroValues, config.DefaultOutput})
+		if err != nil {
+			return nil, nil, err
+		}
+		sum = sha256.Sum256(data)
 		source.SourceFingerprint = hex.EncodeToString(sum[:])
+		source.SourceFingerprintVersion = 2
 		response.replySources[name] = source
 	}
 	warnings := []string{"SPreset data hooks run in an isolated server runtime; browser APIs, remote scripts, tool actions and log uploads are not executed"}

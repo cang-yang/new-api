@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
@@ -23,37 +25,52 @@ const maxFilteredResponseBytes = 8 << 20
 
 // Acquire capacity before calling a provider, not after buffering its reply.
 var responseProcessingSlots = make(chan struct{}, 16)
+var ErrReplyProcessingBusy = errors.New("reply processing is busy; retry later")
+
+// Per-instance fairness budgets can only reduce, not silently raise, the
+// established memory bound. Defaults preserve existing capacity until E3.
+var responseAdmission = struct {
+	sync.Mutex
+	users, channels         map[int]int
+	userLimit, channelLimit int
+}{
+	users: make(map[int]int), channels: make(map[int]int),
+	userLimit:    max(1, min(16, common.GetEnvOrDefault("REPLY_PROCESSING_PER_USER", 16))),
+	channelLimit: max(1, min(16, common.GetEnvOrDefault("REPLY_PROCESSING_PER_CHANNEL", 16))),
+}
 
 // ResponseTextFilterWriter filters the client-facing JSON/SSE after the adaptor
 // has accounted for the original upstream response. A bounded buffer lets a
 // regex match span arbitrary SSE chunks and keeps protocol metadata intact.
 type ResponseTextFilterWriter struct {
 	gin.ResponseWriter
-	admitted        bool
-	providerCancel  context.CancelFunc
-	parentContext   context.Context
-	requirements    *ClientRequirements
-	structured      bool
-	checkpoint      []byte
-	onlyOutput      bool
-	outputProcessed bool
-	skipOutput      bool
-	skipChoices     map[string]bool
-	config          dto.ResponseTextFilter
-	pattern         *regexp.Regexp
-	regexes         []presetResponseRegex
-	hasFilter       bool
-	toolText        *dto.SillyTavernToolText
-	scriptResponse  *PresetScriptResponse
-	diagnostic      *AdaptationDiagnostic
-	policy          *AdaptationFailurePolicy
-	forceEmpty      bool
-	status          int
-	buffer          bytes.Buffer
-	blocked         bool
-	warned          bool
-	transformErr    error
-	deadline        time.Time
+	admitted         bool
+	admissionUser    int
+	admissionChannel int
+	providerCancel   context.CancelFunc
+	parentContext    context.Context
+	requirements     *ClientRequirements
+	structured       bool
+	checkpoint       []byte
+	onlyOutput       bool
+	outputProcessed  bool
+	skipOutput       bool
+	skipChoices      map[string]bool
+	config           dto.ResponseTextFilter
+	pattern          *regexp.Regexp
+	regexes          []presetResponseRegex
+	hasFilter        bool
+	toolText         *dto.SillyTavernToolText
+	scriptResponse   *PresetScriptResponse
+	diagnostic       *AdaptationDiagnostic
+	policy           *AdaptationFailurePolicy
+	forceEmpty       bool
+	status           int
+	buffer           bytes.Buffer
+	blocked          bool
+	warned           bool
+	transformErr     error
+	deadline         time.Time
 }
 
 // responseStageError tags a processing failure with the pipeline stage that
@@ -211,6 +228,7 @@ func BeginResponseTextFilterWithPreset(c *gin.Context, config *dto.ResponseTextF
 	requirements, _ := c.Get(ClientRequirementsKey)
 	client, _ := requirements.(*ClientRequirements)
 	protectClient := client != nil && client.request != nil && (clientDeclaresToolContract(client.request) || client.request.ResponseFormat != nil && client.request.ResponseFormat.Type != "" && client.request.ResponseFormat.Type != "text")
+	protectClient = protectClient || client != nil && client.defaultOutput != nil && client.defaultOutput.Format != "text"
 	if !protectClient && !hasFilter && toolText == nil && scriptResponse == nil && len(regexes) == 0 && len(warnings) == 0 && setupErr == nil {
 		return nil
 	}
@@ -367,9 +385,21 @@ func (w *ResponseTextFilterWriter) Admit(c *gin.Context) error {
 	if c.Request != nil && c.Request.Context().Err() != nil {
 		return c.Request.Context().Err()
 	}
+	responseAdmission.Lock()
+	defer responseAdmission.Unlock()
+	user := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	channel := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	if responseAdmission.users[user] >= responseAdmission.userLimit ||
+		responseAdmission.channels[channel] >= responseAdmission.channelLimit {
+		RecordAdaptationStage(c, "admission", "failed", "reply processing capacity exhausted", nil)
+		return ErrReplyProcessingBusy
+	}
 	select {
 	case responseProcessingSlots <- struct{}{}:
 		w.admitted = true
+		w.admissionUser, w.admissionChannel = user, channel
+		responseAdmission.users[user]++
+		responseAdmission.channels[channel]++
 		if c.Request != nil {
 			w.parentContext = c.Request.Context()
 			var providerContext context.Context
@@ -378,7 +408,26 @@ func (w *ResponseTextFilterWriter) Admit(c *gin.Context) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("reply processing is busy; retry later")
+		RecordAdaptationStage(c, "admission", "failed", "reply processing capacity exhausted", nil)
+		return ErrReplyProcessingBusy
+	}
+}
+
+func (w *ResponseTextFilterWriter) releaseAdmission() {
+	responseAdmission.Lock()
+	defer responseAdmission.Unlock()
+	if !w.admitted {
+		return
+	}
+	<-responseProcessingSlots
+	w.admitted = false
+	responseAdmission.users[w.admissionUser]--
+	responseAdmission.channels[w.admissionChannel]--
+	if responseAdmission.users[w.admissionUser] == 0 {
+		delete(responseAdmission.users, w.admissionUser)
+	}
+	if responseAdmission.channels[w.admissionChannel] == 0 {
+		delete(responseAdmission.channels, w.admissionChannel)
 	}
 }
 
@@ -387,7 +436,7 @@ func (w *ResponseTextFilterWriter) Finish(c *gin.Context, success bool) error {
 		return nil
 	}
 	if w.admitted {
-		defer func() { <-responseProcessingSlots; w.admitted = false }()
+		defer w.releaseAdmission()
 	}
 	c.Writer = w.ResponseWriter
 	if w.providerCancel != nil {
@@ -501,6 +550,9 @@ func (w *ResponseTextFilterWriter) processResponse(body []byte, stream bool) ([]
 		run = w.filterSSE
 	}
 	structured := w.requirements != nil && w.requirements.request.ResponseFormat != nil && w.requirements.request.ResponseFormat.Type != "" && w.requirements.request.ResponseFormat.Type != "text"
+	if w.requirements != nil && w.requirements.defaultOutput != nil && w.requirements.defaultOutput.Format == "json_object" {
+		structured = true
+	}
 	if w.scriptResponse != nil && w.scriptResponse.protocol != nil && w.scriptResponse.protocol.contract == presetProtocolContractJSON {
 		structured = true
 	}

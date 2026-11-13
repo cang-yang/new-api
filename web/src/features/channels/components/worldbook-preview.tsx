@@ -121,6 +121,7 @@ export function WorldbookPreview(props: {
     no_match: t('No keyword match'),
     budget: t('Content limit reached'),
     duplicate: t('Duplicate content'),
+    position_unavailable: t('Insertion position unavailable; entry skipped'),
   }
   const placementNames: Record<string, string> = {
     inherit: t('Follow preset worldbook markers'),

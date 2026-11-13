@@ -45,6 +45,9 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 	handlePermissionRoute(channelRoute, http.MethodPost, "/sillytavern/inspect", authz.ChannelWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.InspectChannelSillyTavernPreset)
 	channelRoute.POST("/regex/preview", middleware.RequirePermission(authz.ChannelWrite), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PreviewChannelRegex)
 	handlePermissionRoute(channelRoute, http.MethodPost, "/preset/scripts/prepare", authz.ChannelWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.PrepareChannelPresetScripts)
+	handlePermissionRoute(channelRoute, http.MethodGet, "/:id/adaptation", authz.ChannelRead, middleware.DisableCache(), controller.GetChannelAdaptation)
+	handlePermissionRoute(channelRoute, http.MethodGet, "/:id/adaptation/health", authz.ChannelRead, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetChannelAdaptationHealth)
+	handlePermissionRoute(channelRoute, http.MethodPost, "/:id/adaptation", authz.ChannelSensitiveWrite, middleware.CriticalRateLimit(), middleware.DisableCache(), controller.ChangeChannelAdaptation)
 
 	channelRoute.POST("/:id/key",
 		middleware.RootAuth(),

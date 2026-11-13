@@ -87,6 +87,7 @@ export const worldbookSchema = z
       ])
       .default('inherit'),
     injection_depth: z.number().int().min(0).max(20).default(0),
+    placement_fallback: z.enum(['system_prelude', 'skip', 'fail']).optional(),
     books: z.array(worldbookBookSchema).max(16),
   })
   .passthrough()

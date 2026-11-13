@@ -28,6 +28,29 @@ import { WorldbookSettings } from '../worldbook-settings'
 
 afterEach(() => vi.restoreAllMocks())
 
+test('stable placement settings expose an explicit missing-position policy and preserve it when applied', async () => {
+  const user = userEvent.setup()
+  const value = { ...config, semantics_version: 2 }
+  const onChange = mount(JSON.stringify(value))
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  await user.click(screen.getByRole('tab', { name: 'Matching settings' }))
+  await user.click(
+    screen.getByRole('combobox', {
+      name: 'When the insertion position is unavailable',
+    })
+  )
+  await user.click(
+    screen.getByRole('option', {
+      name: 'Skip entries without an available position',
+    })
+  )
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(JSON.parse(onChange.mock.calls[0][0])).toMatchObject({
+    placement_fallback: 'skip',
+    semantics_version: 2,
+  })
+})
+
 const config: WorldbookConfig = {
   enabled: true,
   scan_depth: 4,

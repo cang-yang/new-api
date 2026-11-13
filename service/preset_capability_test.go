@@ -4,10 +4,33 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAdaptationHealthRequiresDeliveryEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		attempt model.AuditAttempt
+		stages  []AdaptationDiagnosticStage
+		want    string
+	}{
+		{"upstream success alone is not delivery", model.AuditAttempt{HTTPStatus: 200}, nil, "unknown"},
+		{"missing upstream status is not proof of upstream failure", model.AuditAttempt{State: "failed"}, nil, "unknown"},
+		{"explicit upstream failure", model.AuditAttempt{HTTPStatus: 502}, nil, "upstream_failed"},
+		{"writer completed", model.AuditAttempt{HTTPStatus: 200}, []AdaptationDiagnosticStage{{Stage: "writeback", Status: "completed"}}, "completed"},
+		{"optional skip is distinct", model.AuditAttempt{HTTPStatus: 200}, []AdaptationDiagnosticStage{{Stage: "worldbook", Status: "fallback"}, {Stage: "writeback", Status: "completed"}}, "degraded"},
+		{"core processing failed after upstream success", model.AuditAttempt{HTTPStatus: 200}, []AdaptationDiagnosticStage{{Stage: "writeback", Status: "failed"}}, "failed_before_delivery"},
+		{"interruption takes precedence", model.AuditAttempt{HTTPStatus: 200}, []AdaptationDiagnosticStage{{Stage: "response_started", Status: "failed"}, {Stage: "writeback", Status: "failed"}}, "interrupted"},
+		{"capacity is not a provider failure", model.AuditAttempt{ErrorCode: "reply_processing_busy", HTTPStatus: 503}, nil, "overloaded"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, adaptationAttemptOutcome(test.attempt, &AdaptationDiagnostic{Stages: test.stages}))
+		})
+	}
+}
 
 func TestEffectiveFailurePlanMatchesRequiredPipelineAndOptionalCleanup(t *testing.T) {
 	preset := &dto.SillyTavernPresetConfig{
@@ -92,6 +115,56 @@ func TestPresetCapabilityDiscoveryDoesNotApproveOrRejectStaleReplySource(t *test
 	assert.Equal(t, "old_reply", config.ReplyAdapter.Containers[0].Name)
 	_, _, err = CompileSillyTavernPreset(config, request, SillyTavernContext{})
 	require.Error(t, err, "discovery must not authorize a changed source for live requests")
+}
+
+func TestPresetCapabilitySourceApprovalTracksCodeNotRequestGeneratedSchema(t *testing.T) {
+	settings := map[string]any{
+		"ToolBindings": map[string]any{"context": map[string]any{
+			"enabled": true, "code": `return {name:"reply",parameters:{type:"object",properties:{text:{type:"string"}}}};`,
+		}},
+		"FinalRequestProcessing": map[string]any{
+			"enabled": true, "script": `({request}) => { request.tools[0].function.description=request.model; return request; }`,
+		},
+		"OutputPreprocessing": map[string]any{
+			"consumeToolCalls": true, "toolCallFormatter": map[string]any{"enabled": true, "script": `(name,args)=>args.text`},
+		},
+	}
+	config := protocolScriptPresetConfig(t, settings)
+	config.ToolProtocol = nil
+	config.ReplyAdapter = nil
+	first := &dto.GeneralOpenAIRequest{Model: "first", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	second := &dto.GeneralOpenAIRequest{Model: "second", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+	report, err := BuildPresetCapabilityReport(config, first)
+	require.NoError(t, err)
+	require.Len(t, report.ReplySources, 1)
+	source := report.ReplySources[0]
+	require.Equal(t, 2, source.SourceFingerprintVersion)
+	other, err := BuildPresetCapabilityReport(config, second)
+	require.NoError(t, err)
+	require.Len(t, other.ReplySources, 1)
+	require.Equal(t, source.SourceFingerprint, other.ReplySources[0].SourceFingerprint)
+	require.NotEqual(t, source.LegacySourceFingerprint, other.ReplySources[0].LegacySourceFingerprint)
+	config.ReplyAdapter = &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{source}}
+	_, _, err = CompileSillyTavernPreset(config, second, SillyTavernContext{})
+	require.NoError(t, err, "changing dynamic descriptions must not revoke approval")
+
+	legacy := source
+	legacy.SourceFingerprintVersion = 0
+	legacy.SourceFingerprint = source.LegacySourceFingerprint
+	config.ReplyAdapter.Containers = []dto.ReplyContainer{legacy}
+	_, _, err = CompileSillyTavernPreset(config, first, SillyTavernContext{})
+	require.NoError(t, err, "existing approved fingerprints must retain their previous meaning")
+	_, _, err = CompileSillyTavernPreset(config, second, SillyTavernContext{})
+	require.ErrorContains(t, err, "reply source has changed", "legacy approval must not silently become broader")
+
+	settings["OutputPreprocessing"] = map[string]any{
+		"consumeToolCalls": true, "toolCallFormatter": map[string]any{"enabled": true, "script": `(name,args)=>args.text+"changed"`},
+	}
+	changed := protocolScriptPresetConfig(t, settings)
+	changed.ToolProtocol = nil
+	changed.ReplyAdapter = &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{source}}
+	_, _, err = CompileSillyTavernPreset(changed, first, SillyTavernContext{})
+	require.ErrorContains(t, err, "reply source has changed")
 }
 
 func TestBuildPresetCapabilityReportCacheReturnsIndependentCopies(t *testing.T) {
@@ -198,4 +271,17 @@ func TestAdaptationScopeReportDoesNotRunScriptsOrClaimModelCompatibility(t *test
 			assert.Equal(t, "adapted_unverified", scenario.Status, scenario.Kind)
 		}
 	}
+}
+
+func TestCandidateFailureChoicesRejectImpossibleContinueWithoutChangingLiveConfiguration(t *testing.T) {
+	config := protocolScriptPresetConfig(t, nil)
+	config.ToolProtocol = nil
+	config.ReplyAdapter = &dto.ReplyAdapter{Version: 2, Containers: []dto.ReplyContainer{{Name: "reply", Formatter: true, OutputKind: "text"}}}
+	config.FailurePolicy = &dto.SillyTavernFailurePolicy{Preset: "request_passthrough", Script: "request_passthrough"}
+	report := &AdaptationScopeReport{FailurePlan: effectiveAdaptationFailurePlan(config, nil, nil, "m")}
+	require.ErrorContains(t, ValidateAdaptationFailureChoices(report, config), "selected fallback")
+	require.Equal(t, "request_passthrough", config.FailurePolicy.Preset, "checking must not mutate the live config")
+	config.FailurePolicy.Preset, config.FailurePolicy.Script = "fail", "fail"
+	report.FailurePlan = effectiveAdaptationFailurePlan(config, nil, nil, "m")
+	require.NoError(t, ValidateAdaptationFailureChoices(report, config))
 }

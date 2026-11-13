@@ -58,6 +58,7 @@ import {
   PresetAdapterOverview,
   PresetCapabilityReportSettings,
 } from './preset-capability-report'
+import { PresetDefaultOutput } from './preset-default-output'
 import { ReplyAdapterSettings } from './reply-adapter-settings'
 
 type Props = {
@@ -131,6 +132,11 @@ export function PresetScriptSettings(props: Props) {
       aria-label={t('Script compatibility')}
     >
       <PresetAdapterOverview config={props.config} />
+      <PresetDefaultOutput
+        config={props.config}
+        onChange={props.onChange}
+        disabled={props.disabled}
+      />
       <FieldSet disabled={props.disabled}>
         <FieldLegend id={`${id}-mode`} variant='label'>
           {t('How should this preset be processed?')}

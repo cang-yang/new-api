@@ -26,12 +26,43 @@ import {
   AdaptationScopeCheck,
   PresetCapabilityReportSettings,
 } from '../preset-capability-report'
+import { PresetDefaultOutput } from '../preset-default-output'
 import { PresetScriptSettings } from '../preset-script-settings'
 import { ReplyAdapterSettings } from '../reply-adapter-settings'
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+test('channel default output is explicit and changing it preserves the core script configuration', async () => {
+  const user = userEvent.setup()
+  const onChange = vi.fn()
+  const config = { script_runtime: 'spreset-v1', preset: { retained: true } }
+  const view = render(
+    <PresetDefaultOutput config={config} onChange={onChange} />
+  )
+  await user.click(
+    screen.getByRole('combobox', { name: 'Default reply format' })
+  )
+  await user.click(
+    screen.getByRole('option', { name: 'One named text block (for variables)' })
+  )
+  const expected = {
+    ...config,
+    default_output: { format: 'tagged_text', tag: 'UpdateVariable' },
+  }
+  expect(onChange).toHaveBeenLastCalledWith(expected)
+  view.rerender(<PresetDefaultOutput config={expected} onChange={onChange} />)
+  expect(
+    screen.getByRole('textbox', { name: 'Required block name' })
+  ).toHaveValue('UpdateVariable')
+  view.rerender(
+    <PresetDefaultOutput config={expected} onChange={onChange} disabled />
+  )
+  expect(
+    screen.getByRole('textbox', { name: 'Required block name' })
+  ).toBeDisabled()
 })
 
 test('JSON conversion is explicit and retained when editing a reply source', async () => {

@@ -54,7 +54,8 @@ type Channel struct {
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
-	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+	OtherSettings     string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+	AdaptationManaged bool   `json:"-"`                               // Only the adaptation lifecycle may change this flag.
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -490,26 +491,29 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	// 使用事务 分批删除channel表和abilities表
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return 0, tx.Error
-	}
+	var count int64
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		count, err = deleteChannelsWithAdaptations(tx, ids)
+		return err
+	})
+	return count, err
+}
+
+func deleteChannelsWithAdaptations(tx *gorm.DB, ids []int) (int64, error) {
 	var deletedCount int64
 	for _, chunk := range lo.Chunk(ids, 200) {
 		result := tx.Where("id in (?)", chunk).Delete(&Channel{})
 		if result.Error != nil {
-			tx.Rollback()
 			return 0, result.Error
 		}
 		deletedCount += result.RowsAffected
 		if err := tx.Where("channel_id in (?)", chunk).Delete(&Ability{}).Error; err != nil {
-			tx.Rollback()
 			return 0, err
 		}
-	}
-	if err := tx.Commit().Error; err != nil {
-		return 0, err
+		if err := tx.Where("channel_id in (?)", chunk).Delete(&ChannelAdaptationVersion{}).Error; err != nil {
+			return 0, err
+		}
 	}
 	return deletedCount, nil
 }
@@ -603,7 +607,16 @@ func (channel *Channel) Update() error {
 		}
 	}
 	var err error
-	err = DB.Model(channel).Updates(channel).Error
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var current Channel
+		if err := lockForUpdate(tx).First(&current, channel.Id).Error; err != nil {
+			return err
+		}
+		if err := guardManagedAdaptationUpdate(&current, channel); err != nil {
+			return err
+		}
+		return tx.Model(channel).Omit("adaptation_managed").Updates(channel).Error
+	})
 	if err != nil {
 		return err
 	}
@@ -633,12 +646,7 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	var err error
-	err = DB.Delete(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.DeleteAbilities()
+	_, err := BatchDeleteChannels([]int{channel.Id})
 	return err
 }
 
@@ -927,13 +935,29 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
-	result := DB.Where("status = ?", status).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	return deleteChannelsByStatuses([]int64{status})
 }
 
 func DeleteDisabledChannel() (int64, error) {
-	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	return deleteChannelsByStatuses([]int64{common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled})
+}
+
+func deleteChannelsByStatuses(statuses []int64) (int64, error) {
+	var count int64
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var selected []Channel
+		if err := lockForUpdate(tx).Select("id").Where("status IN ?", statuses).Find(&selected).Error; err != nil {
+			return err
+		}
+		ids := make([]int, len(selected))
+		for i, channel := range selected {
+			ids[i] = channel.Id
+		}
+		var err error
+		count, err = deleteChannelsWithAdaptations(tx, ids)
+		return err
+	})
+	return count, err
 }
 
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {
@@ -1076,8 +1100,7 @@ func (channel *Channel) GetSetting() dto.ChannelSettings {
 		err := common.Unmarshal([]byte(*channel.Setting), &setting)
 		if err != nil {
 			common.SysLog(common.LogText("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
-			channel.Setting = nil // 清空设置以避免后续错误
-			_ = channel.Save()    // 保存修改
+			// Reads must not rewrite a shared channel or persisted settings.
 		}
 	}
 	return setting
@@ -1098,8 +1121,7 @@ func (channel *Channel) GetOtherSettings() dto.ChannelOtherSettings {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, &setting)
 		if err != nil {
 			common.SysLog(common.LogText("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
-			channel.OtherSettings = "{}" // 清空设置以避免后续错误
-			_ = channel.Save()           // 保存修改
+			// Keep the original for diagnostics; a getter is never a migration.
 		}
 	}
 	if preset := common.GetAdvancedCustomPreset(channel.Type); preset != nil {

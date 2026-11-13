@@ -14,14 +14,15 @@ import (
 // SillyTavernPresetConfig is deliberately opt-in and channel scoped. The
 // original preset is kept intact so it can be edited or exported losslessly.
 type SillyTavernPresetConfig struct {
-	SourcePresetID     string          `json:"source_preset_id,omitempty"`
-	ReplyAdapter       *ReplyAdapter   `json:"reply_adapter,omitempty"`
-	RegexFailurePolicy string          `json:"regex_failure_policy,omitempty"`
-	Preset             json.RawMessage `json:"preset"`
-	Models             []string        `json:"models,omitempty"`
-	User               string          `json:"user,omitempty"`
-	Char               string          `json:"char,omitempty"`
-	ParameterPolicy    string          `json:"parameter_policy,omitempty"` // preset (default) or client
+	SourcePresetID     string               `json:"source_preset_id,omitempty"`
+	ReplyAdapter       *ReplyAdapter        `json:"reply_adapter,omitempty"`
+	DefaultOutput      *PresetDefaultOutput `json:"default_output,omitempty"`
+	RegexFailurePolicy string               `json:"regex_failure_policy,omitempty"`
+	Preset             json.RawMessage      `json:"preset"`
+	Models             []string             `json:"models,omitempty"`
+	User               string               `json:"user,omitempty"`
+	Char               string               `json:"char,omitempty"`
+	ParameterPolicy    string               `json:"parameter_policy,omitempty"` // preset (default) or client
 	// Deprecated display hint. All modes retain the declared reply transport;
 	// this field never bypasses the preset formatter or other required hooks.
 	DeliveryMode string `json:"delivery_mode,omitempty"` // empty/preset or client
@@ -44,6 +45,37 @@ type SillyTavernPresetConfig struct {
 	FailurePolicy       *SillyTavernFailurePolicy `json:"failure_policy,omitempty"`
 }
 
+// PresetDefaultOutput applies only when the client omits response_format.
+// It is a declared channel contract, never inferred from message keywords.
+type PresetDefaultOutput struct {
+	Format string `json:"format"` // text, json_object, tagged_text
+	Tag    string `json:"tag,omitempty"`
+}
+
+func (o *PresetDefaultOutput) Validate() error {
+	if o == nil {
+		return nil
+	}
+	if o.Format != "text" && o.Format != "json_object" && o.Format != "tagged_text" {
+		return fmt.Errorf("default output format must be text, json_object or tagged_text")
+	}
+	if o.Format != "tagged_text" {
+		if o.Tag != "" {
+			return fmt.Errorf("only tagged text accepts a default output tag")
+		}
+		return nil
+	}
+	if len(o.Tag) < 1 || len(o.Tag) > 64 {
+		return fmt.Errorf("default output tag requires 1 to 64 ASCII letters, digits or underscores")
+	}
+	for i, ch := range o.Tag {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || i > 0 && (ch >= '0' && ch <= '9' || ch == '_')) {
+			return fmt.Errorf("default output tag must start with a letter and contain only ASCII letters, digits or underscores")
+		}
+	}
+	return nil
+}
+
 // ReplyAdapter declares internal response transports; it never owns client tools.
 type ReplyAdapter struct {
 	Version    int              `json:"version"`
@@ -60,12 +92,16 @@ type ReplyAdapter struct {
 }
 
 type ReplyContainer struct {
-	Name              string  `json:"name"`
-	ArgumentPointer   *string `json:"argument_pointer,omitempty"`
-	Formatter         bool    `json:"formatter,omitempty"`
-	OutputKind        string  `json:"output_kind"` // text or json_object
-	SourcePromptID    string  `json:"source_prompt_id,omitempty"`
-	SourceFingerprint string  `json:"source_fingerprint,omitempty"`
+	Name                     string  `json:"name"`
+	ArgumentPointer          *string `json:"argument_pointer,omitempty"`
+	Formatter                bool    `json:"formatter,omitempty"`
+	OutputKind               string  `json:"output_kind"` // text or json_object
+	SourcePromptID           string  `json:"source_prompt_id,omitempty"`
+	SourceFingerprint        string  `json:"source_fingerprint,omitempty"`
+	SourceFingerprintVersion int     `json:"source_fingerprint_version,omitempty"`
+	// Discovery-only bridge for explicit reapproval of an unchanged legacy
+	// source. Runtime validation never trusts this client-supplied field.
+	LegacySourceFingerprint string `json:"legacy_source_fingerprint,omitempty"`
 }
 
 // SillyTavernToolProtocol optionally resolves ambiguous tool roles without
@@ -222,6 +258,9 @@ func (c *SillyTavernPresetConfig) ParseAndValidate() (*SillyTavernPreset, error)
 		return nil, fmt.Errorf("client delivery requires a data script and a declared reply adapter")
 	}
 	if err := c.ReplyAdapter.Validate(); err != nil {
+		return nil, err
+	}
+	if err := c.DefaultOutput.Validate(); err != nil {
 		return nil, err
 	}
 	if err := validateSillyTavernToolProtocol(c.ToolProtocol); err != nil {

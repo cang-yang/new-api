@@ -99,6 +99,31 @@ func effectiveAdaptationFailurePlan(preset *dto.SillyTavernPresetConfig, worldbo
 	return result
 }
 
+// Candidate-only validation. Existing live configurations retain their runtime
+// semantics, but a newly activated version must not promise a fallback that the
+// runtime will override. Unspecified policies use the existing safe defaults.
+func ValidateAdaptationFailureChoices(report *AdaptationScopeReport, preset *dto.SillyTavernPresetConfig) error {
+	if report == nil || preset == nil || preset.FailurePolicy == nil {
+		return nil
+	}
+	if len(preset.Models) > 0 && !slices.Contains(preset.Models, report.Model) {
+		return nil
+	}
+	policy := preset.FailurePolicy
+	explicit := map[FailureStage]string{
+		FailureStageWorldbook: policy.Worldbook, FailureStagePreset: policy.Preset,
+		FailureStageScript: policy.Script, FailureStageOutputProcessing: policy.OutputProcessing,
+		FailureStageRegex: policy.Regex, FailureStageResponseRestore: policy.ResponseRestore,
+		FailureStageResponseValidation: policy.ResponseValidation,
+	}
+	for _, decision := range report.FailurePlan {
+		if choice := explicit[decision.Stage]; choice != "" && FailureMode(choice) != decision.Effective {
+			return common.NewMessage("The selected fallback cannot be used for {{stage}} because required processing must complete. Change that stage's failure handling before activating.", map[string]any{"stage": string(decision.Stage)})
+		}
+	}
+	return nil
+}
+
 // InspectAdaptationScope uses the relay's protocol classifier, not a model or
 // script probe. "adapted_unverified" deliberately does not certify model output.
 func InspectAdaptationScope(scope, model string, preset *dto.SillyTavernPresetConfig, worldbook *dto.WorldbookConfig, filter *dto.ResponseTextFilter) (*AdaptationScopeReport, error) {

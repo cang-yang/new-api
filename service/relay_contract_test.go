@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -37,7 +38,7 @@ func TestRelayCorePresetPreservesClientTaskAndDelivery(t *testing.T) {
 			map[string]any{"identifier": "reply", "enabled": true},
 			map[string]any{"identifier": "chatHistory", "enabled": true},
 		}}},
-		"extensions": map[string]any{"new_api_relay": map[string]any{"revision": "relay-core-2", "reply_tool": "preset_reply"}, "SPreset": map[string]any{
+		"extensions": map[string]any{"new_api_relay": map[string]any{"revision": "relay-core-3", "reply_tool": "preset_reply"}, "SPreset": map[string]any{
 			"ToolBindings":           map[string]any{"reply": map[string]any{"enabled": true, "code": `return {name:'preset_reply',parameters:{type:'object'}};`}},
 			"FinalRequestProcessing": map[string]any{"enabled": true, "script": string(hook)},
 			"OutputPreprocessing": map[string]any{"enabled": true, "script": `({buffer}) => ({output: buffer, hold: ''})`, "consumeToolCalls": true,
@@ -49,8 +50,15 @@ func TestRelayCorePresetPreservesClientTaskAndDelivery(t *testing.T) {
 	config := &dto.SillyTavernPresetConfig{Preset: encoded, ScriptRuntime: "spreset-v1", ParameterPolicy: "client",
 		ReplyAdapter: &dto.ReplyAdapter{Version: 2, StructuredOutput: true, RequireContainer: true, FormattedOutput: "client_format",
 			Containers: []dto.ReplyContainer{{Name: "preset_reply", Formatter: true, OutputKind: "text"}}}}
-	for _, variant := range []string{"text", "schema", "none", "auto", "required", "named", "history"} {
+	for _, variant := range []string{"text", "schema", "none", "auto", "required", "named", "history", "default_variables", "default_json"} {
 		t.Run(variant, func(t *testing.T) {
+			config.DefaultOutput = nil
+			if variant == "default_variables" || variant == "schema" {
+				config.DefaultOutput = &dto.PresetDefaultOutput{Format: "tagged_text", Tag: "UpdateVariable"}
+			}
+			if variant == "default_json" {
+				config.DefaultOutput = &dto.PresetDefaultOutput{Format: "json_object"}
+			}
 			request := &dto.GeneralOpenAIRequest{Model: "test", Messages: []dto.Message{
 				{Role: "system", Content: "Only update variables; do not continue the story."},
 				{Role: "user", Content: `Keep literal escapes: C:\notes and \n. Return the requested result.`},
@@ -96,7 +104,7 @@ func TestRelayCorePresetPreservesClientTaskAndDelivery(t *testing.T) {
 				require.Contains(t, compiled.Messages, original, "client task and history must survive whole")
 			}
 			require.Contains(t, fmt.Sprint(compiled.Messages), "预设内部回复约定")
-			requirements, err := SnapshotClientRequirements(request)
+			requirements, err := SnapshotPresetClientRequirements(request, config)
 			require.NoError(t, err)
 			filter := &dto.ResponseTextFilter{Mode: "rules", Rules: []dto.TextRegexRule{{ID: "literal-tag", Stage: "receive", Action: "replace", Pattern: `/<game>/g`, Replacement: "CORRUPTED"}}}
 			require.NoError(t, SealClientRequirements(requirements, compiled, filter, trace.ScriptResponse))
@@ -109,7 +117,20 @@ func TestRelayCorePresetPreservesClientTaskAndDelivery(t *testing.T) {
 				_, err = writer.processResponse([]byte(`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"bare reply"}}]}`), false)
 				require.ErrorContains(t, err, "omitted the required tool call")
 				text := "The library opens at nine."
+				if variant == "default_variables" {
+					text = "<UpdateVariable><JSONPatch>[]</JSONPatch></UpdateVariable>"
+					require.Error(t, requirements.validateText("story only"))
+					require.Error(t, requirements.validateText(text+"\nextra"))
+				}
+				if variant == "default_json" {
+					text = `{"value":2}`
+					require.Error(t, requirements.validateText("```json\n"+text+"\n```"))
+				}
 				if variant == "schema" {
+					require.Nil(t, requirements.defaultOutput, "explicit client schema overrides the channel default")
+					for _, message := range compiled.Messages {
+						assert.NotContains(t, message.StringContent(), "one <UpdateVariable>", "default must not leak through internal format conversion")
+					}
 					text = `{"json_patch":[{"op":"replace","path":"/value","value":"<game>C:\\notes and literal \\n</game>"}]}`
 				}
 				args, err := common.Marshal(map[string]string{"think_nya": "not the final result", "game_content": text})
@@ -141,11 +162,16 @@ func TestRelayCoreExportedPreset(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var channel struct {
-		Settings string `json:"settings"`
+		Settings string                    `json:"settings"`
+		Bundle   *dto.ChannelOtherSettings `json:"bundle"`
 	}
 	require.NoError(t, common.Unmarshal(data, &channel))
 	var settings dto.ChannelOtherSettings
-	require.NoError(t, common.UnmarshalJsonStr(channel.Settings, &settings))
+	if channel.Bundle != nil {
+		settings = *channel.Bundle
+	} else {
+		require.NoError(t, common.UnmarshalJsonStr(channel.Settings, &settings))
+	}
 	request := &dto.GeneralOpenAIRequest{Model: "gemini-3.8-flash", Messages: []dto.Message{{Role: "user", Content: "What time does the library open?"}}}
 	if path := os.Getenv("NEW_API_EXPORTED_REQUEST"); path != "" {
 		data, err = os.ReadFile(path)
@@ -198,41 +224,50 @@ func TestRelayCoreExportedPreset(t *testing.T) {
 	// Exercise this exact asset's actual output hook and formatter for both
 	// delivery modes. Compilation alone cannot establish that restoration works.
 	for _, stream := range []bool{false, true} {
-		t.Run(fmt.Sprintf("restore-stream-%t", stream), func(t *testing.T) {
-			client := &dto.GeneralOpenAIRequest{Model: request.Model, Stream: new(stream), ToolChoice: "none",
-				Messages:       []dto.Message{{Role: "user", Content: "Return the exact nested JSON requested by the client."}},
-				ResponseFormat: &dto.ResponseFormat{Type: "json_object"}}
-			compiled, trace, err := CompileWorldbook(settings.Worldbook, settings.SillyTavernPreset, client, SillyTavernContext{})
-			require.NoError(t, err)
-			requirements, err := SnapshotClientRequirements(client)
-			require.NoError(t, err)
-			require.NoError(t, SealClientRequirements(requirements, compiled, settings.ResponseTextFilter, trace.ScriptResponse))
-			expected := `{"nested":[null,{"path":"C:\\notes","literal":"\\n","markup":"<game>keep</game>"}]}`
-			args, err := common.Marshal(map[string]string{"think_nya": "auxiliary, not the result", "game_content": expected})
-			require.NoError(t, err)
-			call := map[string]any{"id": "reply-actual", "type": "function", "function": map[string]string{"name": "soliumbra_reply", "arguments": string(args)}}
-			field := "message"
-			if stream {
-				field, call["index"] = "delta", 0
-			}
-			body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "tool_calls": []any{call}}}}})
-			require.NoError(t, err)
-			if stream {
-				body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
-			}
-			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-			ctx.Set(ClientRequirementsKey, requirements)
-			AttachPresetScriptResponse(ctx, trace)
-			writer := BeginResponseTextFilterWithPreset(ctx, settings.ResponseTextFilter, settings.SillyTavernPreset, client.Model)
-			require.NotNil(t, writer)
-			result, err := writer.processResponse(body, stream)
-			require.NoError(t, err)
-			choices, err := responseChoices(result, stream)
-			require.NoError(t, err)
-			require.Equal(t, expected, choices["0"].text.String())
-			require.Empty(t, choices["0"].tools)
-			require.True(t, writer.outputProcessed)
-		})
+		for _, useDefault := range []bool{false, true} {
+			t.Run(fmt.Sprintf("restore-stream-%t-default-%t", stream, useDefault), func(t *testing.T) {
+				client := &dto.GeneralOpenAIRequest{Model: request.Model, Stream: new(stream), ToolChoice: "none",
+					Messages:       []dto.Message{{Role: "user", Content: "Return the exact nested JSON requested by the client."}},
+					ResponseFormat: &dto.ResponseFormat{Type: "json_object"}}
+				expected := `{"nested":[null,{"path":"C:\\notes","literal":"\\n","markup":"<game>keep</game>"}]}`
+				if useDefault {
+					client.ResponseFormat = nil
+					if settings.SillyTavernPreset.DefaultOutput != nil && settings.SillyTavernPreset.DefaultOutput.Format == "tagged_text" {
+						tag := settings.SillyTavernPreset.DefaultOutput.Tag
+						expected = "<" + tag + "><JSONPatch>[]</JSONPatch></" + tag + ">"
+					}
+				}
+				compiled, trace, err := CompileWorldbook(settings.Worldbook, settings.SillyTavernPreset, client, SillyTavernContext{})
+				require.NoError(t, err)
+				requirements, err := SnapshotPresetClientRequirements(client, settings.SillyTavernPreset)
+				require.NoError(t, err)
+				require.NoError(t, SealClientRequirements(requirements, compiled, settings.ResponseTextFilter, trace.ScriptResponse))
+				args, err := common.Marshal(map[string]string{"think_nya": "auxiliary, not the result", "game_content": expected})
+				require.NoError(t, err)
+				call := map[string]any{"id": "reply-actual", "type": "function", "function": map[string]string{"name": "soliumbra_reply", "arguments": string(args)}}
+				field := "message"
+				if stream {
+					field, call["index"] = "delta", 0
+				}
+				body, err := common.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls", field: map[string]any{"role": "assistant", "tool_calls": []any{call}}}}})
+				require.NoError(t, err)
+				if stream {
+					body = []byte("data: " + string(body) + "\n\ndata: [DONE]\n\n")
+				}
+				ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				ctx.Set(ClientRequirementsKey, requirements)
+				AttachPresetScriptResponse(ctx, trace)
+				writer := BeginResponseTextFilterWithPreset(ctx, settings.ResponseTextFilter, settings.SillyTavernPreset, client.Model)
+				require.NotNil(t, writer)
+				result, err := writer.processResponse(body, stream)
+				require.NoError(t, err)
+				choices, err := responseChoices(result, stream)
+				require.NoError(t, err)
+				require.Equal(t, expected, choices["0"].text.String())
+				require.Empty(t, choices["0"].tools)
+				require.True(t, writer.outputProcessed)
+			})
+		}
 	}
 }
 
@@ -1494,10 +1529,7 @@ func TestRelayResponseAdmissionAndCancellationAreAtomic(t *testing.T) {
 	var writers []*ResponseTextFilterWriter
 	defer func() {
 		for _, writer := range writers {
-			if writer.admitted {
-				<-responseProcessingSlots
-				writer.admitted = false
-			}
+			writer.releaseAdmission()
 		}
 	}()
 	for range cap(responseProcessingSlots) {
@@ -1529,6 +1561,32 @@ func TestRelayResponseAdmissionAndCancellationAreAtomic(t *testing.T) {
 	next.Request = httptest.NewRequest("POST", "/", nil)
 	require.NoError(t, extra.Admit(next))
 	writers = append(writers, extra)
+}
+
+func TestRelayResponseAdmissionKeepsCapacityForOtherUsersAndChannels(t *testing.T) {
+	oldUser, oldChannel := responseAdmission.userLimit, responseAdmission.channelLimit
+	responseAdmission.userLimit, responseAdmission.channelLimit = 1, 1
+	t.Cleanup(func() { responseAdmission.userLimit, responseAdmission.channelLimit = oldUser, oldChannel })
+	admit := func(user, channel int) (*ResponseTextFilterWriter, error) {
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest("POST", "/", nil)
+		common.SetContextKey(ctx, constant.ContextKeyUserId, user)
+		common.SetContextKey(ctx, constant.ContextKeyChannelId, channel)
+		writer := &ResponseTextFilterWriter{ResponseWriter: ctx.Writer}
+		t.Cleanup(writer.releaseAdmission)
+		return writer, writer.Admit(ctx)
+	}
+	first, err := admit(1, 10)
+	require.NoError(t, err)
+	_, err = admit(1, 20)
+	require.ErrorIs(t, err, ErrReplyProcessingBusy)
+	_, err = admit(2, 10)
+	require.ErrorIs(t, err, ErrReplyProcessingBusy)
+	_, err = admit(2, 20)
+	require.NoError(t, err, "one caller must not consume another caller's remaining capacity")
+	first.releaseAdmission()
+	_, err = admit(1, 10)
+	require.NoError(t, err, "released capacity must be reusable")
 }
 
 func TestRelayOverflowCancelsOnlyCurrentProviderAttempt(t *testing.T) {

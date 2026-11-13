@@ -20,6 +20,11 @@ import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
+import type {
+  AdaptationAction,
+  AdaptationBundle,
+  AdaptationState,
+} from './lib/adaptation-lifecycle'
 import type { PriorityMove, PriorityOrder } from './lib/channel-priority-order'
 import type { InferenceStatus } from './lib/inference-status'
 import type { ParamOverrideSimulationResponse } from './lib/param-override-simulator'
@@ -56,6 +61,42 @@ const channelActionConfig = (
   skipBusinessError: true,
   skipErrorHandler: true,
 })
+
+export async function getChannelAdaptation(
+  id: number
+): Promise<AdaptationState> {
+  const response = await api.get(`/api/channel/${id}/adaptation`, {
+    disableDuplicate: true,
+  })
+  return requireServerSuccess(response.data).data
+}
+
+export async function getChannelAdaptationHealth(id: number): Promise<{
+  audit_enabled: boolean
+  sample_size: number
+  counts: Record<string, number>
+  versions: { profile: string; counts: Record<string, number> }[]
+}> {
+  const response = await api.get(`/api/channel/${id}/adaptation/health`, {
+    disableDuplicate: true,
+  })
+  return requireServerSuccess(response.data).data
+}
+
+export async function changeChannelAdaptation(
+  id: number,
+  state: AdaptationState,
+  action: AdaptationAction,
+  bundle?: AdaptationBundle
+): Promise<AdaptationState> {
+  const response = await api.post(`/api/channel/${id}/adaptation`, {
+    action,
+    bundle,
+    revision: state.revision,
+    base_digest: state.base_digest,
+  })
+  return requireServerSuccess(response.data).data
+}
 
 export async function importWorldbook(name: string, book: unknown) {
   const response = await api.post('/api/channel/worldbook/import', {

@@ -91,8 +91,9 @@ func matchWorldbook(config *dto.WorldbookConfig, request *dto.GeneralOpenAIReque
 }
 
 type worldbookMatchOptions struct {
-	expand func(string) string
-	anchor func(string, int) string
+	expand    func(string) string
+	anchor    func(string, int) string
+	available func(string, int) bool
 }
 
 // assemblePresetWorldbook commits no caller-owned messages or macro state.
@@ -106,6 +107,10 @@ func assemblePresetWorldbook(context SillyTavernContext, preset *dto.SillyTavern
 			anchor: func(mode string, depth int) string {
 				placement, isMarker := worldbookGroupPlacement(context.worldbookConfig, mode, depth, final, -1)
 				return fmt.Sprintf("%d:%t", placement.Index, isMarker)
+			},
+			available: func(mode string, depth int) bool {
+				placement, _ := worldbookGroupPlacement(context.worldbookConfig, mode, depth, final, -1)
+				return !placement.Fallback
 			},
 		})
 		if err != nil {
@@ -237,6 +242,19 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 				continue
 			}
 			decision.Triggered = true
+			mode, entryDepth := entry.InjectionMode, entry.InjectionDepth
+			if mode == "" || mode == dto.WorldbookInjectionFollowGlobal {
+				mode, entryDepth = config.InjectionMode, config.InjectionDepth
+			}
+			if options.available != nil && config.PlacementFallback != "" && !options.available(mode, entryDepth) {
+				if config.PlacementFallback == "fail" || config.PlacementFallback == "skip" && candidate.required {
+					return result, fmt.Errorf("required worldbook insertion position is unavailable")
+				}
+				if config.PlacementFallback == "skip" {
+					decision.Reason = "position_unavailable"
+					continue
+				}
+			}
 			if config.SemanticsVersion >= 2 && options.expand != nil {
 				entry.Content = options.expand(entry.Content)
 				candidate.entry.Content = entry.Content
@@ -254,10 +272,6 @@ func matchWorldbookWith(config *dto.WorldbookConfig, request *dto.GeneralOpenAIR
 				}
 				decision.Reason = "empty"
 				continue
-			}
-			mode, entryDepth := entry.InjectionMode, entry.InjectionDepth
-			if mode == "" || mode == dto.WorldbookInjectionFollowGlobal {
-				mode, entryDepth = config.InjectionMode, config.InjectionDepth
 			}
 			block := mode
 			if mode == dto.WorldbookInjectionAtDepth {
@@ -579,6 +593,10 @@ func CompileWorldbookFrom(config *dto.WorldbookConfig, preset *dto.SillyTavernPr
 					placement, marker := worldbookGroupPlacement(config, mode, depth, final, -1)
 					return fmt.Sprintf("%d:%t", placement.Index, marker)
 				},
+				available: func(mode string, depth int) bool {
+					placement, _ := worldbookGroupPlacement(config, mode, depth, final, -1)
+					return !placement.Fallback
+				},
 			})
 			if err != nil {
 				return nil, PresetCompileTrace{}, newResponseStageError(FailureStageWorldbook, err)
@@ -727,7 +745,16 @@ func PreviewWorldbookDraft(config *dto.WorldbookConfig, preset *dto.SillyTavernP
 // ApplyWorldbook inserts matched lore into a message base. Callers that need
 // preset processing should use CompileWorldbook so insertion happens first.
 func ApplyWorldbook(config *dto.WorldbookConfig, source, base *dto.GeneralOpenAIRequest, trace PresetCompileTrace) (*dto.GeneralOpenAIRequest, PresetCompileTrace, error) {
-	preview, err := MatchWorldbook(config, source)
+	final := make([]presetMessage, len(base.Messages))
+	for index, message := range base.Messages {
+		final[index] = presetMessage{message: message, source: "chat_history", historyID: strconv.Itoa(index)}
+	}
+	preview, err := matchWorldbookWith(config, source, worldbookMatchOptions{
+		available: func(mode string, depth int) bool {
+			placement, _ := worldbookGroupPlacement(config, mode, depth, final, -1)
+			return !placement.Fallback
+		},
+	})
 	if err != nil {
 		return nil, trace, newResponseStageError(FailureStageWorldbook, err)
 	}
@@ -783,6 +810,26 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 	insertions := make([]insertion, 0, len(preview.groups))
 	for _, group := range preview.groups {
 		placement, marker := worldbookGroupPlacement(config, group.mode, group.depth, final, markerIndex)
+		if placement.Fallback {
+			if config.PlacementFallback == "fail" {
+				return nil, fmt.Errorf("worldbook insertion position is unavailable")
+			}
+			if config.PlacementFallback == "skip" {
+				for _, index := range group.decisions {
+					decision := &preview.Entries[index]
+					required := slices.ContainsFunc(config.Books, func(book dto.Worldbook) bool {
+						return book.ID == decision.BookID && book.Required
+					})
+					if required {
+						return nil, fmt.Errorf("required worldbook insertion position is unavailable")
+					}
+					decision.Status, decision.Reason, decision.Selected = "skipped", "position_unavailable", false
+					decision.Placement = nil
+				}
+				continue
+			}
+			preview.Warnings = append(preview.Warnings, "Worldbook insertion position unavailable; background placed before the conversation")
+		}
 		if marker {
 			if config.SemanticsVersion >= 2 {
 				for index, decision := range group.decisions {
@@ -856,6 +903,13 @@ func injectWorldbookGroups(config *dto.WorldbookConfig, preview *WorldbookPrevie
 	}
 	// The combined legacy placement continues to describe the global setting.
 	preview.Placement = &global
+	if config.PlacementFallback == "skip" {
+		var inserted []string
+		for _, item := range insertions {
+			inserted = append(inserted, item.group.text)
+		}
+		preview.Text = strings.Join(inserted, "\n\n")
+	}
 	return final, nil
 }
 
@@ -873,7 +927,19 @@ func worldbookGroupPlacement(config *dto.WorldbookConfig, mode string, depth int
 	isMarkerMode := mode == dto.WorldbookInjectionInherit || mode == dto.WorldbookInjectionBeforeDefinition || mode == dto.WorldbookInjectionAfterDefinition
 	if config.SemanticsVersion >= 2 {
 		if !isMarkerMode {
-			return resolveWorldbookHistoryPlacement(mode, depth, final), false
+			placement := resolveWorldbookHistoryPlacement(mode, depth, final)
+			if mode == dto.WorldbookInjectionAtDepth && config.PlacementFallback != "" {
+				historyCount := 0
+				for _, item := range final {
+					if item.source == "chat_history" && item.historyID != "" && worldbookScanMessageRole(item.message.Role) {
+						historyCount++
+					}
+				}
+				if depth > historyCount {
+					placement = dto.WorldbookPlacement{Mode: dto.WorldbookInjectionSystemPrelude, Role: "system", Index: worldbookSystemPreludeIndex(messages), Fallback: true}
+				}
+			}
+			return placement, false
 		}
 		desired := "worldInfoBefore"
 		if mode == dto.WorldbookInjectionAfterDefinition {
@@ -888,6 +954,9 @@ func worldbookGroupPlacement(config *dto.WorldbookConfig, mode string, depth int
 		return dto.WorldbookPlacement{Mode: mode, Index: markerIndex, Role: messages[markerIndex].Role}, true
 	}
 	placement.Fallback = placement.Fallback || isMarkerMode
+	if isMarkerMode {
+		placement.Mode = dto.WorldbookInjectionSystemPrelude
+	}
 	return placement, false
 }
 

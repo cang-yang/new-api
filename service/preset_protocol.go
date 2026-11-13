@@ -279,7 +279,11 @@ func buildPresetProtocolPlan(original, compiled *dto.GeneralOpenAIRequest, confi
 	for _, container := range containers {
 		if container.SourceFingerprint != "" {
 			source := response.replySources[container.Name]
-			if source.SourceFingerprint != container.SourceFingerprint || source.SourcePromptID != container.SourcePromptID {
+			fingerprint := source.SourceFingerprint
+			if container.SourceFingerprintVersion == 0 {
+				fingerprint = source.LegacySourceFingerprint
+			}
+			if fingerprint != container.SourceFingerprint || source.SourcePromptID != container.SourcePromptID {
 				return nil, 0, fmt.Errorf("detected reply source has changed; check the preset and confirm its reply source again")
 			}
 		}

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
-import { adaptMeowssiahChannelSettings, adaptMeowssiahPreset } from './meowssiah-relay.mjs';
+import { adaptMeowssiahChannelSettings, adaptMeowssiahPreset, buildMeowssiahPackages } from './meowssiah-relay.mjs';
 
 const loadHook = async name => vm.runInNewContext('(' + await readFile(new URL(name, import.meta.url), 'utf8') + ')');
 const hook = await loadHook('./meowssiah-relay-request.js');
@@ -10,7 +10,7 @@ const format = await loadHook('./meowssiah-relay-formatter.js');
 const copy = value => JSON.parse(JSON.stringify(value));
 const edition = () => ({
   prompt_order: [{ character_id: 100001, order: [{ identifier: 'notes', enabled: true }, { identifier: 'off', enabled: false }] }],
-  extensions: { new_api_relay: { revision: 'relay-core-2', reply_tool: 'preset_reply', parts: {
+  extensions: { new_api_relay: { revision: 'relay-core-3', reply_tool: 'preset_reply', parts: {
     notes: [{ name: 'extra', description: 'An enabled result component.' }],
     off: [{ name: 'disabled_part', description: 'Must not activate.' }],
   } } },
@@ -73,6 +73,20 @@ test('formatter retains enabled result component order and avoids duplicate disp
   assert.equal(result, '正文\n额外结果\n<options><option>A</option></options>\n<summary>facts</summary>\n<details>note</details>');
 });
 
+test('structured tasks keep core binding and complete final content without optional display contamination', () => {
+  for (const client of [{ response_format: { type: 'json_object' } },
+    { response_format: { type: 'json_schema' } },
+    { default_output: { format: 'tagged_text', tag: 'UpdateVariable' } }]) {
+    const input = request();
+    hook({ request: input, client, preset: edition() });
+    assert.equal(input.tools[1].function.parameters.properties.extra, undefined);
+    assert.deepEqual(copy(input.tools[1].function.parameters.required), ['game_content']);
+    assert.equal(format({ client, calls: [{ arguments: { game_content: '{"value":2}', summary: 'display', extra: 'display' } }] }), '{"value":2}');
+  }
+  const client = { response_format: { type: 'text' }, default_output: { format: 'json_object' } };
+  assert.equal(format({ client, calls: [{ arguments: { game_content: 'text', extra: 'part' } }] }), 'text\npart');
+});
+
 test('formatter rejects thought-only, partial arguments, empty results and ambiguous multiple calls', () => {
   for (const args of [{ think_nya: 'only notes' }, { game_content: ' ' }, '{"game_content":"partial', { game_content: 'valid', extra: { invalid: true } }]) {
     assert.throws(() => format({ calls: [{ arguments: args }] }));
@@ -116,4 +130,10 @@ test('actual reviewed asset retains bindings/output hook/author text and channel
   assert.equal(adapted.sillytavern_preset.reply_adapter.require_container, true);
   assert.equal(adapted.sillytavern_preset.reply_adapter.formatted_output, 'client_format');
   assert.deepEqual(adapted.response_text_filter.rules, settings.response_text_filter.rules.slice(1));
+  const packages = buildMeowssiahPackages(source);
+  assert.deepEqual(packages.variables.sillytavern_preset.default_output, { format: 'tagged_text', tag: 'UpdateVariable' });
+  assert.equal(packages.ordinary.sillytavern_preset.script_runtime, 'spreset-v1');
+  assert.equal(packages.variables.sillytavern_preset.script_runtime, 'spreset-v1');
+  assert.equal(packages.variables.worldbook, undefined);
+  assert.equal(packages.ordinary.sillytavern_preset.reply_adapter.require_container, true);
 });

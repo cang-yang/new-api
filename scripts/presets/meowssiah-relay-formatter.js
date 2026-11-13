@@ -1,4 +1,4 @@
-({ calls }) => {
+({ calls, client }) => {
   // Preserve declared result components and their stable order, separating
   // auxiliary notes and optional display framing from actual task data.
   if (!Array.isArray(calls) || calls.length !== 1) {
@@ -9,6 +9,12 @@
   if (!args || typeof args !== 'object' || Array.isArray(args) ||
       typeof args.game_content !== 'string' || !args.game_content.trim()) {
     throw new TypeError('The preset reply requires complete final content');
+  }
+  const format = client?.response_format?.type ?? client?.default_output?.format;
+  if (format && format !== 'text') {
+    // The request hook declares game_content as the complete task result.
+    // Do not append optional presentation fields to a structured result.
+    return args.game_content;
   }
   const order = ['game_content', 'game', 'story_body', 'extra', 'options', 'summary', 'comment'];
   const auxiliary = new Set(['think_nya', 'report_nya', 'nya_oath']);

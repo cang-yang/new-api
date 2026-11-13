@@ -535,6 +535,23 @@ func compileSillyTavernPreset(config *dto.SillyTavernPresetConfig, request *dto.
 		return nil, trace, fmt.Errorf("sillytavern_preset compiled an empty message list")
 	}
 	applySillyTavernParameters(config, preset, compiled)
+	clientFormat := request.ResponseFormat
+	if context.scriptClient != nil {
+		clientFormat = context.scriptClient.ResponseFormat
+	}
+	if clientFormat == nil && config.DefaultOutput != nil {
+		instruction := ""
+		switch config.DefaultOutput.Format {
+		case "json_object":
+			instruction = "The final answer must be exactly one JSON object, without Markdown fences or extra text. Preserve the current task and any required client business tool calls."
+		case "tagged_text":
+			instruction = "The final answer must be one <" + config.DefaultOutput.Tag + ">...</" + config.DefaultOutput.Tag + "> block and nothing outside it. Follow the current task's rules inside the block. Preserve any required client business tool calls."
+		}
+		if instruction != "" {
+			trace.Messages = append(trace.Messages, PresetMessageSource{Index: len(compiled.Messages), Role: "system", Source: "delivery_contract"})
+			compiled.Messages = append(compiled.Messages, dto.Message{Role: "system", Content: instruction})
+		}
+	}
 	delivered := false
 	defer func() {
 		if !delivered && trace.ScriptResponse != nil && trace.ScriptResponse.tavern != nil {

@@ -53,6 +53,10 @@ func (a *ReplyAdapter) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, c := range a.Containers {
+		if c.SourceFingerprintVersion != 0 && c.SourceFingerprintVersion != 2 ||
+			c.SourceFingerprintVersion != 0 && c.SourceFingerprint == "" {
+			return fmt.Errorf("unsupported reply source fingerprint version")
+		}
 		if (c.SourcePromptID == "") != (c.SourceFingerprint == "") || len(c.SourcePromptID) > 256 || c.SourceFingerprint != "" && len(c.SourceFingerprint) != 64 {
 			return fmt.Errorf("detected reply sources require a prompt identity and SHA-256 fingerprint")
 		}

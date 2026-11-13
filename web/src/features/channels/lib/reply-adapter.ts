@@ -54,13 +54,17 @@ export const replyAdapterSchema = z
               .string()
               .regex(/^[a-f0-9]{64}$/)
               .optional(),
+            source_fingerprint_version: z
+              .union([z.literal(0), z.literal(2)])
+              .optional(),
           })
           .refine(
             (item) =>
               (item.argument_pointer !== undefined) !==
                 (item.formatter === true) &&
               (item.source_prompt_id !== undefined) ===
-                (item.source_fingerprint !== undefined)
+                (item.source_fingerprint !== undefined) &&
+              (!item.source_fingerprint_version || !!item.source_fingerprint)
           )
       )
       .max(32),
@@ -87,6 +91,8 @@ export type ReplyContainer = {
   output_kind: 'text' | 'json_object'
   source_prompt_id?: string
   source_fingerprint?: string
+  source_fingerprint_version?: 0 | 2
+  legacy_source_fingerprint?: string
 }
 export type ReplyAdapter = {
   version: 2
@@ -111,13 +117,23 @@ export function adoptDetectedReplySources(
           !!source.source_fingerprint &&
           row.name === source.name &&
           row.source_prompt_id === source.source_prompt_id &&
-          row.source_fingerprint === source.source_fingerprint &&
+          (((row.source_fingerprint_version || 0) ===
+            (source.source_fingerprint_version || 0) &&
+            row.source_fingerprint === source.source_fingerprint) ||
+            (!row.source_fingerprint_version &&
+              source.source_fingerprint_version === 2 &&
+              row.source_fingerprint === source.legacy_source_fingerprint)) &&
           row.argument_pointer === source.argument_pointer &&
           !!row.formatter === !!source.formatter &&
           row.output_kind === source.output_kind
       )
     )
-  return { ...(unchanged ? current : {}), version: 2, containers: sources }
+  const containers = sources.map((source) => {
+    const approved = { ...source }
+    delete approved.legacy_source_fingerprint
+    return approved
+  })
+  return { ...(unchanged ? current : {}), version: 2, containers }
 }
 export type ReplySampleField = {
   pointer: string

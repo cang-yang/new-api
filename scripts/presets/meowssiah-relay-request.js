@@ -6,7 +6,7 @@
     throw new TypeError('The relay data hook requires assembled messages and preset data');
   }
   const edition = preset.extensions?.new_api_relay;
-  if (edition?.revision !== 'relay-core-2') {
+  if (edition?.revision !== 'relay-core-3') {
     throw new TypeError('The relay data hook requires its reviewed preset edition');
   }
   const order = preset.prompt_order?.find(item => Number(item.character_id) === 100001)
@@ -36,10 +36,16 @@
       description: 'The complete final result of the current client task, following its rules and requested format. For JSON, put only the requested JSON text in this string. This is not necessarily a story.',
     },
   };
-  for (const part of parts) properties[part.name] = { type: 'string', description: part.description };
+  const format = client?.response_format?.type ?? client?.default_output?.format;
+  const exactResult = format && !['text'].includes(format);
+  // For an explicit data contract the complete result belongs in game_content.
+  // Presentation components are not required task fields and must not become
+  // an extra document appended to JSON or a variable envelope.
+  const enabledParts = exactResult ? [] : parts;
+  for (const part of enabledParts) properties[part.name] = { type: 'string', description: part.description };
   reply.function.parameters = {
     type: 'object', properties, required: ['game_content'],
-    propertyOrdering: ['think_nya', 'game_content', ...parts.map(part => part.name)],
+    propertyOrdering: ['think_nya', 'game_content', ...enabledParts.map(part => part.name)],
     additionalProperties: false,
   };
   // Preserve business selection; the coordinator negotiates the actual internal

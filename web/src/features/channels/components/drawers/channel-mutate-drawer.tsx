@@ -220,6 +220,7 @@ import {
   nextTaskPluginBaseUrl,
 } from '../../lib/task-plugin-base-url'
 import type { Channel } from '../../types'
+import { AdaptationLifecyclePanel } from '../adaptation-lifecycle-panel'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelQuickOptions } from '../channel-quick-options'
 import { ChannelTypeLogo } from '../channel-type-badge'
@@ -5383,6 +5384,13 @@ export function ChannelMutateDrawer({
         }
         request={
           <>
+            {isEditing && channelData?.data && (
+              <AdaptationLifecyclePanel
+                channel={channelData.data}
+                disabled={sensitiveLocked || isSubmitting}
+                onActivated={handleSuccess}
+              />
+            )}
             {overrideFields}
             <div
               role='group'
@@ -5467,7 +5475,7 @@ export function ChannelMutateDrawer({
       <Sheet open={open} onOpenChange={handleOpenChange}>
         <SheetContent
           side={drawerSide}
-          className={sideDrawerContentClassName('sm:max-w-7xl')}
+          className={sideDrawerContentClassName('overflow-clip sm:max-w-7xl')}
         >
           <SheetHeader className={sideDrawerHeaderClassName('pr-12 sm:pr-14')}>
             <div className='flex flex-col gap-2'>

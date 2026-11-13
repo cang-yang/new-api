@@ -1,16 +1,104 @@
 package service
 
 import (
+	"context"
+	"encoding/hex"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 )
 
 const adaptationDiagnosticContextKey = "adaptation_diagnostic"
 
 const adaptationDiagnosticSchemaVersion = 1
+
+type AdaptationHealthGroup struct {
+	Profile string         `json:"profile"`
+	Counts  map[string]int `json:"counts"`
+}
+
+type AdaptationHealth struct {
+	AuditEnabled bool                    `json:"audit_enabled"`
+	SampleSize   int                     `json:"sample_size"`
+	Counts       map[string]int          `json:"counts"`
+	Versions     []AdaptationHealthGroup `json:"versions"`
+}
+
+func RecentAdaptationHealth(ctx context.Context, channelID int) (*AdaptationHealth, error) {
+	attempts, snapshots, err := model.RecentChannelAdaptationAudits(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	result := &AdaptationHealth{AuditEnabled: constant.BodyAuditEnabled, SampleSize: len(attempts), Counts: make(map[string]int), Versions: []AdaptationHealthGroup{}}
+	groups := make(map[string]int)
+	for _, attempt := range attempts {
+		var data struct {
+			Preset struct {
+				Diagnostics *AdaptationDiagnostic `json:"diagnostics"`
+				Plan        struct {
+					Profile string `json:"profile_fingerprint"`
+				} `json:"plan"`
+			} `json:"sillytavern_preset"`
+		}
+		snapshot := snapshots[attempt.ConfigSnapshotId]
+		// Missing, oversized or old snapshots stay unknown, never "successful".
+		_ = common.Unmarshal(snapshot.CanonicalJson, &data)
+		outcome := adaptationAttemptOutcome(attempt, data.Preset.Diagnostics)
+		result.Counts[outcome]++
+		profile := data.Preset.Plan.Profile
+		if _, err := hex.DecodeString(profile); len(profile) != 64 || err != nil {
+			profile = "unknown"
+		}
+		index, exists := groups[profile]
+		if !exists {
+			index = len(result.Versions)
+			groups[profile] = index
+			result.Versions = append(result.Versions, AdaptationHealthGroup{Profile: profile, Counts: make(map[string]int)})
+		}
+		result.Versions[index].Counts[outcome]++
+	}
+	return result, nil
+}
+
+func adaptationAttemptOutcome(attempt model.AuditAttempt, diagnostic *AdaptationDiagnostic) string {
+	if attempt.ErrorCode == "reply_processing_busy" {
+		return "overloaded"
+	}
+	written, degraded, failed := false, false, false
+	if diagnostic != nil {
+		for _, stage := range diagnostic.Stages {
+			if stage.Stage == "response_started" && stage.Status == "failed" {
+				return "interrupted"
+			}
+			if stage.Stage == "admission" && stage.Status == "failed" {
+				return "overloaded"
+			}
+			degraded = degraded || stage.Status == "fallback"
+			failed = failed || stage.Status == "failed"
+			if stage.Stage == "writeback" {
+				written = stage.Status == "completed"
+			}
+		}
+	}
+	if attempt.HTTPStatus >= 400 {
+		return "upstream_failed"
+	}
+	if written {
+		if degraded {
+			return "degraded"
+		}
+		return "completed"
+	}
+	if failed {
+		return "failed_before_delivery"
+	}
+	return "unknown"
+}
 
 // AdaptationDiagnosticStage is a bounded, secret-free explanation of one
 // request-adaptation phase. Details must contain metadata only; response and

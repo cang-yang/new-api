@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -70,8 +71,13 @@ func (p *PresetScriptResponse) formatOwnedCalls(calls []*presetToolTextCall, str
 		return defaultText, nil
 	}
 	var result any
+	var client json.RawMessage
+	if p.dataHost != nil {
+		client = p.dataHost.Client
+	}
 	if err := runPresetScriptWithHost(settings.ToolCallFormatter.Script, map[string]any{
 		"calls": arguments, "defaultText": defaultText, "stream": stream, "final": true, "channel": "main",
+		"client": client,
 	}, &result, deadline, p.dataHost); err != nil {
 		return "", fmt.Errorf("toolCallFormatter: %w", err)
 	}
@@ -89,6 +95,11 @@ func (p *PresetScriptResponse) processText(text string, deadline time.Time) (str
 			return "", fmt.Errorf("Tavern response processing deadline exceeded")
 		}
 		err := p.tavern.call("finish", text, &output)
+		if err != nil {
+			// A shared realm cannot be rolled back. Discard it immediately;
+			// only independent host rules may continue from the input checkpoint.
+			p.tavern.Close()
+		}
 		return output, err
 	}
 	settings := p.settings.OutputPreprocessing

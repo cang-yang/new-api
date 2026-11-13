@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const relayRevision = 'relay-core-2';
+export const relayRevision = 'relay-core-3';
 export const reviewedSourceSHA256 = '9788703d150549cd81fd3d63decd4a498b7cf3925e144b32cfb9de827fb9b91a';
 const requestHook = await readFile(new URL('./meowssiah-relay-request.js', import.meta.url), 'utf8');
 const formatter = await readFile(new URL('./meowssiah-relay-formatter.js', import.meta.url), 'utf8');
@@ -119,16 +119,38 @@ export function adaptMeowssiahChannelSettings(source, originalPreset) {
   return settings;
 }
 
+// Produces credential-free, separately named candidates. It never updates a
+// live channel and never labels local preparation as real-model acceptance.
+export function buildMeowssiahPackages(originalPreset) {
+  const commonSettings = adaptMeowssiahChannelSettings({
+    adaptation_scope: 'all_supported',
+    sillytavern_preset: { preset: originalPreset, parameter_policy: 'client', failure_policy: {
+      worldbook: 'skip', preset: 'fail', script: 'fail',
+      response_restore: 'fail', response_validation: 'fail', output_processing: 'fail', regex: 'preserve',
+    } },
+  }, originalPreset);
+  const ordinary = structuredClone(commonSettings);
+  ordinary.sillytavern_preset.default_output = { format: 'text' };
+  const variables = structuredClone(commonSettings);
+  variables.sillytavern_preset.default_output = { format: 'tagged_text', tag: 'UpdateVariable' };
+  return { ordinary, variables };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [mode, input, output, originalPath] = process.argv.slice(2);
-  if (!['preset', 'channel'].includes(mode) || !input || !output || resolve(input) === resolve(output)) {
-    throw new Error('Usage: node meowssiah-relay.mjs preset|channel <input.json> <new-output.json> [original-preset.json]');
+  if (!['preset', 'channel', 'packages'].includes(mode) || !input || !output || resolve(input) === resolve(output)) {
+    throw new Error('Usage: node meowssiah-relay.mjs preset|channel|packages <input.json> <new-output.json> [original-preset.json]');
   }
   const source = JSON.parse(await readFile(input, 'utf8'));
   const original = originalPath ? JSON.parse(await readFile(originalPath, 'utf8')) : undefined;
-  const result = mode === 'preset' ? adaptMeowssiahPreset(source) : {
+  const result = mode === 'packages' ? buildMeowssiahPackages(source) : mode === 'preset' ? adaptMeowssiahPreset(source) : {
     ...source, settings: JSON.stringify(adaptMeowssiahChannelSettings(typeof source.settings === 'string' ? JSON.parse(source.settings) : source.settings, original)),
   };
   await writeFile(output, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
+  if (mode === 'packages') {
+    for (const [purpose, bundle] of Object.entries(result)) {
+      await writeFile(`${output}.${purpose}.json`, JSON.stringify({ format: 'new_api_adaptation', version: 1, bundle }, null, 2) + '\n', { flag: 'wx' });
+    }
+  }
   console.log(JSON.stringify({ revision: relayRevision, output: resolve(output) }));
 }

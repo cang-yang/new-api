@@ -590,6 +590,22 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		logTaskPluginChannelDecision(c, nil, modelName, "channel_rejected", "nil_channel")
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
+	// A local channel cache cannot coordinate an atomic activation across
+	// instances. Freeze the complete persisted adaptation once for this attempt,
+	// without changing the shared cached Channel or its credentials.
+	if common.MemoryCacheEnabled {
+		selected, err := model.FreezeChannelAdaptation(c.Request.Context(), channel)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		}
+		channel = selected
+	}
+	var validatedSettings dto.ChannelOtherSettings
+	if channel.OtherSettings != "" {
+		if err := common.UnmarshalJsonStr(channel.OtherSettings, &validatedSettings); err != nil {
+			return types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+		}
+	}
 	if expectedPlugin != "" && !channelMatchesExpectedTaskPlugin(c, channel, expectedPlugin) {
 		logTaskPluginChannelDecision(c, channel, modelName, "channel_rejected", "identity_mismatch")
 		return types.NewError(

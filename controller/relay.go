@@ -175,7 +175,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, initialOtherSettings)
 	c.Set("adaptation_scope_reason", scopeReason)
 	if applies && originalRequestSnapshot != nil && (initialOtherSettings.SillyTavernPreset != nil || initialOtherSettings.Worldbook != nil || initialOtherSettings.ResponseTextFilter != nil) {
-		requirements, snapshotErr := service.SnapshotClientRequirements(originalRequestSnapshot)
+		requirements, snapshotErr := service.SnapshotPresetClientRequirements(originalRequestSnapshot, initialOtherSettings.SillyTavernPreset)
 		if snapshotErr != nil {
 			newAPIError = types.NewError(snapshotErr, types.ErrorCodeInvalidRequest)
 			return
@@ -381,6 +381,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if err := textFilter.Admit(c); err != nil {
 				_ = textFilter.Finish(c, false)
 				newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeGetChannelFailed, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+				if errors.Is(err, service.ErrReplyProcessingBusy) {
+					c.Header("Retry-After", "1")
+					newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReplyProcessingBusy, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
+				}
 				break
 			}
 		}

@@ -37,6 +37,48 @@ test('refreshing the same pinned source preserves approval, but a changed source
   })
 })
 
+test('explicitly adopting an unchanged legacy source upgrades its fingerprint without losing the delivery contract', () => {
+  const legacy = {
+    name: 'reply',
+    formatter: true,
+    output_kind: 'text' as const,
+    source_prompt_id: 'binding',
+    source_fingerprint: 'a'.repeat(64),
+  }
+  const detected = {
+    ...legacy,
+    source_fingerprint: 'b'.repeat(64),
+    source_fingerprint_version: 2 as const,
+    legacy_source_fingerprint: legacy.source_fingerprint,
+  }
+  const config = {
+    reply_adapter: {
+      version: 2,
+      structured_output: true,
+      require_container: true,
+      formatted_output: 'client_format',
+      containers: [legacy],
+    },
+  }
+  const adopted = adoptDetectedReplySources(config, [detected])
+  expect(adopted).toMatchObject({
+    structured_output: true,
+    require_container: true,
+    formatted_output: 'client_format',
+    containers: [
+      { source_fingerprint_version: 2, source_fingerprint: 'b'.repeat(64) },
+    ],
+  })
+  expect(adopted.containers[0]).not.toHaveProperty('legacy_source_fingerprint')
+  expect(replyAdapterSchema.safeParse(adopted).success).toBe(true)
+  expect(
+    replyAdapterSchema.safeParse({
+      ...adopted,
+      containers: [{ ...detected, source_fingerprint_version: 99 }],
+    }).success
+  ).toBe(false)
+})
+
 test('sample fields preserve literal keys and array indices without evaluating code', () => {
   expect(
     replySampleFields(

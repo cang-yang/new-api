@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -289,8 +290,25 @@ type AdaptationSummary struct {
 // ClientRequirements preserves orthogonal client constraints. It is runtime
 // state, never serialized into the audit metadata.
 type ClientRequirements struct {
-	request *dto.GeneralOpenAIRequest
-	schema  *jsonschema.Schema
+	request       *dto.GeneralOpenAIRequest
+	schema        *jsonschema.Schema
+	defaultOutput *dto.PresetDefaultOutput
+}
+
+func SnapshotPresetClientRequirements(request *dto.GeneralOpenAIRequest, preset *dto.SillyTavernPresetConfig) (*ClientRequirements, error) {
+	result, err := SnapshotClientRequirements(request)
+	if err != nil || request == nil || request.ResponseFormat != nil || preset == nil ||
+		len(preset.Models) > 0 && !slices.Contains(preset.Models, request.Model) {
+		return result, err
+	}
+	if err := preset.DefaultOutput.Validate(); err != nil {
+		return nil, newResponseStageError(FailureStagePreflight, err)
+	}
+	if preset.DefaultOutput != nil {
+		copy := *preset.DefaultOutput
+		result.defaultOutput = &copy
+	}
+	return result, nil
 }
 
 func SnapshotClientRequirements(request *dto.GeneralOpenAIRequest) (*ClientRequirements, error) {
@@ -330,7 +348,26 @@ func (inlineSchemaLoader) Load(string) (any, error) {
 }
 
 func (r *ClientRequirements) validateText(text string) error {
-	if r == nil || r.request == nil || r.request.ResponseFormat == nil {
+	if r == nil || r.request == nil {
+		return nil
+	}
+	if r.request.ResponseFormat == nil {
+		if r.defaultOutput == nil {
+			return nil
+		}
+		switch r.defaultOutput.Format {
+		case "json_object":
+			_, err := presetProtocolJSONArgument(text)
+			return err
+		case "tagged_text":
+			start, end := "<"+r.defaultOutput.Tag+">", "</"+r.defaultOutput.Tag+">"
+			value := strings.TrimSpace(text)
+			if !strings.HasPrefix(value, start) || !strings.HasSuffix(value, end) ||
+				strings.Count(value, start) != 1 || strings.Count(value, end) != 1 ||
+				strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, start), end)) == "" {
+				return fmt.Errorf("reply does not satisfy the channel's default text envelope")
+			}
+		}
 		return nil
 	}
 	switch r.request.ResponseFormat.Type {

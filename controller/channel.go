@@ -535,6 +535,13 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if err := channel.ValidateSettings(); err != nil {
 		return common.NewMessage("Invalid channel settings format: {{error}}", map[string]any{"error": err.Error()})
 	}
+	if isAdd {
+		// A new channel has no live configuration to preserve. Its initial
+		// configuration still needs the same bounded checks as activation.
+		if err := validateAdaptationCandidate(channel); err != nil {
+			return err
+		}
+	}
 	if channel.Type == constant.ChannelTypeTaskPlugin {
 		pluginKey := strings.TrimSpace(channel.GetSetting().TaskPluginKey)
 		if pluginKey == "" {
@@ -1605,8 +1612,9 @@ func CopyChannel(c *gin.Context) {
 	}
 
 	// clone channel
-	clone := *origin // shallow copy is sufficient as we will overwrite primitives
-	clone.Id = 0     // let DB auto-generate
+	clone := *origin                // shallow copy is sufficient as we will overwrite primitives
+	clone.Id = 0                    // let DB auto-generate
+	clone.AdaptationManaged = false // A new channel has its own lifecycle.
 	clone.CreatedTime = common.GetTimestamp()
 	clone.Name = origin.Name + suffix
 	clone.TestTime = 0
