@@ -93,6 +93,12 @@ func presetScriptFailureSummary(err error) string {
 	if err == nil {
 		return "unknown processing failure"
 	}
+	if detail := PresetScriptFailureDetails(err); detail != nil {
+		if detail.Hook != "" {
+			return detail.Hook + ": " + detail.Error()
+		}
+		return detail.Error()
+	}
 	for errors.Unwrap(err) != nil {
 		err = errors.Unwrap(err)
 	}

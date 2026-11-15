@@ -484,6 +484,13 @@ export interface BodyAudit {
   client_response_complete: boolean
   trace?: AuditTrace
   attempts?: AuditAttempt[]
+  original_request?: {
+    body: string
+    encoding: 'utf-8' | 'base64'
+    size: number
+    truncated: boolean
+    complete: boolean
+  }
 }
 
 export interface AuditTrace {

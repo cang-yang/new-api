@@ -8381,6 +8381,9 @@
     "Export regex configuration": "正規表現設定をエクスポート",
     "Replace regex configuration?": "正規表現設定を置き換えますか？",
     "This replaces the rules and their settings in this editor. Save the channel to take effect.": "編集画面のルールと設定を置き換えます。チャンネルを保存すると反映されます。",
-    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "設定が変更されました。再読み込みしてから保存してください。今回の変更は未反映です。"
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "設定が変更されました。再読み込みしてから保存してください。今回の変更は未反映です。",
+    "This request failed before it was sent upstream.": "このリクエストは上流に送信される前に失敗しました。",
+    "The original client request was not captured.": "クライアントの元のリクエストは記録されていません。",
+    "No upstream attempt was made. See the reply for the local error.": "上流への送信は行われませんでした。ローカルエラーは返信で確認してください。"
   }
 }

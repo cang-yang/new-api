@@ -106,3 +106,38 @@ func TestGetBodyAuditReturnsClientResponseCapture(t *testing.T) {
 	assert.Empty(t, firstAttempt["request_body"])
 	assert.Empty(t, firstAttempt["response_body"])
 }
+
+func TestGetBodyAuditLocalFailureIncludesOriginalButNoUpstreamRequest(t *testing.T) {
+	previousDB := model.DB
+	t.Cleanup(func() { model.DB = previousDB })
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.BodyAudit{}, &model.AuditTrace{}, &model.AuditAttempt{}, &model.AuditWireSend{}, &model.AuditConfigSnapshot{}, &model.AuditBlob{}))
+	model.DB = db
+	original := []byte(`{"model":"test","messages":[{"role":"user","content":"original"}]}`)
+	blob, err := model.CreateAuditBlob(&model.AuditBlob{CaptureStage: "client_request", Body: original, OriginalSize: int64(len(original)), Complete: true})
+	require.NoError(t, err)
+	_, err = model.GetOrCreateAuditTrace(&model.AuditTrace{RequestId: "local-failure", Source: "relay", Status: "failed", ClientTerminalKind: "not_sent", OriginalRequestBlobId: blob.Id})
+	require.NoError(t, err)
+	require.NoError(t, model.UpsertBodyAudit(&model.BodyAudit{RequestId: "local-failure", ClientResponseStatus: 400, ClientResponseBody: []byte(`{"error":"local failure"}`), ClientResponseComplete: true}))
+	for _, query := range []string{"", "?include_attempt_bodies=false"} {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		context.Request = httptest.NewRequest(http.MethodGet, "/"+query, nil)
+		context.Params = gin.Params{{Key: "request_id", Value: "local-failure"}}
+		GetBodyAudit(context)
+		require.Equal(t, 200, recorder.Code)
+		var payload struct {
+			Success bool
+			Data    bodyAuditDetail
+		}
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+		require.True(t, payload.Success)
+		require.NotNil(t, payload.Data.OriginalRequest)
+		assert.Equal(t, string(original), payload.Data.OriginalRequest.Body)
+		assert.Equal(t, int64(len(original)), payload.Data.OriginalRequest.Size)
+		assert.Empty(t, payload.Data.RequestBody)
+		assert.Empty(t, payload.Data.Attempts)
+		assert.Zero(t, payload.Data.ResponseStatus)
+	}
+}

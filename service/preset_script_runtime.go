@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,13 +21,50 @@ const maxPresetScriptSource = 128 << 10
 
 var presetScriptSlots = make(chan struct{}, 2)
 
+// Only these host-defined fields may leave the isolated VM. Exception messages,
+// thrown values, function names and complete stacks may contain client data.
+type presetScriptFailure struct {
+	Kind         string `json:"kind"`
+	Hook         string `json:"hook,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	ModuleLine   int    `json:"module_line,omitempty"`
+	ModuleColumn int    `json:"module_column,omitempty"`
+}
+
+func (e *presetScriptFailure) Error() string {
+	if e.Reason == "metadata_limit" {
+		return "preset request metadata exceeded its request-scoped limit"
+	}
+	return "preset script raised " + e.Kind
+}
+
+func PresetScriptFailureDetails(err error) *presetScriptFailure {
+	var detail *presetScriptFailure
+	if !errors.As(err, &detail) {
+		return nil
+	}
+	return detail
+}
+
+func presetScriptHookError(hook string, err error) error {
+	if detail := PresetScriptFailureDetails(err); detail != nil {
+		copy := *detail
+		copy.Hook = hook
+		err = &copy
+	}
+	return fmt.Errorf("%s: %w", hook, err)
+}
+
+var presetScriptFrame = regexp.MustCompile(`\(preset-hook\.js:([0-9]+):([0-9]+)\)`)
+
 //go:embed preset_data_host.js
 var presetDataHostSource string
 
 type presetDataHost struct {
-	Settings json.RawMessage `json:"settings"`
-	Metadata json.RawMessage `json:"metadata"`
-	Client   json.RawMessage `json:"-"`
+	Settings      json.RawMessage `json:"settings"`
+	Metadata      json.RawMessage `json:"metadata"`
+	MetadataLimit int             `json:"metadata_limit"`
+	Client        json.RawMessage `json:"-"`
 }
 
 func runPresetScript(source string, input any, target any, deadline time.Time) error {
@@ -53,7 +92,20 @@ func runPresetScriptWithHost(source string, input any, target any, deadline time
 	case <-admission.C:
 		return fmt.Errorf("preset script runtime is busy")
 	}
-	inputJSON, err := common.Marshal(map[string]any{"input": input, "host": host})
+	inputData, err := common.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("preset script input is invalid or exceeds 8 MiB")
+	}
+	callHost := host
+	if host != nil {
+		copy := *host
+		// Metadata may legitimately hold a request-local context snapshot.
+		// Scale to the serialized input, never beyond the existing 8 MiB
+		// boundary. Preserve the allowance across this request's hooks only.
+		copy.MetadataLimit = min(maxFilteredResponseBytes, max((256<<10)+len(inputData), host.MetadataLimit))
+		callHost = &copy
+	}
+	inputJSON, err := common.Marshal(map[string]any{"input": json.RawMessage(inputData), "host": callHost})
 	if err != nil || len(inputJSON) > maxFilteredResponseBytes {
 		return fmt.Errorf("preset script input is invalid or exceeds 8 MiB")
 	}
@@ -64,7 +116,7 @@ const console = Object.freeze({log(){}, warn(){}, error(){}, debug(){}, info(){}
 export function run(serialized) {
   const envelope = JSON.parse(serialized);
   const input = envelope.input;
-  const metadata = envelope.host ? createPresetDataHost(envelope.host.settings, envelope.host.metadata) : null;
+  const metadata = envelope.host ? createPresetDataHost(envelope.host.settings, envelope.host.metadata, {}, envelope.host.metadata_limit) : null;
   const result = (`+source+`)(input);
   if (result && typeof result.then === 'function')
     throw new TypeError('Asynchronous hooks are unsupported');
@@ -111,8 +163,30 @@ export function run(serialized) {
 		if errors.Is(err, moejs.ErrMemoryLimit) {
 			return fmt.Errorf("preset script execution exceeded its memory limit")
 		}
-		// Never include the JS exception: a script can throw the whole prompt.
-		return fmt.Errorf("preset script failed, exceeded its limits, or requires an unavailable API")
+		detail := &presetScriptFailure{Kind: "an unclassified exception"}
+		var exception *moejs.Exception
+		if errors.As(err, &exception) {
+			// StackTrace does not run getters or other user code. Whitelist
+			// the class and numeric location, never the error message or stack.
+			stack := runtime.StackTrace(exception)
+			// Only exact host-defined messages are classified; never publish
+			// arbitrary exception text or guesses based on a partial match.
+			if exception.Name() == "RangeError" && exception.Message() == "Request metadata limit" {
+				detail.Reason = "metadata_limit"
+			}
+			kind, _, _ := strings.Cut(stack, ":")
+			switch kind {
+			case "Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "URIError", "EvalError", "AggregateError":
+				detail.Kind = kind
+			}
+			if _, frames, ok := strings.Cut(stack, "\n"); ok {
+				if frame := presetScriptFrame.FindStringSubmatch(frames); len(frame) == 3 {
+					detail.ModuleLine, _ = strconv.Atoi(frame[1])
+					detail.ModuleColumn, _ = strconv.Atoi(frame[2])
+				}
+			}
+		}
+		return detail
 	}
 	value, err := runtime.ToGo(result)
 	if err != nil {
@@ -130,8 +204,8 @@ export function run(serialized) {
 		return fmt.Errorf("preset script returned an incompatible result")
 	}
 	if host != nil {
-		if len(envelope.Metadata) > 256<<10 || common.GetJsonType(envelope.Metadata) != "object" {
-			return fmt.Errorf("preset request metadata must be an object of at most 256 KiB")
+		if len(envelope.Metadata) > callHost.MetadataLimit || common.GetJsonType(envelope.Metadata) != "object" {
+			return fmt.Errorf("preset request metadata exceeds its request-scoped limit or is not an object")
 		}
 	}
 	if err := common.Unmarshal(envelope.Result, target); err != nil {
@@ -139,6 +213,7 @@ export function run(serialized) {
 	}
 	if host != nil {
 		host.Metadata = envelope.Metadata
+		host.MetadataLimit = callHost.MetadataLimit
 	}
 	return nil
 }

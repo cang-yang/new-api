@@ -8381,6 +8381,9 @@
     "Export regex configuration": "匯出正則設定",
     "Replace regex configuration?": "取代正則設定？",
     "This replaces the rules and their settings in this editor. Save the channel to take effect.": "將取代編輯區內的規則及其設定，儲存通道後生效。",
-    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "此設定已在其他視窗中修改，請重新載入後再儲存。本次修改尚未生效。"
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "此設定已在其他視窗中修改，請重新載入後再儲存。本次修改尚未生效。",
+    "This request failed before it was sent upstream.": "請求在傳送至上游之前已失敗。",
+    "The original client request was not captured.": "未儲存用戶端原始請求內容。",
+    "No upstream attempt was made. See the reply for the local error.": "本次未向上游傳送請求，請在「回覆」中查看具體錯誤。"
   }
 }

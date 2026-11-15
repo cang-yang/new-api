@@ -83,6 +83,28 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			DisableChannel(channelError, reason)
 		})
 	}
+	recordRelayError(c, channelError, err, relayInfo, !clientGone)
+}
+
+const recordedRelayErrorKey = "recorded_relay_error"
+
+// RecordRelayFailure covers terminal local failures as well as channel errors.
+// A local preprocessing failure must not disable or penalize an upstream.
+func RecordRelayFailure(c *gin.Context, err *types.NewAPIError, info *relaycommon.RelayInfo) {
+	if c == nil || err == nil {
+		return
+	}
+	if recorded, exists := c.Get(recordedRelayErrorKey); exists && recorded == err {
+		return
+	}
+	recordRelayError(c, types.ChannelError{
+		ChannelId:   common.GetContextKeyInt(c, constant.ContextKeyChannelId),
+		ChannelType: c.GetInt("channel_type"),
+	}, err, info, false)
+}
+
+func recordRelayError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo, aggregate bool) {
+	upstreamURLs := common.UpstreamAddresses(c)
 
 	if types.IsRecordErrorLog(err) {
 		userId := c.GetInt("id")
@@ -117,7 +139,7 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		fingerprint := fingerprintChannelError(signature)
 		other.SetPublic("error_fingerprint", fingerprint)
 		other.SetPublic("error_signature", signature)
-		if !clientGone && shouldAggregateChannelError(err) {
+		if aggregate && shouldAggregateChannelError(err) {
 			incident, incidentErr := model.UpsertErrorIncident(model.ErrorIncidentOccurrence{
 				Fingerprint: fingerprint,
 				RequestId:   c.GetString(common.RequestIdKey),
@@ -140,12 +162,16 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		AppendRelayLogAdminInfo(c, relayInfo, other)
 		AppendResponseModelLogInfo(relayInfo, other)
 		AppendTaskPluginContextAuditInfo(c, other)
+		if detail := PresetScriptFailureDetails(err); detail != nil {
+			other.SetAdmin("preset_script_failure", detail)
+		}
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
 		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(upstreamURLs...), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		c.Set(recordedRelayErrorKey, err)
 	}
 }
 

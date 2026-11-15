@@ -162,7 +162,7 @@ func preparePresetScripts(config *dto.SillyTavernPresetConfig, preset *dto.Silly
 		}
 		var definition dto.FunctionRequest
 		if err := runPresetScriptWithHost("() => {\n"+binding.Code+"\n}", nil, &definition, deadline, host); err != nil {
-			return nil, nil, fmt.Errorf("ToolBindings: %w", err)
+			return nil, nil, presetScriptHookError("ToolBindings", err)
 		}
 		for _, tool := range request.Tools {
 			if tool.Function.Name == definition.Name {
@@ -453,7 +453,7 @@ func applyPresetRequestScriptWithHost(script string, request *dto.GeneralOpenAIR
 		"provider": map[string]string{"adapter": "openai", "model": request.Model},
 	}, &after, deadline, host)
 	if err != nil {
-		return fmt.Errorf("FinalRequestProcessing: %w", err)
+		return presetScriptHookError("FinalRequestProcessing", err)
 	}
 	return applyPresetRequestChanges(encoded, after, request)
 }

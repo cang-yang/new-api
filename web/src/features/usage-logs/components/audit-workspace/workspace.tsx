@@ -20,6 +20,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Select,
   SelectContent,
@@ -42,13 +43,14 @@ export function AuditWorkspace(props: {
   const { t } = useTranslation()
   const [source, setSource] = useState('result')
   const audit = props.audit
+  const notSent = audit.trace?.client_terminal_kind === 'not_sent'
   const hasClient =
     audit.client_response_status > 0 ||
     audit.client_response_body_size > 0 ||
     audit.client_response_complete
   const sources = [
     { id: 'result', label: t('Reply') },
-    { id: 'request', label: t('Sent Request') },
+    { id: 'request', label: notSent ? t('Client Request') : t('Sent Request') },
     { id: 'execution', label: t('Execution details') },
   ]
   const responseStatus = hasClient
@@ -72,13 +74,24 @@ export function AuditWorkspace(props: {
         incomplete: !audit.client_response_complete,
       }
     : undefined
-  const request: AuditCapture = {
-    body: audit.request_body,
-    size: audit.request_body_size,
-    encoding: audit.request_body_encoding,
-    truncated: audit.request_body_truncated,
-    request: true,
-  }
+  const request: AuditCapture = notSent
+    ? {
+        body: audit.original_request?.body ?? '',
+        size: audit.original_request?.size,
+        encoding: audit.original_request?.encoding ?? 'utf-8',
+        truncated: audit.original_request?.truncated,
+        incomplete: audit.original_request
+          ? !audit.original_request.complete
+          : false,
+        request: true,
+      }
+    : {
+        body: audit.request_body,
+        size: audit.request_body_size,
+        encoding: audit.request_body_encoding,
+        truncated: audit.request_body_truncated,
+        request: true,
+      }
   return (
     <Tabs
       value={source}
@@ -145,9 +158,24 @@ export function AuditWorkspace(props: {
         value={source}
         className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'
       >
+        {notSent && (
+          <Alert className='shrink-0 rounded-none border-x-0 border-t-0'>
+            <AlertDescription>
+              {t('This request failed before it was sent upstream.')}
+            </AlertDescription>
+          </Alert>
+        )}
         {source === 'execution' && <AuditExecution audit={audit} />}
         {source === 'request' && (
-          <AuditPayload capture={request} requestPath={props.requestPath} />
+          <AuditPayload
+            capture={request}
+            requestPath={props.requestPath}
+            emptyMessage={
+              notSent
+                ? t('The original client request was not captured.')
+                : undefined
+            }
+          />
         )}
         {source === 'result' && (
           <AuditResponse
@@ -155,6 +183,7 @@ export function AuditWorkspace(props: {
             upstream={upstream}
             clientStatus={audit.client_response_status}
             upstreamStatus={audit.response_status}
+            upstreamNotSent={notSent}
             requestPath={props.requestPath}
           />
         )}

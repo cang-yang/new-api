@@ -79,7 +79,7 @@ func (p *PresetScriptResponse) formatOwnedCalls(calls []*presetToolTextCall, str
 		"calls": arguments, "defaultText": defaultText, "stream": stream, "final": true, "channel": "main",
 		"client": client,
 	}, &result, deadline, p.dataHost); err != nil {
-		return "", fmt.Errorf("toolCallFormatter: %w", err)
+		return "", presetScriptHookError("toolCallFormatter", err)
 	}
 	text, ok := result.(string)
 	if !ok {
@@ -116,7 +116,7 @@ func (p *PresetScriptResponse) processText(text string, deadline time.Time) (str
 	if err := runPresetScriptWithHost(settings.Script, map[string]any{
 		"buffer": text, "final": true, "state": map[string]any{},
 	}, &result, deadline, p.dataHost); err != nil {
-		return "", fmt.Errorf("OutputPreprocessing: %w", err)
+		return "", presetScriptHookError("OutputPreprocessing", err)
 	}
 	// A gateway does not autonomously regenerate rejected responses.
 	if result.Output == nil || result.Hold != "" || result.State.Rejected {

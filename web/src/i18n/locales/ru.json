@@ -8381,6 +8381,9 @@
     "Export regex configuration": "Экспортировать настройки regex",
     "Replace regex configuration?": "Заменить настройки regex?",
     "This replaces the rules and their settings in this editor. Save the channel to take effect.": "Заменяет правила и их настройки в редакторе. Сохраните канал для применения.",
-    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Настройки изменились. Перезагрузите перед сохранением; ваши изменения не применены."
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Настройки изменились. Перезагрузите перед сохранением; ваши изменения не применены.",
+    "This request failed before it was sent upstream.": "Запрос завершился ошибкой до отправки провайдеру.",
+    "The original client request was not captured.": "Исходный запрос клиента не был сохранён.",
+    "No upstream attempt was made. See the reply for the local error.": "Запрос провайдеру не отправлялся. Локальная ошибка указана в ответе."
   }
 }

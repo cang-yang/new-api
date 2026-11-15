@@ -8381,6 +8381,9 @@
     "Export regex configuration": "Export regex configuration",
     "Replace regex configuration?": "Replace regex configuration?",
     "This replaces the rules and their settings in this editor. Save the channel to take effect.": "This replaces the rules and their settings in this editor. Save the channel to take effect.",
-    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Adaptation settings changed. Reload before saving; your changes have not been applied."
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Adaptation settings changed. Reload before saving; your changes have not been applied.",
+    "This request failed before it was sent upstream.": "This request failed before it was sent upstream.",
+    "The original client request was not captured.": "The original client request was not captured.",
+    "No upstream attempt was made. See the reply for the local error.": "No upstream attempt was made. See the reply for the local error."
   }
 }

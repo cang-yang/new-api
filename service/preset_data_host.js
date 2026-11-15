@@ -9,7 +9,9 @@ function freezePresetDataView(value) {
   return value;
 }
 
-function createPresetDataHost(settings, metadata = {}, extra = {}) {
+function createPresetDataHost(settings, metadata = {}, extra = {}, metadataLimit = 262144) {
+  const limit = Number.isInteger(metadataLimit) && metadataLimit >= 262144 && metadataLimit <= 8388608
+    ? metadataLimit : 262144;
   const context = Object.freeze({
     chatCompletionSettings: freezePresetDataView(settings),
     chatMetadata: metadata,
@@ -28,12 +30,12 @@ function createPresetDataHost(settings, metadata = {}, extra = {}) {
   });
   return () => {
     const text = JSON.stringify(metadata);
-    if (!text || text.length > 262144) throw new RangeError('Request metadata limit');
+    if (!text || text.length > limit) throw new RangeError('Request metadata limit');
     let bytes = 0;
     for (const char of text) {
       const point = char.codePointAt(0);
       bytes += point <= 127 ? 1 : point <= 2047 ? 2 : point <= 65535 ? 3 : 4;
-      if (bytes > 262144) throw new RangeError('Request metadata limit');
+      if (bytes > limit) throw new RangeError('Request metadata limit');
     }
     return metadata;
   };

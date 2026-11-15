@@ -79,7 +79,13 @@ export function AuditExecution(props: { audit: BodyAudit }) {
   if (!selected) {
     return (
       <ReadingViewport>
-        <p>{t('No execution attempts were recorded')}</p>
+        <p>
+          {props.audit.trace?.client_terminal_kind === 'not_sent'
+            ? t(
+                'No upstream attempt was made. See the reply for the local error.'
+              )
+            : t('No execution attempts were recorded')}
+        </p>
       </ReadingViewport>
     )
   }

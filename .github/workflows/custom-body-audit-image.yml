@@ -85,7 +85,9 @@ jobs:
         env:
           TEST_MYSQL_DSN: root:adaptation-test-only@tcp(127.0.0.1:3306)/adaptation_test?charset=utf8mb4&parseTime=True&loc=Local
           TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=postgres password=adaptation-test-only dbname=adaptation_test sslmode=disable
-        run: go test ./model -run '^TestChannelAdaptationLifecycle$' -count=1 -v
+        run: |
+          go test ./model -run '^TestChannelAdaptationLifecycle$' -count=1 -v
+          go test ./controller -run '^TestRelayFailureBodyAudit$' -count=1 -v
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0

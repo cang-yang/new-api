@@ -8381,6 +8381,9 @@
     "Export regex configuration": "Exporter les règles regex",
     "Replace regex configuration?": "Remplacer les règles regex ?",
     "This replaces the rules and their settings in this editor. Save the channel to take effect.": "Remplace les règles et leurs paramètres dans cet éditeur. Enregistrez le canal pour appliquer.",
-    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "La configuration a changé. Rechargez avant d’enregistrer ; vos modifications n’ont pas été appliquées."
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "La configuration a changé. Rechargez avant d’enregistrer ; vos modifications n’ont pas été appliquées.",
+    "This request failed before it was sent upstream.": "Cette requête a échoué avant son envoi en amont.",
+    "The original client request was not captured.": "La requête d’origine du client n’a pas été enregistrée.",
+    "No upstream attempt was made. See the reply for the local error.": "Aucun envoi en amont n’a été effectué. Consultez la réponse pour voir l’erreur locale."
   }
 }

@@ -92,10 +92,11 @@ const bodyAuditClientResponseKey = "body_audit_client_response"
 const bodyAuditCaptureKey = "body_audit_capture"
 
 type bodyAuditClientResponseCapture struct {
-	mu       sync.Mutex
-	response *limitedAuditBuffer
-	capture  *bodyAuditCapture
-	writer   *bodyAuditResponseWriter
+	mu        sync.Mutex
+	response  *limitedAuditBuffer
+	capture   *bodyAuditCapture
+	writer    *bodyAuditResponseWriter
+	finalized bool
 }
 
 type bodyAuditResponseWriter struct {
@@ -164,10 +165,29 @@ func FinalizeBodyAuditClientResponse(c *gin.Context) {
 	}
 
 	session.mu.Lock()
+	if session.finalized {
+		session.mu.Unlock()
+		return
+	}
+	session.finalized = true
 	capture := session.capture
 	session.mu.Unlock()
 	if capture == nil {
-		return
+		if session.writer.Status() < http.StatusBadRequest {
+			return
+		}
+		// Local validation and script failures have no upstream transport.
+		// Keep upstream fields empty rather than inventing a provider reply.
+		limit := int64(constant.BodyAuditMaxBodyMB) * 1024 * 1024
+		capture = &bodyAuditCapture{
+			requestId: c.GetString(common.RequestIdKey), userId: c.GetInt("id"),
+			channelId: c.GetInt("channel_id"), modelName: c.GetString("original_model"),
+			request: newLimitedAuditBuffer(limit), response: newLimitedAuditBuffer(limit),
+		}
+		if capture.requestId == "" {
+			return
+		}
+		capture.beginClientTrace(c, c.Request, nil)
 	}
 
 	clientBody, clientSize, clientTruncated := session.response.snapshot()
@@ -377,32 +397,10 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 	if model.DB == nil || info == nil {
 		return
 	}
-	clientMethod := req.Method
-	clientRoute := req.URL.Path
-	if c.Request != nil && c.Request.URL != nil {
-		clientMethod = c.Request.Method
-		clientRoute = c.Request.URL.RequestURI()
-	}
-	trace, err := model.GetOrCreateAuditTrace(&model.AuditTrace{
-		RequestId:    capture.requestId,
-		Source:       "relay",
-		Status:       "recording",
-		UserId:       capture.userId,
-		TokenId:      info.TokenId,
-		Method:       clientMethod,
-		Route:        clientRoute,
-		RequestModel: info.OriginModelName,
-		RelayFormat:  string(info.RelayFormat),
-	})
-	if err != nil {
-		logger.LogError(nil, "failed to create audit trace: "+err.Error())
+	capture.beginClientTrace(c, req, info)
+	if capture.traceId == 0 {
 		return
 	}
-	capture.traceId = trace.Id
-	if trace.OriginalRequestBlobId == 0 {
-		captureOriginalClientRequest(c, trace)
-	}
-
 	channelType := 0
 	if info.ChannelMeta != nil {
 		channelType = info.ChannelMeta.ChannelType
@@ -421,7 +419,7 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 	}
 	target := req.URL.Scheme + "://" + req.URL.Host + req.URL.EscapedPath()
 	attempt := &model.AuditAttempt{
-		TraceId:           trace.Id,
+		TraceId:           capture.traceId,
 		RoutingRetryIndex: info.RetryIndex,
 		ChannelId:         capture.channelId,
 		ChannelType:       channelType,
@@ -441,6 +439,43 @@ func (capture *bodyAuditCapture) beginTrace(c *gin.Context, req *http.Request, i
 		return
 	}
 	capture.attemptId = attempt.Id
+}
+
+func (capture *bodyAuditCapture) beginClientTrace(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) {
+	if model.DB == nil || req == nil || req.URL == nil {
+		return
+	}
+	clientMethod := req.Method
+	clientRoute := req.URL.Path
+	if c.Request != nil && c.Request.URL != nil {
+		clientMethod = c.Request.Method
+		clientRoute = c.Request.URL.RequestURI()
+	}
+	tokenId := c.GetInt("token_id")
+	requestModel := c.GetString("original_model")
+	relayFormat := c.GetString("body_audit_relay_format")
+	if info != nil {
+		tokenId, requestModel, relayFormat = info.TokenId, info.OriginModelName, string(info.RelayFormat)
+	}
+	trace, err := model.GetOrCreateAuditTrace(&model.AuditTrace{
+		RequestId:    capture.requestId,
+		Source:       "relay",
+		Status:       "recording",
+		UserId:       capture.userId,
+		TokenId:      tokenId,
+		Method:       clientMethod,
+		Route:        clientRoute,
+		RequestModel: requestModel,
+		RelayFormat:  relayFormat,
+	})
+	if err != nil {
+		logger.LogError(nil, "failed to create audit trace: "+err.Error())
+		return
+	}
+	capture.traceId = trace.Id
+	if trace.OriginalRequestBlobId == 0 {
+		captureOriginalClientRequest(c, trace)
+	}
 }
 
 // buildAttemptConfigSnapshot produces the immutable, deliberately secret-free
@@ -747,13 +782,13 @@ func (capture *bodyAuditCapture) persistAttemptTrace(requestBody []byte, request
 }
 
 func (capture *bodyAuditCapture) persistClientTrace(client *bodyAuditClientResponseSnapshot) {
-	if capture.traceId == 0 || capture.attemptId == 0 || client == nil {
+	if capture.traceId == 0 || client == nil {
 		return
 	}
 	capture.clientPersistOnce.Do(func() {
 		blob, err := model.CreateAuditBlob(&model.AuditBlob{
 			CaptureStage: "client_response", MediaType: client.contentType, Body: client.body,
-			OriginalSize: client.size, Complete: client.complete && capture.complete, Truncated: client.truncated,
+			OriginalSize: client.size, Complete: client.complete && (capture.attemptId == 0 || capture.complete), Truncated: client.truncated,
 		})
 		if err != nil {
 			logger.LogError(nil, "failed to save audit client response blob: "+err.Error())
@@ -765,8 +800,16 @@ func (capture *bodyAuditCapture) persistClientTrace(client *bodyAuditClientRespo
 			status = "failed"
 			terminalKind = "incomplete"
 		}
+		if capture.attemptId == 0 {
+			status, terminalKind = "failed", "not_sent"
+		}
 		if err := model.FinalizeAuditTrace(capture.traceId, capture.attemptId, blob.Id, status, terminalKind); err != nil {
 			logger.LogError(nil, "failed to finalize audit trace: "+err.Error())
+		}
+		if capture.attemptId == 0 {
+			if err := model.UpdateAuditTraceResult(capture.traceId, client.status, "local_error"); err != nil {
+				logger.LogError(nil, "failed to record local audit outcome: "+err.Error())
+			}
 		}
 	})
 }

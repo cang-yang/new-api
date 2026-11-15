@@ -73,6 +73,22 @@ return request;
 	var value any
 	require.Error(t, runPresetScriptWithHost(`() => {SillyTavern.getContext().chatMetadata.x = '中'.repeat(90000); return 'ok'}`, nil, &value, time.Now().Add(time.Second), host))
 	assert.JSONEq(t, `{}`, string(host.Metadata), "failed hooks cannot publish partial metadata")
+	// A large but valid context can be retained by cooperating hooks. The
+	// allowance follows this request; unrelated small requests retain 256 KiB.
+	largeContext := strings.Repeat("中", 100000)
+	require.NoError(t, runPresetScriptWithHost(`input => { SillyTavern.getContext().chatMetadata.context = input; return 'ok'; }`, largeContext, &value, time.Now().Add(time.Second), host))
+	assert.Greater(t, len(host.Metadata), 256<<10)
+	assert.LessOrEqual(t, host.MetadataLimit, maxFilteredResponseBytes)
+	require.NoError(t, runPresetScriptWithHost(`() => SillyTavern.getContext().chatMetadata.context.length`, nil, &value, time.Now().Add(time.Second), host))
+	assert.EqualValues(t, 100000, value)
+	previousMetadata := string(host.Metadata)
+	err = runPresetScriptWithHost(`() => {SillyTavern.getContext().chatMetadata.x = '中'.repeat(300000); return 'ok'}`, nil, &value, time.Now().Add(time.Second), host)
+	require.Error(t, err)
+	assert.Equal(t, "metadata_limit", PresetScriptFailureDetails(err).Reason)
+	assert.Equal(t, previousMetadata, string(host.Metadata), "failed hooks remain atomic")
+	fresh, err := newPresetDataHost(config)
+	require.NoError(t, err)
+	require.Error(t, runPresetScriptWithHost(`() => {SillyTavern.getContext().chatMetadata.x = '中'.repeat(90000); return 'ok'}`, nil, &value, time.Now().Add(time.Second), fresh))
 	require.Error(t, runPresetScriptWithHost(`() => {SillyTavern.getContext().chatCompletionSettings.prompts[0].content = 'changed'; return 'ok'}`, nil, &value, time.Now().Add(time.Second), host))
 }
 

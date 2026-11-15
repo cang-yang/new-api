@@ -8381,6 +8381,9 @@
     "Export regex configuration": "Xuất cấu hình regex",
     "Replace regex configuration?": "Thay thế cấu hình regex?",
     "This replaces the rules and their settings in this editor. Save the channel to take effect.": "Thay thế quy tắc và thiết lập trong trình chỉnh sửa. Lưu kênh để áp dụng.",
-    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Cấu hình đã thay đổi. Tải lại trước khi lưu; thay đổi của bạn chưa được áp dụng."
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Cấu hình đã thay đổi. Tải lại trước khi lưu; thay đổi của bạn chưa được áp dụng.",
+    "This request failed before it was sent upstream.": "Yêu cầu thất bại trước khi được gửi đến nhà cung cấp.",
+    "The original client request was not captured.": "Yêu cầu gốc của ứng dụng chưa được ghi lại.",
+    "No upstream attempt was made. See the reply for the local error.": "Chưa gửi yêu cầu đến nhà cung cấp. Xem phản hồi để biết lỗi xử lý nội bộ."
   }
 }

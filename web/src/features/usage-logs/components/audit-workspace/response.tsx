@@ -39,6 +39,7 @@ export function AuditResponse(props: {
   upstream: AuditCapture
   clientStatus: number
   upstreamStatus: number
+  upstreamNotSent?: boolean
   requestPath?: string
 }) {
   const { t } = useTranslation()
@@ -98,9 +99,11 @@ export function AuditResponse(props: {
         <TabsList aria-label={t('Response inspection')} className='min-w-max'>
           <TabsTrigger value='readable'>{t('Readable content')}</TabsTrigger>
           <TabsTrigger value='raw'>{t('Raw data')}</TabsTrigger>
-          <TabsTrigger value='compare'>
-            {t('Compare with upstream')}
-          </TabsTrigger>
+          {!props.upstreamNotSent && (
+            <TabsTrigger value='compare'>
+              {t('Compare with upstream')}
+            </TabsTrigger>
+          )}
         </TabsList>
       </div>
       <TabsContent
@@ -111,7 +114,7 @@ export function AuditResponse(props: {
           <AuditPayload
             capture={props.client ?? props.upstream}
             requestPath={props.requestPath}
-            fixedView='readable'
+            fixedView={props.upstreamNotSent ? 'formatted' : 'readable'}
             notice={fallback}
           />
         )}

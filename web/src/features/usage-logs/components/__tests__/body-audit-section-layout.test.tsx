@@ -104,6 +104,64 @@ function mount(enabled = true) {
     </I18nextProvider>
   )
 }
+test('local failures show the client request and error without inventing an upstream response', async () => {
+  const original =
+    '{"model":"fixture","messages":[{"role":"user","content":"Original client input"}]}'
+  Object.assign(audit, {
+    request_body: '',
+    request_body_size: 0,
+    response_body: '',
+    response_body_size: 0,
+    response_status: 0,
+    response_complete: false,
+    client_response_body:
+      '{"error":{"message":"FinalRequestProcessing: preset script raised TypeError"}}',
+    client_response_status: 400,
+    original_request: {
+      body: original,
+      encoding: 'utf-8',
+      size: original.length,
+      truncated: false,
+      complete: true,
+    },
+    trace: {
+      id: 1,
+      status: 'failed',
+      outcome: 'local_error',
+      source: 'relay',
+      final_attempt_id: 0,
+      client_terminal_kind: 'not_sent',
+      completed_at: 1,
+    },
+    attempts: [],
+  })
+  const user = userEvent.setup()
+  mount()
+  expect(
+    await screen.findByText('This request failed before it was sent upstream.')
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('tab', { name: 'Compare with upstream' })
+  ).toBeNull()
+  expect(
+    screen.getByRole('region', { name: 'Reading content' })
+  ).toHaveTextContent('FinalRequestProcessing')
+  await user.click(screen.getByRole('tab', { name: 'Client Request' }))
+  expect(
+    screen.getByRole('region', { name: 'Reading content' })
+  ).toHaveTextContent('Original client input')
+  await user.click(screen.getByRole('button', { name: 'Copy raw body' }))
+  expect(await navigator.clipboard.readText()).toBe(original)
+  await user.click(screen.getByRole('tab', { name: 'Execution details' }))
+  expect(
+    screen.getByText(
+      'No upstream attempt was made. See the reply for the local error.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Replay selected attempt' })
+  ).toBeNull()
+})
 test('opens one reply entry without duplicate response source tabs', async () => {
   mount()
   expect(await screen.findByRole('tab', { name: 'Reply' })).toHaveAttribute(

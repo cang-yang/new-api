@@ -43,7 +43,29 @@ func TestPresetScriptFailureDiagnostics(t *testing.T) {
 		staged := newResponseStageError(FailureStageScript, err)
 		require.NotContains(t, staged.Error(), "credential")
 		require.NotContains(t, staged.Error(), "private prompt")
+		detail := PresetScriptFailureDetails(staged)
+		require.NotNil(t, detail)
+		assert.Equal(t, "Error", detail.Kind)
+		assert.Positive(t, detail.ModuleLine)
 	})
+	for _, tc := range []struct{ name, source, kind string }{
+		{"missing API", `() => unavailablePresetAPI()`, "ReferenceError"},
+		{"invalid data", `() => { throw new TypeError('PRIVATE DATA'); }`, "TypeError"},
+		{"thrown string", `() => { throw 'PRIVATE DATA'; }`, "an unclassified exception"},
+		{"custom name", `() => { const e=new Error('PRIVATE DATA'); e.name='PRIVATE NAME'; throw e; }`, "an unclassified exception"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output any
+			err := presetScriptHookError("FinalRequestProcessing", runPresetScript(tc.source, nil, &output, time.Time{}))
+			require.Error(t, err)
+			staged := newResponseStageError(FailureStageScript, err)
+			detail := PresetScriptFailureDetails(staged)
+			require.NotNil(t, detail)
+			assert.Equal(t, tc.kind, detail.Kind)
+			assert.Equal(t, "FinalRequestProcessing", detail.Hook)
+			assert.NotContains(t, staged.Error(), "PRIVATE")
+		})
+	}
 	t.Run("execution timeout is distinguished", func(t *testing.T) {
 		var output any
 		err := runPresetScript(`() => { while (true) {} }`, nil, &output, time.Time{})
