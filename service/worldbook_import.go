@@ -332,6 +332,14 @@ func ImportWorldbook(name string, data []byte) (dto.Worldbook, error) {
 // behavior visible in the editor.
 func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dto.WorldbookNormalizedRule {
 	var rules []dto.WorldbookNormalizedRule
+	// Tavern exports group weights and scoring defaults even when the entry
+	// does not belong to a group. These dependent options do nothing on their
+	// own and must not disable an otherwise supported entry.
+	groupActive := worldbookBehaviorActive(fields["group"])
+	var group string
+	if common.Unmarshal(fields["group"], &group) == nil {
+		groupActive = strings.TrimSpace(group) != ""
+	}
 	for key, value := range fields {
 		switch key {
 		case "uid", "id", "name", "comment", "content", "key", "keys", "keysecondary", "secondary_keys", "constant", "enabled", "disable", "caseSensitive", "case_sensitive", "matchWholeWords", "whole_words", "order", "insertion_order", "selective", "selectiveLogic", "priority", "secondary_logic", "normalized_rules", "issues", "prevent_recursion", "source", "injection_mode", "injection_depth":
@@ -356,11 +364,11 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 				}
 			}
 		case "probability":
-			if worldbookProbabilityChangesActivation(value) {
+			if worldbookProbabilityChangesActivation(value, fields["useProbability"]) {
 				rules = append(rules, worldbookRiskRule(key, "random activation cannot be reproduced; matching always includes the entry"))
 			}
 		case "useProbability":
-			if worldbookBehaviorActive(value) {
+			if worldbookProbabilityChangesActivation(fields["probability"], value) {
 				rules = append(rules, worldbookIgnoredRule(key, "probability is treated as always eligible after matching"))
 			}
 		case "characterFilter":
@@ -368,8 +376,12 @@ func worldbookImportedEntryNormalization(fields map[string]json.RawMessage) []dt
 				rules = append(rules, worldbookRiskRule(key, "character or scenario filtering cannot be reproduced; the entry would match every request"))
 			}
 		case "group", "groupWeight", "groupScoring":
-			if worldbookBehaviorActive(value) {
+			if groupActive && worldbookBehaviorActive(value) {
 				rules = append(rules, worldbookRiskRule(key, "entry grouping cannot be reproduced"))
+			}
+		case "groupOverride", "useGroupScoring":
+			if groupActive && worldbookBehaviorActive(value) {
+				rules = append(rules, worldbookIgnoredRule(key, "entry grouping cannot be reproduced"))
 			}
 		case "sticky", "cooldown", "delay":
 			if worldbookBehaviorActive(value) {
@@ -486,15 +498,19 @@ func worldbookRiskFields(rules []dto.WorldbookNormalizedRule) []string {
 // worldbookProbabilityChangesActivation reports whether an imported
 // probability field would change when the entry triggers. A probability of
 // 100 is the SillyTavern default and behaves exactly like always eligible.
-func worldbookProbabilityChangesActivation(value json.RawMessage) bool {
-	if !worldbookBehaviorActive(value) {
+// A stored probability has no effect when its controlling toggle is off.
+func worldbookProbabilityChangesActivation(value, enabled json.RawMessage) bool {
+	if strings.TrimSpace(string(enabled)) == "false" {
+		return false
+	}
+	if len(value) == 0 || strings.TrimSpace(string(value)) == "null" {
 		return false
 	}
 	var probability float64
 	if err := common.Unmarshal(value, &probability); err != nil {
 		return true
 	}
-	return probability < 100
+	return probability != 100
 }
 
 // worldbookCharacterFilterActive reports whether a Tavern character filter

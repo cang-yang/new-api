@@ -726,6 +726,31 @@ func TestWorldbookImportKeepsSupportedEntriesEnabled(t *testing.T) {
 	assertWorldbookRuleAction(t, book.Entries[3], "characterFilter", "risk")
 }
 
+func TestWorldbookImportIgnoresInactiveDependentOptions(t *testing.T) {
+	for _, prefix := range []string{"", `"id":"book","enabled":true,`} {
+		book, err := ImportWorldbook("exported defaults", []byte(`{`+prefix+`"entries":[
+			{"id":"enabled","enabled":true,"constant":true,"content":"enabled lore","group":"","groupWeight":37,"groupScoring":true,"useGroupScoring":true,"groupOverride":true,"probability":50,"useProbability":false},
+			{"id":"disabled","enabled":false,"disable":true,"constant":true,"content":"disabled lore","group":"   ","groupWeight":100,"groupScoring":false},
+			{"id":"grouped","enabled":true,"constant":true,"content":"grouped lore","group":"alternatives","groupWeight":100},
+			{"id":"never","enabled":true,"constant":true,"content":"never lore","probability":0,"useProbability":true}
+		]}`))
+		require.NoError(t, err)
+		require.Len(t, book.Entries, 4)
+		assert.True(t, book.Entries[0].Enabled, "default group weight and disabled probability must not turn off an enabled entry")
+		assert.Empty(t, worldbookRiskFields(book.Entries[0].NormalizedRules))
+		assert.False(t, book.Entries[1].Enabled, "the original disabled state must be preserved")
+		assert.Empty(t, worldbookRiskFields(book.Entries[1].NormalizedRules))
+		assert.False(t, book.Entries[2].Enabled, "an actual inclusion group still needs confirmation")
+		assertWorldbookRuleAction(t, book.Entries[2], "group", "risk")
+		assert.False(t, book.Entries[3].Enabled, "zero percent activation is an active restriction, not an inert default")
+		assertWorldbookRuleAction(t, book.Entries[3], "probability", "risk")
+
+		result, err := MatchWorldbook(&dto.WorldbookConfig{Enabled: true, Books: []dto.Worldbook{book}}, &dto.GeneralOpenAIRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, "enabled lore", result.Text, "imported default settings must not prevent matching at runtime")
+	}
+}
+
 func TestWorldbookPreventRecursionStopsAssociation(t *testing.T) {
 	config := &dto.WorldbookConfig{Enabled: true, Recursive: true, Books: []dto.Worldbook{{ID: "b", Enabled: true, Entries: []dto.WorldbookEntry{
 		{ID: "a", Enabled: true, Constant: true, Content: "silver", PreventRecursion: true},
