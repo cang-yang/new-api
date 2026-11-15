@@ -115,7 +115,7 @@ jobs:
           src/features/channels/components/dialogs/__tests__/param-override-editor-simulator-entry.test.tsx
           src/features/channels/components/__tests__/sillytavern-preset-editor.test.tsx
           src/features/channels/components/__tests__/channel-configuration.test.tsx
-          src/features/channels/components/__tests__/adaptation-lifecycle-panel.test.tsx
+          src/features/channels/components/__tests__/adaptation-config-transfer.test.tsx
           src/features/channels/components/__tests__/regex-rules-editor.test.tsx
           src/features/channels/components/__tests__/regex-playground.test.tsx
           src/features/channels/lib/__tests__/regex-rules.test.ts

@@ -7227,7 +7227,7 @@
     "This channel serves the models of every selected plugin. The upstream New API gateway must have the same plugins installed.": "Этот канал обслуживает модели каждого выбранного плагина. На вышестоящем шлюзе New API должны быть установлены те же плагины.",
     "This channel type does not support fetching models": "Этот тип канала не поддерживает получение моделей",
     "This channel type requires additional configuration": "Для этого типа канала требуется дополнительная конфигурация",
-    "This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.": "Канал изменён в другом окне. Черновик сохранён. Перезагрузите настройки и сравните перед сохранением.",
+    "This channel was changed in another window. Your edits are kept. Reload the channel and compare before saving.": "Канал изменён в другом окне. Ваши изменения сохранены в редакторе. Перезагрузите настройки и сравните перед сохранением.",
     "This check found no full-reply buffering for streaming text.": "Проверка не выявила необходимости буферизовать полный потоковый текстовый ответ.",
     "This combination will be billed as free.": "Эта комбинация будет тарифицироваться бесплатно.",
     "This confirmation unlocks payment, redemption code, subscription plan, and invitation reward features. Please read the statements carefully.": "Это подтверждение разблокирует функции платежей, кодов пополнения, планов подписки и наград за приглашения. Внимательно прочитайте заявления.",
@@ -8366,6 +8366,21 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Configuration import and export": "Импорт и экспорт настроек",
+    "Edit settings below, then click Save to apply them together. No separate activation is needed.": "Измените настройки и сохраните канал, чтобы применить их вместе. Отдельная активация не нужна.",
+    "Exports include the current preset, scripts, worldbooks and rules, including unsaved edits. Channel keys and connection settings are not included. Keep exported files private.": "Экспорт включает текущий пресет, скрипты, книги мира и правила, в том числе несохранённые изменения. Ключи канала и настройки подключения не включаются. Храните файлы конфиденциально.",
+    "Export complete adaptation package": "Экспортировать полный пакет настроек",
+    "Replace the current adaptation settings?": "Заменить текущие настройки?",
+    "This replaces the preset, scripts, worldbooks and rules in this editor. Channel keys and routing stay unchanged. Click Save to apply. Only import files you trust.": "Заменяет пресет, скрипты, книги мира и правила в редакторе. Ключи и маршрутизация не меняются. Сохраните канал для применения. Импортируйте только доверенные файлы.",
+    "Export preset configuration": "Экспортировать настройки пресета",
+    "Export module bundle": "Экспортировать зависимости скриптов",
+    "Export worldbook configuration": "Экспортировать настройки книг мира",
+    "Replace worldbook configuration?": "Заменить все настройки книг мира?",
+    "This replaces all worldbooks and matching settings in this editor. Apply changes, then save the channel to take effect.": "Заменяет все книги мира и настройки сопоставления в редакторе. Примените изменения и сохраните канал.",
+    "Export regex configuration": "Экспортировать настройки regex",
+    "Replace regex configuration?": "Заменить настройки regex?",
+    "This replaces the rules and their settings in this editor. Save the channel to take effect.": "Заменяет правила и их настройки в редакторе. Сохраните канал для применения.",
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Настройки изменились. Перезагрузите перед сохранением; ваши изменения не применены."
   }
 }

@@ -133,8 +133,10 @@ func TestChannelAdaptationLifecycle(t *testing.T) {
 				Action: "save_draft", Revision: stale.Revision, BaseDigest: stale.BaseDigest, Bundle: candidate,
 			}, nil)
 			require.ErrorIs(t, err, ErrAdaptationConflict)
-			// A stale ordinary channel save cannot bypass lifecycle checks.
-			require.ErrorIs(t, channel.Update(), ErrAdaptationActivationRequired)
+			// A stale ordinary channel save cannot overwrite a newer configuration.
+			require.NoError(t, channel.SetAdaptationDigest())
+			require.ErrorIs(t, channel.Update(), ErrAdaptationConflict)
+			channel.AdaptationDigest = ""
 			require.NoError(t, db.First(&channel, channel.Id).Error)
 			require.Contains(t, channel.OtherSettings, `"provider_custom":{"keep":true}`)
 			require.Equal(t, "test-secret-not-in-recovery", channel.Key)
@@ -212,6 +214,32 @@ func TestChannelAdaptationLifecycle(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, state.Active, active)
 			require.Contains(t, refreshed.OtherSettings, "provider_custom")
+			// Saving the channel itself publishes all adaptation edits, including
+			// for channels that previously used the draft/activation workflow.
+			refreshed.OtherSettings = `{"adaptation_scope":"all_supported","provider_custom":{"keep":true}}`
+			require.NoError(t, refreshed.Update())
+			direct, err := GetChannelAdaptationState(t.Context(), channel.Id)
+			require.NoError(t, err)
+			require.JSONEq(t, `"all_supported"`, string(direct.Active["adaptation_scope"]))
+			require.Nil(t, direct.Draft)
+			directSnapshot, err := FreezeChannelAdaptation(t.Context(), &cachedChannel)
+			require.NoError(t, err)
+			require.Contains(t, directSnapshot.OtherSettings, `"adaptation_scope":"all_supported"`)
+			require.Contains(t, frozen.OtherSettings, `"adaptation_scope":"plain_chat_only"`)
+			require.NoError(t, refreshed.SetAdaptationDigest())
+			staleDirect := refreshed
+			refreshed.OtherSettings = `{}`
+			require.NoError(t, refreshed.Update(), "clearing adaptation must also be a direct save")
+			cleared, err := GetChannelAdaptationState(t.Context(), channel.Id)
+			require.NoError(t, err)
+			require.Empty(t, cleared.Active)
+			require.ErrorIs(t, staleDirect.Update(), ErrAdaptationConflict)
+			refreshed.AdaptationDigest = ""
+			refreshed.OtherSettings = `{"worldbook":{"enabled":true,"scan_depth":-1}}`
+			require.Error(t, refreshed.Update())
+			afterRejected, err := GetChannelAdaptationState(t.Context(), channel.Id)
+			require.NoError(t, err)
+			require.Equal(t, cleared, afterRejected, "invalid saves cannot change settings or cache revision")
 			// A bounded recent-record query must work on every supported SQL
 			// dialect and never load response bodies or oversized snapshots.
 			require.NoError(t, db.AutoMigrate(&AuditAttempt{}, &AuditConfigSnapshot{}))

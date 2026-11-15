@@ -185,6 +185,7 @@ import {
   findMissingModelsInMapping,
   validateModelMappingJson,
 } from '../../lib'
+import { adaptationBundleFromForm } from '../../lib/adaptation-lifecycle'
 import {
   getChannelConfigurationSection,
   getChannelConfigurationState,
@@ -220,11 +221,12 @@ import {
   nextTaskPluginBaseUrl,
 } from '../../lib/task-plugin-base-url'
 import type { Channel } from '../../types'
-import { AdaptationLifecyclePanel } from '../adaptation-lifecycle-panel'
+import { AdaptationConfigTransfer } from '../adaptation-config-transfer'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelQuickOptions } from '../channel-quick-options'
 import { ChannelTypeLogo } from '../channel-type-badge'
 import { useChannels } from '../channels-provider'
+import { ConfigurationExportButton } from '../configuration-export-button'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
 import { ConfigureModelsDialog } from '../dialogs/configure-models-dialog'
 import {
@@ -3051,7 +3053,7 @@ export function ChannelMutateDrawer({
                     )}
                   </FormDescription>
                 </div>
-                <div className='flex shrink-0 items-center gap-2'>
+                <div className='flex flex-wrap items-center gap-2'>
                   <div
                     className={cn(
                       'flex flex-col items-center gap-1 rounded-lg border border-dashed px-2 py-1.5 transition-colors',
@@ -3096,6 +3098,17 @@ export function ChannelMutateDrawer({
                       {t('Or drop a JSON file here')}
                     </span>
                   </div>
+                  {field.value && (
+                    <ConfigurationExportButton
+                      label={t('Export preset configuration')}
+                      filename='preset-config.json'
+                      getValue={() =>
+                        adaptationBundleFromForm(form.getValues())
+                          .sillytavern_preset
+                      }
+                      disabled={sensitiveLocked || isSubmitting}
+                    />
+                  )}
                   {field.value && (
                     <Button
                       type='button'
@@ -5384,13 +5397,10 @@ export function ChannelMutateDrawer({
         }
         request={
           <>
-            {isEditing && channelData?.data && (
-              <AdaptationLifecyclePanel
-                channel={channelData.data}
-                disabled={sensitiveLocked || isSubmitting}
-                onActivated={handleSuccess}
-              />
-            )}
+            <AdaptationConfigTransfer
+              channel={channelData?.data}
+              disabled={sensitiveLocked || isSubmitting}
+            />
             {overrideFields}
             <div
               role='group'

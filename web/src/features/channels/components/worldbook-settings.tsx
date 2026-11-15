@@ -48,6 +48,7 @@ import {
   type Worldbook,
   type WorldbookConfig,
 } from '../lib/worldbook'
+import { ConfigurationExportButton } from './configuration-export-button'
 import { WorldbookEntryFields } from './worldbook-entry-fields'
 import { WorldbookEntryOverview } from './worldbook-entry-overview'
 import { WorldbookPreview } from './worldbook-preview'
@@ -76,6 +77,9 @@ function ScopedWorldbookSettings(props: Props) {
   const [bookID, setBookID] = useState('')
   const [entryID, setEntryID] = useState('')
   const [tab, setTab] = useState('books')
+  const [importedConfig, setImportedConfig] = useState<WorldbookConfig | null>(
+    null
+  )
   const [confirm, setConfirm] = useState<
     'discard' | 'remove' | 'upgrade' | null
   >(null)
@@ -105,9 +109,15 @@ function ScopedWorldbookSettings(props: Props) {
       if (file.size > 6 * 1024 * 1024) {
         throw new Error(t('Worldbook files must be smaller than 6 MB.'))
       }
+      const data: unknown = JSON.parse(await file.text())
+      if (data && typeof data === 'object' && 'books' in data) {
+        const restored = worldbookSchema.safeParse(data)
+        if (!restored.success) throw new Error(t('Invalid worldbook settings'))
+        return { restored: restored.data }
+      }
       const book = await importWorldbook(
         file.name.replace(/\.json$/i, ''),
-        JSON.parse(await file.text())
+        data
       )
       const next = { ...draft, enabled: true, books: [...draft.books, book] }
       if (!worldbookSchema.safeParse(next).success) {
@@ -117,7 +127,13 @@ function ScopedWorldbookSettings(props: Props) {
       }
       return { next, book }
     },
-    onSuccess: ({ next, book }) => {
+    onSuccess: (result) => {
+      if (result.restored) {
+        setImportedConfig(result.restored)
+        return
+      }
+      const { next, book } = result
+      if (!next || !book) return
       setDraft(next)
       setBookID(book.id)
       setEntryID('')
@@ -177,6 +193,12 @@ function ScopedWorldbookSettings(props: Props) {
             </p>
           )}
         </div>
+        <ConfigurationExportButton
+          label={t('Export worldbook configuration')}
+          filename='worldbooks.json'
+          value={current}
+          disabled={props.disabled || !current?.books.length}
+        />
         <Button
           type='button'
           variant='outline'
@@ -259,6 +281,12 @@ function ScopedWorldbookSettings(props: Props) {
                   onCheckedChange={(enabled) => setDraft({ ...draft, enabled })}
                 />
               </Label>
+              <ConfigurationExportButton
+                label={t('Export worldbook configuration')}
+                filename='worldbooks.json'
+                value={draft}
+                disabled={locked || !valid || !draft.books.length}
+              />
             </div>
             {conflict && (
               <p role='alert' className='text-destructive text-sm'>
@@ -737,6 +765,24 @@ function ScopedWorldbookSettings(props: Props) {
           </Tabs>
         )}
       </Dialog>
+      <ConfirmDialog
+        open={importedConfig !== null}
+        onOpenChange={(next) => {
+          if (!next) setImportedConfig(null)
+        }}
+        title={t('Replace worldbook configuration?')}
+        desc={t(
+          'This replaces all worldbooks and matching settings in this editor. Apply changes, then save the channel to take effect.'
+        )}
+        disabled={locked}
+        handleConfirm={() => {
+          if (!importedConfig || locked) return
+          setDraft(importedConfig)
+          setBookID(importedConfig.books[0]?.id || '')
+          setEntryID('')
+          setImportedConfig(null)
+        }}
+      />
       <ConfirmDialog
         open={confirm === 'discard' || confirm === 'remove'}
         onOpenChange={(next) => {

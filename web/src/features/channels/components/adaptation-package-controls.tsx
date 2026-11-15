@@ -9,9 +9,10 @@ import {
   adaptationKeys,
   type AdaptationBundle,
 } from '../lib/adaptation-lifecycle'
+import { downloadConfiguration } from '../lib/config-export'
 
 export function AdaptationPackageControls(props: {
-  active: AdaptationBundle
+  bundle: AdaptationBundle | null
   disabled?: boolean
   onImport: (bundle: AdaptationBundle) => void
 }) {
@@ -69,34 +70,23 @@ export function AdaptationPackageControls(props: {
         />
         <Button
           type='button'
-          variant='ghost'
-          disabled={props.disabled}
+          variant='outline'
+          disabled={props.disabled || !props.bundle}
           onClick={() => {
+            if (!props.bundle) return
+            const current = props.bundle
             const bundle = Object.fromEntries(
               adaptationKeys
-                .filter((key) => key in props.active)
-                .map((key) => [key, props.active[key]])
+                .filter((key) => key in current)
+                .map((key) => [key, current[key]])
             )
-            const url = URL.createObjectURL(
-              new Blob(
-                [
-                  JSON.stringify(
-                    { format: 'new_api_adaptation', version: 1, bundle },
-                    null,
-                    2
-                  ),
-                ],
-                { type: 'application/json' }
-              )
+            downloadConfiguration(
+              { format: 'new_api_adaptation', version: 1, bundle },
+              'adaptation-config.json'
             )
-            const link = document.createElement('a')
-            link.href = url
-            link.download = 'adaptation-config.json'
-            link.click()
-            URL.revokeObjectURL(url)
           }}
         >
-          {t('Export active adaptation package')}
+          {t('Export complete adaptation package')}
         </Button>
       </div>
       <ConfirmDialog
@@ -104,10 +94,11 @@ export function AdaptationPackageControls(props: {
         onOpenChange={(open) => {
           if (!open) setCandidate(null)
         }}
-        title={t('Replace the adaptation draft?')}
+        title={t('Replace the current adaptation settings?')}
         desc={t(
-          'This imports the preset, scripts, worldbooks and rules together. Channel credentials and routing stay unchanged. Nothing runs or becomes active until you check and activate the draft. Only import files you trust.'
+          'This replaces the preset, scripts, worldbooks and rules in this editor. Channel keys and routing stay unchanged. Click Save to apply. Only import files you trust.'
         )}
+        disabled={props.disabled}
         handleConfirm={() => {
           if (!candidate) return
           try {

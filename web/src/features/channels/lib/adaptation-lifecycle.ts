@@ -87,15 +87,3 @@ export function adaptationFormFields(
     sillytavern_context_mode: values.sillytavern_context_mode,
   }
 }
-
-export function retainActiveAdaptation(
-  settings: string,
-  active: AdaptationBundle
-): string {
-  const result = JSON.parse(settings) as Record<string, unknown>
-  for (const key of adaptationKeys) {
-    delete result[key]
-    if (key in active) result[key] = active[key]
-  }
-  return JSON.stringify(result)
-}

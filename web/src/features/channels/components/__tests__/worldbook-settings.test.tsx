@@ -28,6 +28,72 @@ import { WorldbookSettings } from '../worldbook-settings'
 
 afterEach(() => vi.restoreAllMocks())
 
+test('worldbook export and reimport preserve disabled entries, order and insertion settings', async () => {
+  const user = userEvent.setup()
+  let exported: Blob | undefined
+  vi.spyOn(URL, 'createObjectURL').mockImplementation((value) => {
+    exported = value as Blob
+    return 'blob:worldbook'
+  })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  const source = {
+    ...config,
+    semantics_version: 2,
+    scan_depth: 8,
+    injection_mode: 'at_depth',
+    injection_depth: 3,
+    placement_fallback: 'skip',
+    books: [
+      {
+        ...config.books[0],
+        enabled: false,
+        required: true,
+        entries: [
+          {
+            ...config.books[0].entries[0],
+            enabled: false,
+            priority: 250,
+            injection_mode: 'before_last_user',
+          },
+          {
+            ...config.books[0].entries[0],
+            id: 'second',
+            name: 'Second',
+            priority: 10,
+          },
+        ],
+      },
+    ],
+  }
+  const onChange = mount(JSON.stringify(source))
+  await user.click(
+    screen.getByRole('button', { name: 'Export worldbook configuration' })
+  )
+  const text = await new Promise<string>((resolve) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => resolve(String(reader.result)), {
+      once: true,
+    })
+    if (!exported) throw new Error('Expected a configuration download')
+    reader.readAsText(exported)
+  })
+  expect(JSON.parse(text)).toEqual(source)
+  await user.click(screen.getByRole('button', { name: 'Manage worldbooks' }))
+  const file = new File([text], 'worldbooks.json', { type: 'application/json' })
+  file.text = async () => text
+  const post = vi.spyOn(api, 'post')
+  await user.upload(screen.getByLabelText('Import worldbook file'), file)
+  await user.click(
+    within(await screen.findByRole('alertdialog')).getByRole('button', {
+      name: 'Continue',
+    })
+  )
+  expect(onChange).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Apply changes' }))
+  expect(JSON.parse(onChange.mock.calls[0][0])).toEqual(source)
+  expect(post).not.toHaveBeenCalled()
+})
+
 test('stable placement settings expose an explicit missing-position policy and preserve it when applied', async () => {
   const user = userEvent.setup()
   const value = { ...config, semantics_version: 2 }

@@ -20,6 +20,7 @@ import { FileUp } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { JsonCodeEditor } from '@/components/json-code-editor'
 import {
@@ -35,7 +36,10 @@ import { Field, FieldLabel, FieldDescription } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
-import { normalizeResponseTextFilter } from '../lib/channel-form'
+import {
+  channelFormSchema,
+  normalizeResponseTextFilter,
+} from '../lib/channel-form'
 import {
   editableRegexRulesSchema,
   importRegexScripts,
@@ -45,6 +49,7 @@ import {
   type RegexRule,
   type RegexRulesConfig,
 } from '../lib/regex-rules'
+import { ConfigurationExportButton } from './configuration-export-button'
 import { RegexFailurePolicy } from './regex-failure-policy'
 import { RegexRuleFields } from './regex-rule-fields'
 
@@ -65,6 +70,10 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
   const id = useId()
   const [warning, setWarning] = useState('')
   const [importing, setImporting] = useState(false)
+  const [replacement, setReplacement] = useState<{
+    value: Record<string, unknown>
+    baseline: string
+  } | null>(null)
   const [expandedRules, setExpandedRules] = useState<string[]>([])
   const importInput = useRef<HTMLInputElement>(null)
   const latestValue = useRef(props.value)
@@ -193,6 +202,37 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
       aria-label={t('Regex rules')}
       className='flex max-w-full min-w-0 flex-col gap-4'
     >
+      <ConfigurationExportButton
+        label={t('Export regex configuration')}
+        filename='regex-rules.json'
+        value={config ?? parsed}
+        disabled={disabled || !props.value.trim()}
+      />
+      <ConfirmDialog
+        open={replacement !== null}
+        onOpenChange={(open) => {
+          if (!open) setReplacement(null)
+        }}
+        title={t('Replace regex configuration?')}
+        desc={t(
+          'This replaces the rules and their settings in this editor. Save the channel to take effect.'
+        )}
+        disabled={disabled}
+        handleConfirm={() => {
+          if (!replacement || disabled) return
+          if (props.value !== replacement.baseline) {
+            setWarning(
+              t(
+                'Configuration changed while importing. Import again to keep the latest edits.'
+              )
+            )
+          } else {
+            props.onChange(JSON.stringify(replacement.value, null, 2))
+            setWarning('')
+          }
+          setReplacement(null)
+        }}
+      />
       {props.compact ? (
         <Accordion className='min-w-0'>
           <AccordionItem value='settings'>
@@ -376,9 +416,7 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                 const startingValue = props.value
                 setImporting(true)
                 try {
-                  const imported = importRegexScripts(
-                    JSON.parse(await file.text())
-                  )
+                  const data: unknown = JSON.parse(await file.text())
                   if (!mounted.current) return
                   if (latestValue.current !== startingValue) {
                     setWarning(
@@ -388,6 +426,37 @@ function ScopedRegexRulesEditor(props: RegexRulesEditorProps) {
                     )
                     return
                   }
+                  if (data && typeof data === 'object' && 'rules' in data) {
+                    const restored = editableRegexRulesSchema.safeParse(data)
+                    if (!restored.success) throw new Error('Invalid rules')
+                    setReplacement({
+                      value: restored.data,
+                      baseline: startingValue,
+                    })
+                    return
+                  }
+                  if (
+                    data &&
+                    typeof data === 'object' &&
+                    'mode' in data &&
+                    (data.mode === 'regex_extract' ||
+                      data.mode === 'tag_extract')
+                  ) {
+                    const restored = JSON.stringify(data)
+                    if (
+                      !channelFormSchema.shape.response_text_filter.safeParse(
+                        restored
+                      ).success
+                    ) {
+                      throw new Error('Invalid filter')
+                    }
+                    setReplacement({
+                      value: data as Record<string, unknown>,
+                      baseline: startingValue,
+                    })
+                    return
+                  }
+                  const imported = importRegexScripts(data)
                   const next = {
                     ...config,
                     rules: mergeImportedRegexRules(

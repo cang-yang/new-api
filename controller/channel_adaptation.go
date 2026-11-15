@@ -56,7 +56,7 @@ func ChangeChannelAdaptation(c *gin.Context) {
 	state, err := model.ChangeChannelAdaptation(c.Request.Context(), id, change, validateAdaptationCandidate)
 	if err != nil {
 		status := http.StatusBadRequest
-		if errors.Is(err, model.ErrAdaptationConflict) || errors.Is(err, model.ErrAdaptationActivationRequired) {
+		if errors.Is(err, model.ErrAdaptationConflict) {
 			status = http.StatusConflict
 		}
 		common.ApiErrorStatus(c, status, err)

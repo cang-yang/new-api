@@ -29,12 +29,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { createServerError } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import {
-  createChannel,
-  getChannel,
-  getChannelAdaptation,
-  updateChannel,
-} from '../api'
+import { createChannel, getChannel, updateChannel } from '../api'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import {
   transformFormDataToCreatePayload,
@@ -42,12 +37,6 @@ import {
   transformChannelToFormDefaults,
   type ChannelFormValues,
 } from '../lib'
-import {
-  adaptationBundleFromForm,
-  adaptationBundleSignature,
-  pickAdaptationBundle,
-  retainActiveAdaptation,
-} from '../lib/adaptation-lifecycle'
 import type { Channel } from '../types'
 
 type UseChannelMutateFormParams = {
@@ -83,7 +72,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
     mutationFn: async (data: ChannelFormValues): Promise<string> => {
       if (props.isEditing && props.currentRow) {
         // Re-read instead of trusting the cached channel list. Preserve the
-        // local draft if another editor saved since this form was loaded.
+        // local edits if another editor saved since this form was loaded.
         // This is an edit-time warning, not a database compare-and-swap.
         if (props.baselineChannel) {
           const latest = await getChannel(props.currentRow.id, {
@@ -97,7 +86,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
           if (JSON.stringify(saved) !== JSON.stringify(current)) {
             throw new Error(
               t(
-                'This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.'
+                'This channel was changed in another window. Your edits are kept. Reload the channel and compare before saving.'
               )
             )
           }
@@ -106,35 +95,6 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
           data,
           props.currentRow.id
         )
-        if (canEditSensitive && props.baselineChannel) {
-          const original = adaptationBundleFromForm(
-            transformChannelToFormDefaults(props.baselineChannel)
-          )
-          const edited = adaptationBundleFromForm(data)
-          if (
-            adaptationBundleSignature(original) !==
-            adaptationBundleSignature(edited)
-          ) {
-            const state = await getChannelAdaptation(props.currentRow.id)
-            if (
-              !state.draft ||
-              adaptationBundleSignature(state.draft) !==
-                adaptationBundleSignature(edited)
-            ) {
-              throw new Error(
-                t(
-                  'Save your adaptation edits as a draft before saving other channel settings.'
-                )
-              )
-            }
-          }
-          // Ordinary Save must not publish the adaptation draft or overwrite a
-          // freshly activated version. The server checks the latter atomically.
-          payload.settings = retainActiveAdaptation(
-            payload.settings || '{}',
-            pickAdaptationBundle(props.baselineChannel.settings)
-          )
-        }
         if (!data.key?.trim()) {
           delete payload.key
         }
@@ -156,6 +116,9 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
 
         const response = await updateChannel(props.currentRow.id, {
           ...payloadWithKeyMode,
+          ...(canEditSensitive && props.baselineChannel?.adaptation_digest
+            ? { adaptation_digest: props.baselineChannel.adaptation_digest }
+            : {}),
           ...(canEditSensitive && props.isMultiKeyChannel
             ? { multi_key_mode: data.multi_key_type }
             : {}),

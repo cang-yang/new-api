@@ -7227,7 +7227,7 @@
     "This channel serves the models of every selected plugin. The upstream New API gateway must have the same plugins installed.": "このチャネルは選択した各プラグインのモデルを提供します。上流の New API ゲートウェイに同じプラグインがインストールされている必要があります。",
     "This channel type does not support fetching models": "このチャネルタイプはモデルの取得をサポートしていません",
     "This channel type requires additional configuration": "このチャネルタイプには追加設定が必要です",
-    "This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.": "このチャネルは別の画面で変更されました。下書きは保持しています。再読み込みして比較してから保存してください。",
+    "This channel was changed in another window. Your edits are kept. Reload the channel and compare before saving.": "このチャネルは別の画面で変更されました。編集内容は保持しています。再読み込みして比較してから保存してください。",
     "This check found no full-reply buffering for streaming text.": "この確認では、応答全体のバッファリングが必要な処理は見つかりませんでした。",
     "This combination will be billed as free.": "この組み合わせの料金は発生しません。",
     "This confirmation unlocks payment, redemption code, subscription plan, and invitation reward features. Please read the statements carefully.": "この確認により、支払い、引換コード、サブスクリプションプラン、招待報酬の機能が解除されます。各項目をよく読んでください。",
@@ -8366,6 +8366,21 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Configuration import and export": "設定のインポート・エクスポート",
+    "Edit settings below, then click Save to apply them together. No separate activation is needed.": "下の設定を変更し、チャンネルを保存するとまとめて反映されます。別途有効化する必要はありません。",
+    "Exports include the current preset, scripts, worldbooks and rules, including unsaved edits. Channel keys and connection settings are not included. Keep exported files private.": "未保存の変更を含む現在のプリセット、スクリプト、ワールドブック、ルールを出力します。チャンネルのキーと接続設定は含みません。ファイルは適切に保管してください。",
+    "Export complete adaptation package": "設定一式をエクスポート",
+    "Replace the current adaptation settings?": "現在の設定を置き換えますか？",
+    "This replaces the preset, scripts, worldbooks and rules in this editor. Channel keys and routing stay unchanged. Click Save to apply. Only import files you trust.": "編集画面のプリセット、スクリプト、ワールドブック、ルールを置き換えます。キーとルーティングは変更しません。チャンネルを保存すると反映されます。信頼できるファイルのみ読み込んでください。",
+    "Export preset configuration": "プリセット設定をエクスポート",
+    "Export module bundle": "スクリプト依存ファイルをエクスポート",
+    "Export worldbook configuration": "ワールドブック設定をエクスポート",
+    "Replace worldbook configuration?": "すべてのワールドブック設定を置き換えますか？",
+    "This replaces all worldbooks and matching settings in this editor. Apply changes, then save the channel to take effect.": "編集画面の全ワールドブックと照合設定を置き換えます。変更を適用してチャンネルを保存してください。",
+    "Export regex configuration": "正規表現設定をエクスポート",
+    "Replace regex configuration?": "正規表現設定を置き換えますか？",
+    "This replaces the rules and their settings in this editor. Save the channel to take effect.": "編集画面のルールと設定を置き換えます。チャンネルを保存すると反映されます。",
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "設定が変更されました。再読み込みしてから保存してください。今回の変更は未反映です。"
   }
 }

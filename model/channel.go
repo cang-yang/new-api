@@ -54,8 +54,9 @@ type Channel struct {
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
-	OtherSettings     string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
-	AdaptationManaged bool   `json:"-"`                               // Only the adaptation lifecycle may change this flag.
+	OtherSettings     string `json:"settings" gorm:"column:settings"`      // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+	AdaptationManaged bool   `json:"-"`                                    // Set only by transactional adaptation writers.
+	AdaptationDigest  string `json:"adaptation_digest,omitempty" gorm:"-"` // Edit-time token; never stored or exported with configurations.
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -612,7 +613,7 @@ func (channel *Channel) Update() error {
 		if err := lockForUpdate(tx).First(&current, channel.Id).Error; err != nil {
 			return err
 		}
-		if err := guardManagedAdaptationUpdate(&current, channel); err != nil {
+		if err := saveChannelAdaptation(tx, &current, channel); err != nil {
 			return err
 		}
 		return tx.Model(channel).Omit("adaptation_managed").Updates(channel).Error

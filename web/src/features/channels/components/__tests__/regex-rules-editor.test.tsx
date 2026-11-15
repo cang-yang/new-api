@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'
@@ -33,6 +33,95 @@ async function chooseSelectOption(
 }
 
 afterEach(cleanup)
+
+test.each([
+  { mode: 'regex_extract', pattern: '(text)', failure_policy: 'passthrough' },
+  { mode: 'tag_extract', start_tag: '<game>', end_tag: '</game>' },
+])(
+  'importing exported legacy $mode configuration preserves its format',
+  async (source) => {
+    const user = userEvent.setup()
+    render(<Editor />)
+    const text = JSON.stringify(source)
+    const file = new File([text], 'regex-rules.json', {
+      type: 'application/json',
+    })
+    file.text = async () => text
+    await user.upload(
+      screen.getByLabelText('Import SillyTavern regex JSON'),
+      file
+    )
+    await user.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Continue',
+      })
+    )
+    expect(
+      JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
+    ).toEqual(source)
+  }
+)
+
+test('exported regex configuration can replace rules without losing switches or order', async () => {
+  const user = userEvent.setup()
+  const source = {
+    mode: 'rules',
+    enable_send: true,
+    failure_policy: 'passthrough',
+    rules: [
+      {
+        id: 'one',
+        stage: 'send',
+        action: 'replace',
+        pattern: 'a',
+        replacement: 'b',
+        roles: ['user'],
+        disabled: true,
+      },
+      {
+        id: 'two',
+        stage: 'receive',
+        action: 'extract',
+        pattern: '(text)',
+        replacement: '$1',
+      },
+    ],
+  }
+  let blob: Blob | undefined
+  vi.spyOn(URL, 'createObjectURL').mockImplementation((value) => {
+    blob = value as Blob
+    return 'blob:rules'
+  })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  render(<Editor initialValue={JSON.stringify(source)} />)
+  await user.click(
+    screen.getByRole('button', { name: 'Export regex configuration' })
+  )
+  const text = await new Promise<string>((resolve) => {
+    const reader = new FileReader()
+    reader.addEventListener('load', () => resolve(String(reader.result)), {
+      once: true,
+    })
+    if (!blob) throw new Error('Expected a configuration download')
+    reader.readAsText(blob)
+  })
+  expect(JSON.parse(text)).toEqual(source)
+  await user.click(screen.getAllByRole('button', { name: 'Remove rule' })[0])
+  const file = new File([text], 'rules.json', { type: 'application/json' })
+  file.text = async () => text
+  await user.upload(
+    screen.getByLabelText('Import SillyTavern regex JSON'),
+    file
+  )
+  await user.click(
+    within(await screen.findByRole('alertdialog')).getByRole('button', {
+      name: 'Continue',
+    })
+  )
+  expect(
+    JSON.parse(screen.getByLabelText('Saved rules').textContent || '{}')
+  ).toEqual(source)
+})
 
 test('imported rules display their origin and retain it when switched off', async () => {
   const user = userEvent.setup()

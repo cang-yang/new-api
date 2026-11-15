@@ -54,6 +54,7 @@ import {
   scriptPreparationIssueMessage,
   presetRecord as record,
 } from '../lib/preset-script-preparation'
+import { ConfigurationExportButton } from './configuration-export-button'
 import {
   PresetAdapterOverview,
   PresetCapabilityReportSettings,
@@ -577,6 +578,15 @@ export function PresetScriptSettings(props: Props) {
             >
               {t('Import module bundle')}
             </Button>
+            <ConfigurationExportButton
+              label={t('Export module bundle')}
+              filename='script-modules.json'
+              value={props.config.script_modules}
+              disabled={
+                props.disabled ||
+                Object.keys(record(props.config.script_modules)).length === 0
+              }
+            />
             <Button
               type='button'
               variant='ghost'

@@ -7227,7 +7227,7 @@
     "This channel serves the models of every selected plugin. The upstream New API gateway must have the same plugins installed.": "此渠道將提供所選每個插件的模型。上游 New API 閘道必須安裝相同的插件。",
     "This channel type does not support fetching models": "此渠道類型不支援獲取模型",
     "This channel type requires additional configuration": "此渠道類型需要填寫額外設定",
-    "This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.": "此通道已在其他視窗修改。目前草稿已保留，請重新載入並比對後再儲存。",
+    "This channel was changed in another window. Your edits are kept. Reload the channel and compare before saving.": "此通道已在其他視窗修改。目前修改已保留，請重新載入並比對後再儲存。",
     "This check found no full-reply buffering for streaming text.": "本次檢查未發現需等待完整回覆的串流文字處理。",
     "This combination will be billed as free.": "此組合將免費計費。",
     "This confirmation unlocks payment, redemption code, subscription plan, and invitation reward features. Please read the statements carefully.": "此確認會解鎖支付、兌換碼、訂閱套餐和邀請獎勵功能。請仔細閱讀相關聲明。",
@@ -8366,6 +8366,21 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Configuration import and export": "設定匯入與匯出",
+    "Edit settings below, then click Save to apply them together. No separate activation is needed.": "修改下方設定後，點擊底部「更新通道」（新通道點「建立通道」）即可一起生效，無需另行啟用。",
+    "Exports include the current preset, scripts, worldbooks and rules, including unsaved edits. Channel keys and connection settings are not included. Keep exported files private.": "匯出目前編輯的預設、腳本、世界書和規則，包含尚未儲存的修改；不包含通道金鑰和連線設定。匯出檔案可能含私人內容，請妥善保管。",
+    "Export complete adaptation package": "匯出完整設定包",
+    "Replace the current adaptation settings?": "取代目前設定？",
+    "This replaces the preset, scripts, worldbooks and rules in this editor. Channel keys and routing stay unchanged. Click Save to apply. Only import files you trust.": "將取代編輯區內的預設、腳本、世界書和規則，不改變通道金鑰和路由。儲存通道後生效。請僅匯入可信來源的檔案。",
+    "Export preset configuration": "匯出預設設定",
+    "Export module bundle": "匯出腳本相依套件",
+    "Export worldbook configuration": "匯出世界書設定",
+    "Replace worldbook configuration?": "取代全部世界書設定？",
+    "This replaces all worldbooks and matching settings in this editor. Apply changes, then save the channel to take effect.": "將取代編輯區內的全部世界書及比對設定。套用修改並儲存通道後生效。",
+    "Export regex configuration": "匯出正則設定",
+    "Replace regex configuration?": "取代正則設定？",
+    "This replaces the rules and their settings in this editor. Save the channel to take effect.": "將取代編輯區內的規則及其設定，儲存通道後生效。",
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "此設定已在其他視窗中修改，請重新載入後再儲存。本次修改尚未生效。"
   }
 }

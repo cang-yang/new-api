@@ -223,32 +223,18 @@ afterEach(() => {
   })
 })
 
-async function saveAdaptationDraft(user: ReturnType<typeof userEvent.setup>) {
-  let bundle: unknown
-  vi.spyOn(api, 'post').mockImplementationOnce(async (url, data) => {
-    expect(url).toBe(`/api/channel/${editingChannel.id}/adaptation`)
-    const change = data as { action: string; bundle: unknown }
-    expect(change.action).toBe('save_draft')
-    bundle = change.bundle
-    return {
-      data: {
-        success: true,
-        data: {
-          revision: 1,
-          active_revision: 0,
-          active: {},
-          draft: bundle,
-          checked: false,
-          base_digest: 'test',
-        },
-      },
-    }
-  })
-  await user.click(
-    screen.getByRole('button', { name: 'Save adaptation draft' })
-  )
-  await screen.findByText('Draft saved; not checked')
-  return JSON.parse(JSON.stringify(bundle))
+async function saveChannelConfiguration(
+  user: ReturnType<typeof userEvent.setup>
+) {
+  expect(
+    screen.queryByRole('button', { name: 'Save adaptation draft' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(api.put).toHaveBeenCalled())
+  const submitted = vi.mocked(api.put).mock.calls.at(-1)?.[1] as {
+    settings: string
+  }
+  return JSON.parse(submitted.settings)
 }
 
 // Editing opens the sheet on the left, so the sheet spans x = 0..900 and the
@@ -415,7 +401,7 @@ test('saving after another window changes the channel preserves the draft and re
   await user.click(screen.getByRole('button', { name: 'Update Channel' }))
   await waitFor(() =>
     expect(error).toHaveBeenCalledWith(
-      'This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.'
+      'This channel was changed in another window. Your edits are kept. Reload the channel and compare before saving.'
     )
   )
   expect(put).not.toHaveBeenCalled()
@@ -1307,7 +1293,7 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
-test('channel regex rules save to a draft without changing the running channel', async () => {
+test('channel regex rules save directly with the channel settings', async () => {
   editingChannel.settings = JSON.stringify({
     upstream_model_update_check_enabled: true,
   })
@@ -1324,8 +1310,8 @@ test('channel regex rules save to a draft without changing the running channel',
   await user.click(screen.getByRole('button', { name: 'Add regex rule' }))
   await user.type(screen.getByLabelText('Find pattern'), 'secret')
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
-  const draft = await saveAdaptationDraft(user)
-  expect(put).not.toHaveBeenCalled()
+  const draft = await saveChannelConfiguration(user)
+  expect(put).toHaveBeenCalledTimes(1)
   expect(screen.queryByRole('button', { name: 'Add regex rule' })).toBeNull()
   expect(draft).toMatchObject({
     response_text_filter: {
@@ -1385,7 +1371,7 @@ test.each([
   }
 )
 
-test('importing a SillyTavern preset saves a complete draft without changing unrelated running settings', async () => {
+test('importing a SillyTavern preset saves directly without changing unrelated channel settings', async () => {
   editingChannel.settings = JSON.stringify({
     upstream_model_update_check_enabled: true,
   })
@@ -1473,8 +1459,8 @@ test('importing a SillyTavern preset saves a complete draft without changing unr
   expect(put).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: 'Apply to channel' }))
   expect(put).not.toHaveBeenCalled()
-  const draft = await saveAdaptationDraft(user)
-  expect(put).not.toHaveBeenCalled()
+  const draft = await saveChannelConfiguration(user)
+  expect(put).toHaveBeenCalledTimes(1)
   expect(JSON.parse(editingChannel.settings)).toEqual({
     upstream_model_update_check_enabled: true,
   })
@@ -1557,8 +1543,8 @@ test('importing scripts automatically prepares snapshots and enables only the pr
       expect.any(Object)
     )
   )
-  const draft = await saveAdaptationDraft(user)
-  expect(put).not.toHaveBeenCalled()
+  const draft = await saveChannelConfiguration(user)
+  expect(put).toHaveBeenCalledTimes(1)
   expect(draft.sillytavern_preset).toMatchObject({
     script_runtime: 'tavern-v1',
     script_modules: { helper: 'export const value = 1' },
@@ -1775,8 +1761,8 @@ test('confirming embedded regex import adds receive rules without enabling send 
   ).toBeInTheDocument()
   expect(put).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: 'Import regex rules' }))
-  const settings = await saveAdaptationDraft(user)
-  expect(put).not.toHaveBeenCalled()
+  const settings = await saveChannelConfiguration(user)
+  expect(put).toHaveBeenCalledTimes(1)
   expect(settings.sillytavern_preset.preset).toEqual(preset)
   expect(settings.sillytavern_preset.enable_embedded_regex).toBe(false)
   expect(settings.response_text_filter).toMatchObject({
@@ -1855,8 +1841,8 @@ test('unnamed imported preset uses its filename and keeps that identity when sav
     )
   )
   expect(await screen.findByText('silver-moon.json')).toBeVisible()
-  const settings = await saveAdaptationDraft(user)
-  expect(put).not.toHaveBeenCalled()
+  const settings = await saveChannelConfiguration(user)
+  expect(put).toHaveBeenCalledTimes(1)
   expect(settings.sillytavern_preset.source_file_name).toBe('silver-moon.json')
 })
 
@@ -1976,8 +1962,8 @@ test('preset regex import separates send-side choice and carries the HTML warnin
   await user.click(
     within(dialog).getByRole('button', { name: 'Import regex rules' })
   )
-  const settings = await saveAdaptationDraft(user)
-  expect(put).not.toHaveBeenCalled()
+  const settings = await saveChannelConfiguration(user)
+  expect(put).toHaveBeenCalledTimes(1)
   expect(settings.response_text_filter.rules).toMatchObject([{ stage: 'send' }])
   expect(settings.response_text_filter.enable_send).toBe(true)
 })

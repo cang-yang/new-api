@@ -7227,7 +7227,7 @@
     "This channel serves the models of every selected plugin. The upstream New API gateway must have the same plugins installed.": "Kênh này phục vụ các mô hình của mọi plugin đã chọn. Gateway New API thượng nguồn phải cài đặt cùng các plugin đó.",
     "This channel type does not support fetching models": "Loại kênh này không hỗ trợ lấy mô hình",
     "This channel type requires additional configuration": "Loại kênh này yêu cầu cấu hình bổ sung",
-    "This channel was changed in another window. Your draft is kept. Reload the channel and compare before saving.": "Kênh đã được sửa ở cửa sổ khác. Bản nháp được giữ lại. Hãy tải lại và so sánh trước khi lưu.",
+    "This channel was changed in another window. Your edits are kept. Reload the channel and compare before saving.": "Kênh đã được sửa ở cửa sổ khác. Nội dung chỉnh sửa được giữ lại. Hãy tải lại và so sánh trước khi lưu.",
     "This check found no full-reply buffering for streaming text.": "Kiểm tra này không phát hiện việc phải đợi toàn bộ phản hồi văn bản theo luồng.",
     "This combination will be billed as free.": "Tổ hợp này sẽ không phát sinh phí.",
     "This confirmation unlocks payment, redemption code, subscription plan, and invitation reward features. Please read the statements carefully.": "Xác nhận này mở khóa các tính năng thanh toán, mã đổi thưởng, gói đăng ký và phần thưởng mời. Vui lòng đọc kỹ các tuyên bố.",
@@ -8366,6 +8366,21 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Configuration import and export": "Nhập và xuất cấu hình",
+    "Edit settings below, then click Save to apply them together. No separate activation is needed.": "Chỉnh sửa bên dưới rồi lưu kênh để áp dụng tất cả. Không cần kích hoạt riêng.",
+    "Exports include the current preset, scripts, worldbooks and rules, including unsaved edits. Channel keys and connection settings are not included. Keep exported files private.": "Xuất preset, script, sách thế giới và quy tắc hiện tại, kể cả thay đổi chưa lưu. Không bao gồm khóa kênh và thiết lập kết nối. Hãy bảo quản tệp riêng tư.",
+    "Export complete adaptation package": "Xuất gói cấu hình đầy đủ",
+    "Replace the current adaptation settings?": "Thay thế cấu hình hiện tại?",
+    "This replaces the preset, scripts, worldbooks and rules in this editor. Channel keys and routing stay unchanged. Click Save to apply. Only import files you trust.": "Thay thế preset, script, sách thế giới và quy tắc trong trình chỉnh sửa. Khóa kênh và định tuyến không đổi. Lưu kênh để áp dụng. Chỉ nhập tệp đáng tin cậy.",
+    "Export preset configuration": "Xuất cấu hình preset",
+    "Export module bundle": "Xuất gói phụ thuộc script",
+    "Export worldbook configuration": "Xuất cấu hình sách thế giới",
+    "Replace worldbook configuration?": "Thay thế toàn bộ cấu hình sách thế giới?",
+    "This replaces all worldbooks and matching settings in this editor. Apply changes, then save the channel to take effect.": "Thay thế tất cả sách thế giới và thiết lập đối chiếu trong trình chỉnh sửa. Áp dụng thay đổi rồi lưu kênh.",
+    "Export regex configuration": "Xuất cấu hình regex",
+    "Replace regex configuration?": "Thay thế cấu hình regex?",
+    "This replaces the rules and their settings in this editor. Save the channel to take effect.": "Thay thế quy tắc và thiết lập trong trình chỉnh sửa. Lưu kênh để áp dụng.",
+    "Adaptation settings changed. Reload before saving; your changes have not been applied.": "Cấu hình đã thay đổi. Tải lại trước khi lưu; thay đổi của bạn chưa được áp dụng."
   }
 }

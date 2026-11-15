@@ -479,6 +479,10 @@ func GetChannel(c *gin.Context) {
 		return
 	}
 	if channel != nil {
+		if err := channel.SetAdaptationDigest(); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 		clearChannelInfo(channel)
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -535,9 +539,9 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if err := channel.ValidateSettings(); err != nil {
 		return common.NewMessage("Invalid channel settings format: {{error}}", map[string]any{"error": err.Error()})
 	}
-	if isAdd {
-		// A new channel has no live configuration to preserve. Its initial
-		// configuration still needs the same bounded checks as activation.
+	if isAdd || channel.OtherSettings != "" {
+		// Saving publishes the submitted configuration directly. Static checks
+		// run before any writes, without executing scripts or calling a model.
 		if err := validateAdaptationCandidate(channel); err != nil {
 			return err
 		}

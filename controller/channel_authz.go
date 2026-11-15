@@ -118,6 +118,8 @@ func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]an
 // to the fail-closed branch and is treated as sensitive. The
 // TestChannelFieldsAreClassified guard test enforces this.
 var channelNonSensitiveFields = map[string]struct{}{
+	// A concurrency token grants no write authority and is never persisted.
+	"adaptation_digest":   {},
 	"id":                  {},
 	"test_model":          {},
 	"name":                {},

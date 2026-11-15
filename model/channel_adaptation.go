@@ -21,8 +21,7 @@ import (
 // billing and provider connection settings must never be restored with it.
 var adaptationSettingKeys = []string{"adaptation_scope", "sillytavern_preset", "worldbook", "response_text_filter"}
 
-var ErrAdaptationConflict = errors.New("Adaptation settings changed. Reload before saving; your draft has not been applied.")
-var ErrAdaptationActivationRequired = errors.New("Save adaptation changes as a draft, check them, then activate them.")
+var ErrAdaptationConflict = errors.New("Adaptation settings changed. Reload before saving; your changes have not been applied.")
 
 type AdaptationBundle map[string]json.RawMessage
 
@@ -399,9 +398,9 @@ func ChangeChannelAdaptation(ctx context.Context, id int, change ChannelAdaptati
 	return result, err
 }
 
-// Ordinary channel saves cannot overwrite a managed adaptation, including when
-// a stale editor races an activation. Non-adaptation settings remain editable.
-func guardManagedAdaptationUpdate(current, update *Channel) error {
+// Channel saves publish settings and their cache revision in the same transaction.
+// Old draft API clients cannot activate a stale draft after a direct save.
+func saveChannelAdaptation(tx *gorm.DB, current, update *Channel) error {
 	if update.OtherSettings == "" {
 		return nil
 	}
@@ -417,14 +416,50 @@ func guardManagedAdaptationUpdate(current, update *Channel) error {
 	if err != nil {
 		return err
 	}
+	if update.AdaptationDigest != "" && update.AdaptationDigest != before {
+		return ErrAdaptationConflict
+	}
 	after, err := adaptationDigest(newBundle)
 	if err != nil {
 		return err
 	}
-	if before != after {
-		return ErrAdaptationActivationRequired
+	if before == after {
+		return nil
 	}
-	return nil
+	if err := update.ValidateSettings(); err != nil {
+		return err
+	}
+	version := ChannelAdaptationVersion{ChannelID: current.Id}
+	if current.AdaptationManaged {
+		if err := tx.First(&version, "channel_id = ?", current.Id).Error; err != nil {
+			return err
+		}
+	}
+	previous, err := common.Marshal(oldBundle)
+	if err != nil {
+		return err
+	}
+	version.Previous = string(previous)
+	version.Draft, version.CheckedDigest = "", ""
+	version.Revision++
+	version.ActiveRevision = version.Revision
+	if current.AdaptationManaged {
+		if err := tx.Model(&ChannelAdaptationVersion{}).Where("channel_id = ?", current.Id).Select("*").Updates(&version).Error; err != nil {
+			return err
+		}
+	} else if err := tx.Create(&version).Error; err != nil {
+		return err
+	}
+	return tx.Model(&Channel{}).Where("id = ?", current.Id).Update("adaptation_managed", true).Error
+}
+
+func (channel *Channel) SetAdaptationDigest() error {
+	bundle, err := DecodeAdaptationBundle(channel.OtherSettings)
+	if err != nil {
+		return err
+	}
+	channel.AdaptationDigest, err = adaptationDigest(bundle)
+	return err
 }
 
 // Background model discovery owns only its prefixed settings. Merging under
